@@ -7,13 +7,14 @@ Add-Type -AssemblyName System.Drawing
 #   no self-applied rounded corners, no self-applied inner padding
 #
 # The mark is a sheet with a dog-eared corner and three text lines, drawn as a
-# monoline so it stays crisp at 20 px. It is scaled about the *canvas centre* so
-# the outer fold point (327.8 px from centre at scale 1.0) stays inside the
-# 512 px circle that the launcher mask applies: 327.8 * 1.44 = 472, plus a
-# half-stroke ≈ 24 → 496 < 512. Anything larger clips the corner.
+# monoline so it stays crisp at 20 px. It is scaled about the *canvas centre*.
+# The mask-safe ceiling is 1.44 — the outer fold point sits 327.8 px from the
+# centre at scale 1.0, so 327.8 * 1.44 ≈ 472 plus a half-stroke ≈ 24 → 496,
+# just inside the 512 px launcher mask circle. 1.296 is that ceiling minus 10%,
+# which reads better next to the system icons.
 
 $DESIGN = 1024.0
-$SCALE = 1.44          # artwork is authored at scale 1.0; 1.44 is the mask-safe max
+$SCALE = 1.296         # 1.44 - 10%
 
 # $size is the real canvas edge in px. The design canvas is always 1024, so the
 # centre/scale transform must be computed from $size, not from $DESIGN —
