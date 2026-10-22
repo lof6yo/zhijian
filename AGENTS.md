@@ -1,0 +1,775 @@
+# AGENTS.md — HMStart / HarmonyOS NEXT
+
+This file is the operating contract for every agent working in this repository.
+It is loaded automatically by OpenCode V2. Keep it accurate; update it when the
+toolchain or project layout changes.
+
+## 1. Project snapshot
+
+- **App**: `HMStart`, bundle `com.hmprojects.hmstart`, vendor `example`.
+- **Platform**: HarmonyOS NEXT, Stage model, ArkTS + ArkUI, **API 26**.
+- **Build**: Hvigor 6.26.4 via DevEco CLI 1.3.6; SDK `HarmonyOS 26.0.0 Release`
+  (API 26) at `D:\deveco\command-line-tools\sdk`.
+- **IDE**: none required. This machine has **Command Line Tools 26.0.0.821**,
+  not DevEco Studio. Do not assume DevEco Studio-only paths or plugins.
+- **Device**: HarmonyOS 7.0.0 emulator image `phone_all_x86`, instance
+  `puraxview` (Pura X View, 1320×2232, 480 dpi). Preferred hdc port: `15000`.
+  This machine runs WSL2 with mirrored networking, so WSL’s `sshd-sess`
+  already owns the default hdc port `8710`. **Always set
+  `OHOS_HDC_SERVER_PORT=18710`** before using `hdc`/DevEco CLI/MCP; otherwise
+  hdc hangs or reports no devices. The MCP wrappers and `scripts/env.ps1`
+  already do this.
+- **Entry module**: `entry` (HAP). `AppScope` holds app-level config/resources.
+- **Entry page**: `entry/src/main/ets/pages/Index.ets`, registered in
+  `entry/src/main/resources/base/profile/main_pages.json`.
+- **UIAbility**: `entry/src/main/ets/entryability/EntryAbility.ets`.
+- **Language**: UI copy is Chinese; code identifiers, comments, and commit
+  messages follow the existing file. Keep user-visible strings in resources.
+
+## 2. Golden rules
+
+1. **Never invent HarmonyOS APIs.** Before using an unfamiliar API, search the
+   official docs with MCP `harmonyos-knowledge` (`searchDocuments` →
+   `getDocumentsById`) or `devecocli docs search/read`. Check the local SDK
+   `.d.ts` when the docs are ambiguous.
+2. **API 26 only.** Do not use APIs marked deprecated or higher than 26. Do not
+   lower `targetSdkVersion`/`compatibleSdkVersion` without an explicit request.
+3. **ArkTS strict mode.** No `any`, no untyped object literals, no index
+   signatures, no prototype tricks, no `eval`, no `Function.apply/call/bind`,
+   no `Object.defineProperty`. Give every class/interface/field a type.
+4. **State management V2 for new code.** Use `@ComponentV2`, `@Local`,
+   `@Param`, `@Event`, `@ObservedV2`, `@Trace`, `@Provider`, `@Consumer`.
+   Do not mix V1 decorators (`@State`, `@Prop`, `@Link`, `@Observed`,
+   `@ObjectLink`) into new V2 components. `Index.ets` has been migrated to
+   `@ComponentV2`/`@Local`; treat V1 as legacy only.
+5. **Navigation, not router.** New pages use `Navigation` + `NavPathStack` +
+   `NavDestination`. Do not add `router.pushUrl` calls.
+6. **Resources, not literals.** Colors, strings, dimensions, and icons come from
+   `resources/base/element/*.json` or `$r('app.*')`/`$r('sys.*')`. Add a dark
+   variant under `resources/dark/` for every custom color.
+7. **Least privilege.** Declare permissions in `module.json5` with `reason` and
+   `usedScene`. Request runtime permissions with `abilityAccessCtrl` at the
+   moment of use. Never put secrets/API keys in source; use Asset Store Kit.
+8. **Verify before claiming done.** A change is not done until: static check
+   passes, build succeeds, the app launches on the emulator, and the target UI
+   is verified by screenshot or `ui_dump`. If the device is unavailable, say so
+   explicitly and report the build/check result only.
+9. **Do not hand-edit generated output** under `entry/build/`, `.hvigor/`, or
+   `oh_modules/`. Fix source and rebuild.
+10. **Do not read, print, or commit signing secrets** (`*.p12`, `*.jks`,
+    `*.p7b`, `.ohos/`, `signing/`). The agent may reference paths in config but
+    must not dump their contents.
+
+## 3. Standard workflow
+
+Use this loop for every feature or bug fix:
+
+1. **Recon** — read the relevant page/service, `AGENTS.md`, and the target
+   resource files. For unfamiliar APIs, query the knowledge MCP first.
+2. **Plan** — name the files to change, the state/data flow, and the verification
+   steps. For a UI change, state the layout at phone and tablet widths.
+3. **Implement** — small, typed ArkTS changes. Keep business logic out of
+   `build()`; put it in view models/services.
+4. **Static check** — run `devecocli check arkts` on changed `.ets` files
+   (preferred; the `deveco` MCP is disabled on this CLT-only machine). Fix all
+   errors before building.
+5. **Build** — `devecocli build` (or MCP `harmonyos.build`). Read the first
+   error, fix it, repeat. Do not paste the whole build log.
+6. **Run** — `devecocli run` (or MCP `harmonyos.build_install_launch`). If
+   signing is missing, see §8.
+7. **Verify UI** — `devecocli ui screenshot` / MCP `harmonyos.screenshot`, then
+   `devecocli ui layout` / MCP `harmonyos.ui_dump` to confirm the target text
+   and interactive nodes. Use `find_ui`/`tap_text` for interactions.
+8. **Logs** — `devecocli log --level E --from 2m --tail 200` or MCP
+   `harmonyos.logs_dump`. Fix crashes/blank screens before stopping.
+9. **Report** — state what changed, the commands run, the artifact path, the
+   device/screenshot evidence, and any remaining limitation.
+
+For a pure question ("how does X work?"), skip steps 4–8 unless the answer
+depends on running code.
+
+## 4. Toolchain and commands
+
+Set the environment once per shell:
+
+```powershell
+$env:DEVECO_CLI_CLT_PATH = 'D:\deveco\command-line-tools'
+$env:DEVECO_SDK_HOME     = 'D:\deveco\command-line-tools\sdk'
+$env:DEVECO_STUDIO_HOME  = 'D:\deveco\command-line-tools'
+# WSL2 mirrored networking owns 8710; use 18710 for hdc/DevEco CLI/MCP.
+$env:OHOS_HDC_SERVER_PORT = '18710'
+# Optional: put hvigorw/ohpm/hdc/emulator on PATH
+$env:PATH = "D:\deveco\command-line-tools\bin;D:\deveco\command-line-tools\sdk\default\openharmony\toolchains;D:\deveco\command-line-tools\emulator;$env:PATH"
+```
+
+| Goal | Command |
+|---|---|
+| Scaffold a new project | `devecocli create --app-name MyApp --api-level 26` |
+| Install deps / sync | `devecocli build` (runs `ohpm install` + hvigor sync) |
+| Build HAP | `devecocli build` |
+| Build whole product (.app) | `devecocli build --product default` |
+| Clean | `devecocli build clean` |
+| ArkTS static check | `devecocli check arkts [files...]` |
+| Lint | `devecocli check lint [path] --format json` |
+| Install + launch | `devecocli run` |
+| Device list | `devecocli device list --format json` |
+| Emulator list/start/stop | `devecocli emulator list` / `start puraxview --hdcport 15000` / `stop puraxview` |
+| Screenshot | `devecocli ui screenshot --path screenshots\shot.png` |
+| UI tree | `devecocli ui layout --format json --mode simplified` |
+| Click / text / swipe | `devecocli ui click ...`, `devecocli ui text ...`, `devecocli ui swipe ...` |
+| Logs / crash | `devecocli log --level E --from 2m --tail 200` / `devecocli log --crash` |
+| Docs search/read | `devecocli docs search <kw>` / `devecocli docs read <id>` |
+| Signing | `devecocli auth login --no-prompt` → `devecocli signature generate` |
+| Local debug deploy | `scripts\run.ps1` (build + local sign + install + launch) |
+| Environment doctor | `scripts\doctor.ps1` |
+
+WYSIWYG editor build (only when changing `editor-web/`):
+
+```powershell
+cd editor-web
+npm install
+npm run build        # outputs entry/src/main/resources/rawfile/editor/index.html
+cd ..
+scripts\build.ps1
+scripts\run.ps1 -SkipBuild
+```
+
+Do not hand-edit `entry/src/main/resources/rawfile/editor/index.html`; it is a
+Vite single-file build of `editor-web/`.
+
+Direct fallbacks (only when DevEco CLI is unavailable):
+
+```powershell
+D:\deveco\command-line-tools\bin\hvigorw.bat --mode module -p module=entry@default -p product=default assembleHap --no-daemon
+D:\deveco\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe list targets
+D:\deveco\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe -t 127.0.0.1:15000 install -r <signed.hap>
+```
+
+Build output: `entry/build/default/outputs/default/entry-default-unsigned.hap`
+(unsigned unless `signingConfigs` is configured).
+
+## 5. MCP routing
+
+MCP servers are configured in `.opencode/opencode.json` (V2 schema:
+`mcp.servers`). Use them as follows:
+
+| Server | Tools | Use for |
+|---|---|---|
+| `harmonyos` | 33 tools (see below) | Emulator lifecycle, build/install/launch, UI inspection/automation, logs, file pull. |
+| `harmonyos-knowledge` | `searchDocuments`, `getDocumentsById` | Official HarmonyOS docs/API/guide/best-practice lookup. No API key. Use before writing unfamiliar APIs. |
+| `deveco` (disabled) | `check`, `restart` | Optional. The official `devecocli serve mcp` check needs a full DevEco Studio LSP; on this CLT-only machine it never finishes project initialization. Enable only after installing DevEco Studio 6.1+. Otherwise use `devecocli check arkts` (CLI). |
+
+Key `harmonyos` tools:
+
+- `session_show_defaults` — call first; shows resolved project/toolchain/device.
+- `session_set_defaults` — seed the server session once:
+  `{ projectDir: "D:\\HMProjects\\HMStart", module: "entry",
+  bundleName: "com.hmprojects.hmstart", abilityName: "EntryAbility",
+  deviceSn: "127.0.0.1:15000", buildMode: "debug" }`. Then most tools accept
+  empty args.
+- `parse_app_meta` — reads `AppScope/app.json5` + `module.json5` and seeds
+  defaults (bundle/module/ability).
+- `emu_list` / `emu_start` / `emu_stop` — emulator lifecycle. `emu_start` waits
+  for hdc and sets the device.
+- `device_list` / `app_state` — cheap device/foreground checks.
+- `build` / `install` / `launch` / `build_install_launch` — build/deploy loop.
+- `screenshot` / `ui_dump` / `find_ui` / `tap_text` / `tap_text_and_wait` /
+  `wait_for_ui` / `input_text` / `key_event` — UI verification.
+- `logs_dump` / `logs_start` / `logs_stop` / `wait_for_log` — hilog.
+- `pull_file` — pull DB/log/screenshot files from the device.
+
+Usage rules:
+
+- Prefer MCP for **structured actions** (build/install/launch/UI/logs) and the
+  CLI for **human-facing inspection** (docs, diff, one-off commands).
+- MCP `harmonyos` builds an unsigned HAP unless the project has a valid
+  `signingConfigs`. If install fails with a signing error, use §8.
+- Do not run `devecocli serve lsp` in OpenCode V2.0.32: V2 has no functional
+  LSP runtime. Use `devecocli check arkts` (fast, works with CLT) instead. The
+  `deveco` MCP is disabled for the same reason; enable it only with a full
+  DevEco Studio installation.
+- Global plugin MCPs `context7` and `gh_grep` are also available: use
+  `gh_grep` for real-world code patterns and `context7` for third-party library
+  docs. They are **not** a substitute for HarmonyOS knowledge MCP.
+
+## 6. Architecture and code layout
+
+Current single-HAP layout:
+
+```text
+entry/src/main/ets/
+├── entryability/        # UIAbility lifecycle only
+├── pages/               # Index (HDS shell: 3 tabs, title bar actions), EditorPage (NavDestination)
+├── components/          # NoteCard
+├── models/              # Note (V2 @ObservedV2/@Trace)
+├── services/            # NoteStore (files), Frontmatter (YAML)
+└── common/              # (reserved)
+
+entry/src/main/resources/rawfile/editor/
+└── index.html           # Vite single-file build of editor-web/ (do not hand-edit)
+
+editor-web/              # Milkdown/Crepe + Vite source for the WYSIWYG editor
+```
+
+The editor is **ArkWeb + Milkdown/Crepe**; the native shell owns file storage,
+navigation, search, tags and settings. All notes are flat in `notes/`. Markdown text is the source of
+truth; the Web bridge calls `native.save(markdown)` and the native side writes
+`.md` files. `EditorPage` debounces 500 ms and flushes on back/background.
+The editor pops with `{ saved: true }`. **Do not use `pushPath({ onPop })` to
+refresh the list.** Its documented contract is that the callback fires only when
+`pop(result)` is given a result; a plain Back press or `pop()` (as `TrashPage`
+does) never fires it, which silently left the Notes list showing stale data.
+Instead `Index.aboutToAppear` installs one interception on the stack:
+
+```ts
+this.pathStack.setInterception({
+  didShow: (from, to, operation) => {
+    if (operation === NavigationOperation.POP) { this.store.reload(); this.refreshList(); }
+  }
+});
+```
+
+`didShow` runs for every transition regardless of payload, so one hook covers
+editor returns, trash returns and any future page. `refreshList` copies
+`store.notes` into the component's `@Local notesSnapshot` array. **Render the
+list from `notesSnapshot`, not directly from the singleton store**: the V2
+dependency on a plain singleton's `@Trace` array is not reliable across a
+`NavDestination` pop, and `listVersion`/`.id()` alone does not trigger a
+rebuild. The snapshot assignment is what guarantees the note list refreshes
+immediately on return.
+
+`EditorPage.persist()` skips the write when the markdown is unchanged. Without
+that guard every open→close bumped `updatedAt`, reordered the list and
+invalidated the `ForEach` key for no reason.
+
+**A mis-tapped 新建笔记 must not leave a 无标题 husk behind.** `newNote()` has to
+create the file up front (the editor loads by id), so `EditorPage` undoes it: on
+exit it purges the note when it is **both** within 5 s of the tap **and** never
+edited. Two details are load-bearing:
+- The emptiness test is `isBlankBody()`, not a byte comparison against the
+  created skeleton. Crepe normalises the document it is handed — `'# 无标题\n\n'`
+  echoes back as `'# 无标题\n'` — so a byte compare marked every fresh note as
+  edited and the discard silently never fired. Compare *meaning* (strip the auto
+  H1 + whitespace), never bytes.
+- Time alone is not the rule. A note the user actually typed into must survive
+  even if they leave in two seconds, so `edited` (set on the first
+  non-blank `markdownUpdated`, which also covers type-then-delete-everything) is
+  required as well.
+The purge is `NoteStore.purgeNote()`, deliberately **not** `deleteNote()`: the
+user deleted nothing, so nothing belongs in 回收站 or should hold a retention
+slot. `aboutToDisappear()` only saves — the discard decision lives in exactly one
+place (`leaveEditor()`) so a note cannot be purged after a save already wrote it.
+
+**Do not pass a `Note` object into `NoteCard`.** `NoteCard` takes immutable
+primitive props (`noteId`, `title`, `excerpt`, `tags`, `pinned`, `updatedAt`);
+the `ForEach` key is `${note.id}-${note.updatedAt}`. This forces a fresh card
+when an existing note is edited. Rendering `store.notes` directly, or passing
+the same mutable `Note` reference through `@Param`, will leave the card showing
+the pre-edit title/excerpt until a tab switch.
+
+UI immersion uses **HDS** (`@kit.UIDesignKit`; `HdsNavigation` + `HdsTabs` +
+`hdsMaterial`), gated on `deviceInfo.sdkApiVersion >= HDS_MIN_API` (23). Below
+that the app renders `Index.PlainShell()` — a plain `Navigation` + `Tabs` — so
+an older device degrades instead of crashing. The HDS libraries live in the
+**`hms` SDK** (`sdk/default/hms/ets/api/@hms.hds.*`), not in `openharmony/ets`.
+- **Do NOT call `setWindowLayoutFullScreen(true)`. It breaks HDS.** With it
+  enabled the title bar's custom node collapses to 17 vp and its buttons squeeze
+  to 9 vp, clipping the icons to ~3 px. HDS sizes the title bar from the
+  status-bar inset itself, so manual fullscreen conflicts with it. Remove the
+  call and let `.ignoreLayoutSafeArea` on the HDS container do immersion — that
+  is what makes the action buttons render at their real 40 vp. **Re-confirmed**
+  on the current MINI + `stackBuilder` shell: with fullscreen layout
+  `HdsTitleBar` measured `[0,117][1320,168]` — 51 px, i.e. 17 vp, with the title
+  text clipped to 16 px. The old measurement still holds; do not re-litigate it.
+- **Immersing the system bands is a *backdrop* job, not a layout job.** The
+  content root legitimately starts at the status-bar bottom (`root` at
+  `[0,117]`), so by default the status bar and the gesture bar show the
+  *window's* background and the page looks cut off from them (the "背景分割"
+  report). The fix is `.expandSafeArea([SafeAreaType.SYSTEM],
+  [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])` on the node that actually **paints**
+  the background — in `Index.PageBackdrop` that is the filled/gradient `Column`,
+  not the wrapping `Stack`. Two traps:
+  - Expanding the **wrapper `Stack`** does not help: the gradient child stays
+    sized to the unexpanded box, so the bands still show through. Expand the
+    painting node.
+  - Expanding the **shell/root `Stack`** is wrong: it moves `Navigation` with it
+    and re-invalidates `TITLE_BAR_CLEARANCE`. Only the `HitTestMode.None`
+    decorative layer may expand.
+  Full-bleed pages (`EditorPage`, `TrashPage`) need the same treatment, on **both**
+  edges, in a two-layer `Stack`:
+  ```
+  Stack({ alignContent: Alignment.TopStart }) {
+    Column().width('100%').height('100%').backgroundColor(page_bg)
+      .hitTestBehavior(HitTestMode.None)
+      .expandSafeArea([SYSTEM], [TOP, BOTTOM])   // backdrop: expands
+    Column() { /* header + content */ }           // content: never expands
+  }
+  ```
+  Expanding the page's *content* `Column` instead drags the header under the
+  status bar. Expanding only `BOTTOM` (the first attempt here) leaves the top band
+  on the window background — which **looks fixed in light mode** because the
+  window background is near-white and `page_bg` is `#F5F6F8`; it only became
+  obvious in dark mode, where the band measured `(0,0,0)` against a `(16,16,18)`
+  page. Always verify this in **dark mode**, by pixel-sampling the top band, not
+  by eye on a light build.
+- **A `NavDestination` page owes a compact header, not a status-bar inset.**
+  Because the content root already begins below the status bar, `NavDestination`
+  content needs **no** top inset of its own. `EditorPage` used
+  `height(96)` + `padding({ top: 40 })` on the reasoning that it had to clear the
+  status bar; the result was 40 vp of dead space and a header that read as
+  "下沉过多" (button measured at `[24,255]` instead of the bar's top). The header
+  is now a plain **56 vp** row with no top padding — back button at `[24,135]`,
+  flush with the content top. `TrashPage` had the same bug via
+  `padding({ top: 48 })`. Neither page may add a status-bar inset while manual
+  fullscreen stays off.
+- **`HdsNavigation` is the router.** Use `HdsNavigation(this.pathStack)` with
+  `.navDestination(this.pageMap)`; do **not** wrap it in an outer `Navigation`.
+  Nesting produced two title bars and made the shell overflow its parent
+  (measured `Column` ending at 2148 px inside a 2232 px window).
+- **The page must reserve the title-bar band itself.** HDS draws `NavBarContent`
+  at the *same origin* as the title bar, so content flows under it. Every tab
+  root carries `padding({ top: TITLE_BAR_CLEARANCE })` — measured **96 vp** in
+  MINI mode with `.hideBackButton(true)`. Put that clearance in `padding`, **not**
+  in a `Blank()` child: `Blank` expands to consume free space and silently
+  ignores `height()`, which cleared only 69 vp and let the header overlap the bar.
+  Note the origin: with `ignoreLayoutSafeArea` the padding resolves from
+  **window y = 0**, not from the content top, so the value is the bar's absolute
+  bottom edge in vp (285 px / 3), not a delta.
+- **Use `HdsNavigationTitleMode.MINI`, not `FULL`, and build the whole title row
+  in `stackBuilder`.** FULL reserves a separate large-title band *below* the
+  `stackBuilder` row (measured: bar 117…453 px, rows at 117…285 and the title at
+  316…421), so the page title and the action buttons land on two different lines —
+  not the reference layout. MINI keeps the bar to one 56 vp row, and leaving
+  `content.title` unset leaves that row entirely to `stackBuilder`. MINI also
+  injects its own back button at the leading edge (measured x 48…168, exactly
+  where the title starts), so `.hideBackButton(true)` is required on the root.
+- **`stackBuilder` centres its child.** A `Row` there is content-sized and lands
+  in the middle of the bar (measured x 504…816 of 1320). Claim `.width('100%')`
+  and drive the layout from the Row's own children (a `layoutWeight(1)` title
+  plus trailing buttons) rather than `justifyContent`.
+- **The built-in `menu` icon slot is unusable on this device image**: it renders
+  every icon (ResourceStr, `SymbolGlyphModifier`, `Image`) at ~3 px inside a
+  9 vp-tall button, in FULL and MINI, with every `IconStyleMode` and with
+  `materialType` NONE. Use `stackBuilder` (the documented custom top area).
+- **Title-bar actions are glass, not accent.** Both circular buttons are a
+  three-layer stack: `backgroundEffect({radius: 24, saturation: 1.8})` for a real
+  backdrop blur, a `glass_hi` specular sheen on the upper half, and a 1 vp
+  `glass_border` rim. Glyph colour is neutral `sys.color.ohos_id_color_text_primary`.
+  A saturated accent disc at 44 vp reads as a solid chip and fights the
+  translucency.
+- **Use `backgroundEffect`, not `backgroundBlurStyle`, for hand-built glass.**
+  `backgroundBlurStyle(COMPONENT_THIN)` desaturates whatever is behind it, so the
+  surface reads as frosted plastic. `glassEffect()` centralises
+  `radius: 24 / saturation: 1.8 / brightness: 1.04 / color: glass_tint` so the
+  title buttons, search field and chip capsules share one glass signature instead
+  of each drifting to its own blur strength.
+- **Glass needs a specular layer, not just a tint.** A flat translucent fill looks
+  like a grey disc. Each glass surface wraps its content in a `Stack` whose first
+  child is a `Column` with a `linearGradient` from `glass_hi` to transparent
+  (stops 0.0 → ~0.6), plus `.clip(true)` on the parent. That upper-rim highlight
+  is what actually reads as glass.
+- **HDS surfaces get `lightColor: glass_hi`.**  `floatingBarStyle().lightColor` is
+  the tab bar's rim highlight, so the HDS bar and the hand-built glass buttons
+  look like one material family.
+- **Glass strength is a user setting (`glassLevel`), and its gears follow the
+  platform's vocabulary, not an invented scale.** The official model has two
+  independent axes and they must stay independent:
+  **算力等级** (`uiMaterial.MaterialLevel` = EXQUISITE/GENTLE/SMOOTH, i.e. 高/中/低)
+  is a property of the *device* — `uiMaterial` exposes it read-only via
+  `getGlobalMaterialLevel()` and the docs state it 不支持设置. **厚度**
+  (`uiMaterial.ImmersiveStyle` = ULTRA_THIN…ULTRA_THICK) is the knob a designer
+  exposes. `hdsMaterial.MaterialLevel` can force a compute level, but the docs
+  warn that pinning EXQUISITE/GENTLE on a low-power device 可能造成卡顿和发热 and
+  explicitly recommend `ADAPTIVE`.
+  So `glassLevel` encodes a *policy*: `GEAR_ADAPTIVE` (0, the default, defers to
+  the device) / `GEAR_HIGH` (1) / `GEAR_MEDIUM` (2) / `GEAR_LOW` (3). Those are
+  contiguous indices, deliberately **not** the `hdsMaterial.MaterialLevel` values
+  (ADAPTIVE is 10 there, which would leave a gap); `materialLevel()` translates.
+  Five tables read the gear and must stay aligned: `materialLevel()`
+  (ADAPTIVE/EXQUISITE/GENTLE/SMOOTH), `glassEffect()` (`radius` 24/32/24/16,
+  `saturation` 1.8/2.1/1.8/1.4, `brightness` 1.04/1.06/1.04/1.02),
+  `glassSheenStop()` (0.62/0.74/0.62/0.4) and `glassRimWidth()` (1/1.5/1/0.5).
+  Gear 3 is still visibly glassy on purpose — a "low" that is a flat fill makes
+  the setting pointless. Changing gear repaints in place; do not rebuild Crepe or
+  remount the shell for it.
+- **`deviceTier` is read-only and only ever displayed.** `aboutToAppear` probes
+  `uiMaterial.isImmersiveMaterialSupported()` then `getGlobalMaterialLevel()` and
+  the settings row renders `本机高算力 · 自适应优先`, so the 自适应 gear is
+  verifiable rather than a black box. Do not use it to drive layout.
+- **Immersive material (`systemMaterial`) has a hard scope limit.** Per
+  `@ohos.arkui.uiMaterial`: it only takes effect inside a `Navigation` /
+  `NavDestination` title bar, a `barPosition(End)` horizontal bottom tab bar, or
+  the listed dialog/Slider/Toggle/Select cases — "在其他区域中设置沉浸光感效果不
+  生效". **Verified on device**: a chip capsule in the page content with
+  `.backgroundColor(Color.Red).systemMaterial(...)` kept the red fill, proving the
+  material never applied. So the filter/sort capsules can never use it; that is
+  why the whole hand-built surface family shares `glassEffect()` instead.
+  `titleBar.content.bottomBuilder` exists (`BottomBuilderParams` with `height` /
+  `showType`) and *would* move the chips into scope, but it grows the title bar and
+  invalidates `TITLE_BAR_CLEARANCE`, so it is not worth it for two chips.
+- **The two title-bar circles and the search field use the real material.**
+  They live in `stackBuilder`, which is in scope. `CircleAction` /
+  `SearchField` call `.systemMaterial(this.immersiveMaterial())` and fall back to
+  the hand-built stack when `immersiveSupported` is false. Consequences:
+  `backgroundColor` must be `Color.Transparent` (the platform resets it to
+  transparent on high/medium tiers anyway, and on low tiers paints with
+  `materialColor`), **never** set `border` (`borderWidth` is reset to none), and
+  the circle comes from `clipShape(CircleShape)` rather than `borderRadius`.
+  `applyShadow` defaults true and overrides the `shadow` attribute.
+  `immersiveMaterial()` maps the gear to `ImmersiveStyle`
+  (自适应 → REGULAR, 高 → ULTRA_THICK, 中 → REGULAR, 低 → THIN) and sets
+  `interactive: true` for the press deformation. Note `ImmersiveStyle` has no
+  effect on low-tier devices.
+- **One backdrop for the whole shell, not one per tab.** `build()` is a `Stack`
+  of `PageBackdrop()` + `Navigation`, and `HdsShell`/`PlainShell` contain no
+  backdrop of their own. Per-tab backdrops each computed their own gradient and
+  glow offsets, so a horizontal tab swipe slid two gradients past each other and
+  their edges met mid-screen — the seam users reported. Hoisting it also means the
+  title bar and the floating capsule sit over one continuous surface, which is
+  what makes the material sampling coherent. Do not reintroduce `PageBackdrop()`
+  inside a `TabContent`.
+- **`SegmentButton` takes a `kind` (`SEG_THEME` / `SEG_BACKGROUND` / `SEG_GLASS`)**,
+  not a boolean. Three independent segmented rows on the settings page would
+  otherwise need three flags plus a precedence rule. Both `SegmentButton` and
+  `segmentSelected()` switch on it, so a new row must add a constant to both.
+- **A tag is a query, not a private filter.** Tapping a tag on 标签 calls
+  `filterByTag(tag)`, which sets `query` **and** `searchExpanded` and switches to
+  the notes tab, so the constraint is visible in the search field and clearable
+  with ×. Routing it through the same search state is deliberate: a separate
+  `tagFilter` field left the grid silently filtered while the page looked
+  identical to the unfiltered list. `filterByTag` does **not** focus the field —
+  focusing pops the keyboard over the results the user came to read. Note it
+  cannot reuse `switchTab()`: that helper force-collapses `searchExpanded`.
+- **Search expands in place; there is no always-visible search field.** The title
+  row swaps `Text(tabTitle)` + magnifier for a rounded `SearchField()` when
+  `searchExpanded` is set, and collapses back with the query cleared. A second
+  persistent search box under the title duplicated the same affordance and cost a
+  full row.
+- **Pin the title colour.** If `content.title` is ever used again, HDS defaults it
+  to white, which is invisible in light mode. The field is three levels deep —
+  `TitleBarStyleOptions.originalStyle` / `.scrollEffectStyle` → `contentStyle` →
+  `titleStyle.mainTitleColor` — and both the resting and the scrolled style need it.
+- **`ScrollEffectType.GRADIENT_BLUR` does not exist** in the local SDK. The enum
+  is `COMMON_BLUR = 0` / `GRADUAL_BLUR = 1`; the immersive variant used here is
+  `IMMERSIVE_GRADIENT_BLUR`.
+- **A `WaterFlow` `FlowItem` cannot span columns.** A full-width header placed
+  inside a two-column flow gets exactly one column's width and shears against
+  the grid. The header is a full-bleed block *above* the `WaterFlow` instead.
+- **`WaterFlow` measures a `FlowItem`'s child against the whole flow**, not
+  against the column slot: a card whose content is wider than one column (long
+  title + wrapping tag `Flex`) expanded to the full grid width and overlapped its
+  neighbour. Give each cell an explicit width — `Index.columnWidth()` derives it
+  from the real display width, density and `SIDE_INSET`.
+- **Each tab gets its own `Scroller`** through `HdsTabsController.bindScroller(i,
+  scroller)`; that is what preserves independent scroll positions across tab
+  switches and what `bindToScrollable([scroller])` links to the title bar.
+- The floating bar is HDS-owned: `.barPosition(BarPosition.End)`, `.vertical(false)`,
+  `.barOverlap(true)`, plus `barFloatingStyle({ barWidth, barBottomMargin: 28,
+  gradientMask, systemMaterialEffect })`. `HdsTabsFloatingStyle` exposes no
+  visibility field, so the bar cannot be collapsed by hand — do not reintroduce
+  the old hand-drawn `FloatingBar()`; `translate`/`opacity` on a custom pill is
+  what used to fake it.
+- **Tab selection follows the user's accent setting**, not the fixed
+  `sys.color.ohos_id_color_activated` (explicit user decision). Unselected uses
+  `sys.color.ohos_id_color_bottom_tab_icon_off`.
+- Material degrades by *level*, not by presence. `materialType()` /
+  `materialLevel()` are the single source of truth. IMMERSIVE is always requested
+  when the device reports it; the *level* follows the user's `glassLevel` gear,
+  translated to the platform enum — `GEAR_ADAPTIVE` → `ADAPTIVE` (the default and
+  the officially recommended value), `GEAR_HIGH` → `EXQUISITE`, `GEAR_MEDIUM` →
+  `GENTLE`, `GEAR_LOW` → `SMOOTH`. `aboutToAppear` probes
+  `hdsMaterial.getSystemMaterialTypes()` once and, if it does not contain
+  `MaterialType.IMMERSIVE`, the pair falls back to ADAPTIVE/SMOOTH. On the emulator
+  it returns `[101]`, i.e. IMMERSIVE is present, and
+  `uiMaterial.getGlobalMaterialLevel()` reports the high tier (0). Do not call
+  either probe per-widget — probe once, read the fields.
+- **Card surfaces use `sys.color.ohos_id_color_card_bg` with `borderRadius` 26**,
+  not `glass_bg`. Press/hover feedback comes from `.clickEffect()` /
+  `.hoverEffect(HoverEffect.Auto)`: this toolchain rejects both the inline object
+  literal and `@Styles` function references as `StateStyles` values, so
+  `.stateStyles()` is not usable here.
+- **The filter and sort groups share one row.** Two capsules side by side
+  (`ChipGroup(0)` = 全部/置顶/收藏, `ChipGroup(10)` = 最近修改/按标题/按创建),
+  each `layoutWeight(1)`, capsule 34 vp / radius 17, chip 28 vp / radius 14,
+  label 12 fp. Two stacked rows wasted a whole band and pushed the grid down.
+- **All floating surfaces share one inset.** The title row, the chip row and the
+  bar are full width minus `SIDE_INSET` (16 vp). Never combine `width('100%')`
+  with horizontal `margin`: width wins and the node stays full-bleed (the filter
+  row measured 0…1320 while the search field measured 49…1271). Put the inset on
+  a wrapper's `padding`. Same for a `position()`ed node: `position` takes it out
+  of flow, so `margin` does not inset it.
+- **Float clearance lives inside the scrollable, not in padding.**
+  `contentEndOffset(130)` on the grid gives the capsule its room; a bottom
+  `padding` would instead clip the content early and hide that it continues under
+  the bar.
+- The window no longer uses manual fullscreen; `common/WindowService.ets` owns
+  status/navigation bar content colours and light/dark icon state. Call
+  `WindowService.applySystemBars(isDark)` after applying a stored/manual theme,
+  **and again from `Index.aboutToAppear`** — the stored light/dark choice is
+  otherwise lost, because the window's system bars are re-initialised when the
+  stage loads content. `services/SettingsStore.ets` persists `themeMode` (`0`
+  follow system, `1` light, `2` dark), `backgroundStyle` (`0` solid, `1`
+  gradient, `2` gradient + glow), `accentMode` (`0` blue, `1` teal, `2` amber),
+  `editorFontSize` (14–22 px) and `editorLineHeight` (140–220, i.e. 1.40–2.20×),
+  plus `glassLevel` (see the immersion section).
+  `Index.PageBackdrop` is drawn **once** behind the whole shell, not per tab, so
+  the background does not jump when switching tabs and the swipe has no seam.
+- **Accent colours cannot come from `$r('app.color.accent')`.** ArkUI resolves
+  resources at build time, so a runtime-selectable accent has to be passed as a
+  hex string. `common/Palette.ets` (`AccentScheme`) owns the light/dark pair for
+  every accent-dependent colour; components that need it take
+  `@Param accentColor: string` (and `accentChipColor` where a tint is needed)
+  from `Index.accentColor()`. Do not hardcode `#0A59F7` in a component.
+- The editor follows the accent + typography settings through CSS variables set
+  by `EditorPage` in `onPageEnd` (`__setTheme`, `__setTypography`,
+  `__setAccent`). Never rebuild Crepe to change font size — a variable write
+  repaints in place.
+- **There is no FAB.** The new-note action lives only in the title bar (per the
+  Cube redesign). If a floating action ever comes back, place it with
+  `Alignment.BottomEnd` + `margin`, never with `position({x: <pixels>})`:
+  `position` takes vp and the old `position({x: 1180, y: 1900})` put it entirely
+  off a 440 vp-wide screen, so it silently never appeared.
+
+Rules:
+
+- **Dependency direction**: `pages → components/viewmodels → services → models`.
+  `models` must not import UI or services. `services` must not import pages.
+- **One page = one responsibility.** Page `build()` composes components; data
+  loading goes in `aboutToAppear` or a view model method.
+- **Shared code**: if a second HAP/HSP needs the same code, extract a HAR
+  (`har` module) rather than copying. Use an HSP only for shared runtime UI or
+  large resources. Do not split modules prematurely.
+- **Routing**: register pages in `main_pages.json`; use `Navigation` for new
+  flows and `NavPathStack` for parameters/back behavior.
+- **Naming**: `PascalCase.ets` for components/classes; `camelCase` for
+  functions/variables; resource names `snake_case`.
+- **UI vocabulary is fixed — use `docs/ui-glossary.md`.** When discussing a UI
+  element (in a request, a commit message, or a code comment) use the glossary's
+  normative Chinese term, not a paraphrase. The load-bearing distinctions:
+  「标签」= tag vs 「页签」= tab; the bottom bar is 「页签栏」 (HDS `TabBar`, styled by
+  `Index.floatingBarStyle()`), never 「标签栏」or 「tab 栏」; the chips under the search
+  field are 「筛选条」/「筛选项」 (all/pinned/favorite) and 「排序条」/「排序项」
+  (updated/title/created), never 「切换栏目」; a grid item is 「笔记卡片」 but a list item
+  is 「行」; a bare 「标题」 is never acceptable — say 页面标题 (the HDS 大标题) / 卡片标题 /
+  编辑器标题. Locate code as `file › @Builder name` (e.g. `Index.ets › TitleActions()`).
+- **Logging**: use `hilog` with `DOMAIN = 0x0000` and `TAG = 'HMStart'` (or a
+  feature tag). Never log secrets or full user data.
+
+## 7. ArkTS / ArkUI rules
+
+### State (V2)
+
+```ts
+@ObservedV2
+export class CounterModel {
+  @Trace count: number = 0;
+  increment(): void { this.count++; }
+}
+
+@ComponentV2
+export struct CounterCard {
+  @Param model: CounterModel = new CounterModel();
+  @Event onChanged: () => void = () => {};
+  build() {
+    Column() {
+      Text(`${this.model.count}`)
+      Button('+1').onClick(() => { this.model.increment(); this.onChanged(); })
+    }
+  }
+}
+```
+
+- `@Local` for component-owned state; `@Param` for inputs; `@Event` for outputs.
+- `@ObservedV2` + `@Trace` for shared observable objects. Mutate `@Trace`
+  fields; reassign arrays/maps to trigger updates.
+- Use `@Provider`/`@Consumer` for deep trees; avoid prop drilling.
+- `PersistenceV2.connect(Type, () => new Type())` for small persistent UI state;
+  `preferences` for settings; RDB for relational data.
+
+### UI
+
+- Use `Navigation` with `NavDestination` and `NavPathStack`. Pass typed params;
+  read them in `onReady`/view model, not from global mutable state.
+- Use `GridRow`/`GridCol` or `breakpoints` for responsive layouts; test at
+  phone width and a wide window. Do not hardcode pixel widths for content.
+- Use `LazyForEach` with a stable key for long lists; set `cachedCount`.
+- Use `@Reusable` for repeated list items with expensive subtrees.
+- Use `$r('app.color.*')`/`$r('app.string.*')`; add `resources/dark/` variants.
+- Respect safe areas (`expandSafeArea` / `SafeAreaPadding`) and avoid content
+  under the status bar/navigation bar.
+- Add `.accessibilityText()`/`.accessibilityDescription()` for icon-only
+  controls; ensure tap targets ≥ 48vp.
+- Use `promptAction.showToast` for transient feedback; `AlertDialog` for
+  destructive confirmations.
+
+### Concurrency / performance
+
+- No heavy parsing, IO, or crypto in `build()` or `aboutToAppear` on the UI
+  thread; use `taskpool` (`@Concurrent` functions only reference imports/locals)
+  or `worker`.
+- Avoid `Date.now()` for timestamps in persisted data; use
+  `systemDateTime.getTime()`.
+- Profile before optimizing; use `hilog`/ArkUI Inspector rather than guesswork.
+- Do not create new objects in hot `build()` paths; memoize in view models.
+
+### Data / security
+
+- `preferences`: small key-value settings, flush after writes.
+- RDB (`@kit.ArkData`): relational data, parameterized SQL, migrations.
+- Asset Store Kit: tokens/passwords/API keys; never in `preferences` or source.
+- Network: `@kit.NetworkKit` HTTP; declare `ohos.permission.INTERNET`; handle
+  timeouts, non-2xx, and cancellation; never log Authorization headers.
+- Files: use the app sandbox (`context.filesDir`, `cacheDir`); request file
+  access through pickers rather than broad storage permissions.
+
+### Error handling
+
+- Type caught errors as `BusinessError` (`@kit.BasicServicesKit`) and check
+  `code`. Do not swallow errors silently; log with context and surface a user
+  message.
+- Async UI updates: guard against updating after page disappearance.
+
+## 8. Signing and emulator
+
+Preferred (official, requires a Huawei developer account):
+
+```powershell
+devecocli auth login --no-prompt   # user completes browser auth
+devecocli signature generate --product default
+devecocli build
+devecocli run
+```
+
+This writes `signingConfigs` into `build-profile.json5` and materials under
+`~/.ohos/config/`. Do not commit those materials.
+
+Offline/local fallback (no Huawei account, emulator only):
+
+- `signing/` contains the OpenHarmony **local debug** cert chain and a
+  bundle-specific debug profile (`hmstart-debug.p7b`) generated with
+  `hap-sign-tool.jar`. See `signing/README.md`.
+- Use `scripts\run.ps1` (or `scripts\sign-and-install.ps1`) to build unsigned,
+  sign with the local chain, install, and launch. This chain is for the
+  emulator only; never ship it.
+- If `devecocli run` reports `install sign info inconsistent`, uninstall the
+  app first (`scripts\run.ps1 -Uninstall`) or regenerate the local profile.
+- `build-profile.json5` intentionally keeps `signingConfigs: []` because
+  hvigor’s DevEco-style signing config expects encrypted passwords. Do not add
+  plaintext passwords there; use the script fallback or official signing.
+
+Emulator:
+
+```powershell
+. .\scripts\env.ps1            # sets OHOS_HDC_SERVER_PORT=18710
+devecocli emulator list
+devecocli emulator start puraxview --hdcport 15000
+devecocli device list
+scripts\run.ps1                # local signing fallback if no signingConfigs
+```
+
+If `hdc list targets` is empty or hangs while the emulator is running:
+
+1. **Check the port conflict first.** WSL2 mirrored networking exposes
+   `sshd-sess` on `8710`; the default hdc server cannot bind there. Run
+   `Get-NetTCPConnection -LocalPort 8710 -State Listen` and
+   `wsl ss -ltnp | grep 8710`. If `wslrelay`/`sshd-sess` owns it, set
+   `OHOS_HDC_SERVER_PORT=18710` (already in `scripts/env.ps1` and MCP wrappers)
+   and use that port consistently.
+2. Kill stale hdc clients: `Get-Process hdc | Stop-Process -Force`.
+3. Start the server on the alternate port: `hdc -s 127.0.0.1:18710 start`.
+4. Re-add the emulator: `hdc -s 127.0.0.1:18710 tconn 127.0.0.1:15000`.
+5. Verify: `hdc list targets -v` and `devecocli device list`.
+
+The emulator accepts hdc ports **10000–16555**; `5555` is rejected by the
+current Emulator 7.0. Use `15000`. The hdc *server* port and the emulator
+bridge port are different: server `18710`, device target `127.0.0.1:15000`.
+
+## 9. Verification checklist
+
+Before reporting success:
+
+- [ ] `devecocli check arkts` on changed files: no errors.
+- [ ] `devecocli build`: BUILD SUCCESSFUL; artifact path captured.
+- [ ] App installed and launched; `app_state` shows the app in foreground.
+- [ ] Screenshot reviewed (no blank screen, no clipped text, dark mode sane).
+- [ ] `ui layout` contains the expected text/ids; interactions tested.
+- [ ] Error logs empty or explained; crash logs checked if the app restarted.
+- [ ] Resources: no hardcoded user-facing strings/colors; dark variant added.
+- [ ] Permissions: minimal, with `reason`/`usedScene`; runtime request handled.
+- [ ] No secrets or signing material in the diff.
+
+## 10. Documentation sources
+
+Priority order:
+
+1. Local SDK declarations:
+   `D:\deveco\command-line-tools\sdk\default\openharmony\ets\api\*.d.ts`,
+   `...\ets\component\*.d.ts`, `...\ets\kits\*.d.ts`.
+2. `devecocli docs search/read` (bundled official docs; works offline).
+3. MCP `harmonyos-knowledge` (`searchDocuments` → `getDocumentsById`) for the
+   latest official docs (sync delay ≤ 30 min; `getDocumentsById` max 10 docs).
+4. Official site: `https://developer.huawei.com/consumer/cn/doc/`.
+5. Project-specific decisions in `docs/` and this file.
+
+When docs conflict, prefer the local SDK for compile-time truth and the
+knowledge MCP for guidance. Record any version-specific decision in the PR or
+commit message.
+
+## 11. Anti-patterns / common failures
+
+- **V1 MCP config**: OpenCode V2 requires `mcp.servers`, `disabled` (not
+  `enabled`). The DevEco CLI `init --mcp` still writes the V1 shape; keep the
+  wrapper/config in this repo as the source of truth.
+- **LSP in OpenCode V2**: `lsp: true` exists but V2.0.32 has no functional LSP
+  runtime; do not rely on `devecocli serve lsp`. Use `devecocli check arkts`.
+- **DevEco CodeGenie MCP**: `@deveco-codegenie/mcp` requires a DevEco Studio
+  installation; it fails on a CLT-only machine. Use `harmonyos` MCP + the
+  `devecocli` CLI.
+- **ArkTS object literal**: `let x = { a: 1 }` fails if the target type is not
+  explicit. Declare `class`/`interface` and annotate.
+- **`@Prop` deep copy**: large objects in V1 `@Prop` are copied; use
+  `@ObjectLink`/V2 `@Param` with an `@ObservedV2` model.
+- **Page not registered**: a new page must be added to `main_pages.json` or
+  routing silently fails.
+- **Resource missing**: `$r('app.string.foo')` fails at build time if the key is
+  absent from `base` and the active qualifier.
+- **Emulator hdc**: wrong port range, stale hdc server, or WSL2 owning the
+  default `8710`; set `OHOS_HDC_SERVER_PORT=18710`, use device target
+  `127.0.0.1:15000`, and check `Emulator.log`.
+- **Signing**: a HAP signed with a different key cannot replace an installed
+  app; uninstall or sign consistently.
+- **`setWindowLayoutFullScreen(true)` + HDS**: manual fullscreen collapses the
+  HDS title bar's custom node to 17 vp and its buttons to 9 vp. Use
+  `.ignoreLayoutSafeArea` on the HDS container instead, and clear the title-bar
+  band with `padding`, never `Blank()`.
+- **`expandSafeArea` on the wrong node**: the status bar / gesture bar keep
+  showing the window background unless the node that *paints* the background
+  expands. Expanding the wrapper `Stack` leaves the gradient child at its
+  unexpanded size, so nothing changes; expanding the shell/root `Stack` drags
+  `Navigation` with it and breaks `TITLE_BAR_CLEARANCE`. Put
+  `.expandSafeArea([SYSTEM], [TOP, BOTTOM])` on the decorative background layer
+  (and on a `NavDestination`'s own coloured `Column`), never on a layout container.
+- **Double status-bar inset in `NavDestination`**: the content root already starts
+  at the status-bar bottom, so adding `padding({ top: 40 })` (as `EditorPage` did
+  with `height(96)`) only pushes the header down — the "header 下沉" defect.
+  `TrashPage` had the same bug with `top: 48`. A page header is a plain 56 vp row.
+- **Half-immersed `NavDestination`**: a page that sets `backgroundColor(page_bg)`
+  but expands only `SafeAreaEdge.BOTTOM` still shows the window background in the
+  status-bar band. In light mode this is nearly invisible (`#F5F6F8` vs a
+  near-white window), so it ships unnoticed and only shows up in dark mode as a
+  black band above the page. Use the two-layer backdrop-plus-content `Stack` and
+  check dark mode by sampling `(20, y)` for small `y`.
+- **Discarding an untouched 新建笔记 by byte comparison**: Crepe normalises the
+  document, so `'# 无标题\n\n'` comes back as `'# 无标题\n'` and every fresh note
+  looks edited — the 5 s mis-tap discard then never fires, silently. Test
+  emptiness semantically (`isBlankBody()`), and require *both* the window and
+  "never edited" so a real note is never purged. Use `purgeNote()`, not
+  `deleteNote()` — a mis-tap belongs in neither the list nor 回收站.
+- **`HdsTabs` requires API ≥ 23**: guard with `deviceInfo.sdkApiVersion` and keep
+  a non-HDS `PlainShell()` fallback; never call HDS APIs unguarded.
+- **`stateStyles({...})`**: rejected by this toolchain in both forms (inline
+  attribute object literal and `@Styles` function reference). Use
+  `.clickEffect()` / `.hoverEffect()` for press feedback.
+- **`WaterFlow` width**: a `FlowItem`'s child is measured against the whole flow,
+  so percentage widths bleed into the neighbouring column. Give cells an explicit
+  computed width, and never put a full-width header inside a multi-column flow.

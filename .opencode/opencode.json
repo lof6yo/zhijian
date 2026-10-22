@@ -1,0 +1,130 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "harmonyos",
+  "instructions": [
+    ".opencode/instructions/harmonyos.md"
+  ],
+  "permissions": [
+    {
+      "action": "*",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "read",
+      "resource": "**/*.p12",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "**/*.jks",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "**/*.p7b",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "**/.ohos/**",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "**/*.p12",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "**/*.jks",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "**/*.p7b",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "**/.ohos/**",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git push *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "devecocli auth login *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "devecocli signature generate *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "npm publish *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rm *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "del *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "format *",
+      "effect": "deny"
+    }
+  ],
+  "mcp": {
+    "timeout": {
+      "startup": 60000,
+      "catalog": 60000,
+      "execution": 900000
+    },
+    "servers": {
+      "deveco": {
+        "type": "local",
+        "command": ["cmd", "/c", "scripts\\mcp-deveco.cmd"],
+        "cwd": ".",
+        "disabled": true,
+        "timeout": {
+          "startup": 60000,
+          "catalog": 60000
+        },
+        "codemode": false
+      },
+      "harmonyos": {
+        "type": "local",
+        "command": ["cmd", "/c", "scripts\\mcp-harmonyos.cmd"],
+        "cwd": ".",
+        "timeout": {
+          "startup": 60000,
+          "catalog": 60000,
+          "execution": 900000
+        },
+        "codemode": false
+      },
+      "harmonyos-knowledge": {
+        "type": "remote",
+        "url": "https://connect-api.cloud.huawei.com/api/developerknowledge/mcp",
+        "oauth": false,
+        "timeout": {
+          "startup": 30000,
+          "catalog": 30000,
+          "execution": 120000
+        }
+      }
+    }
+  }
+}
