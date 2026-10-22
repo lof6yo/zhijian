@@ -211,17 +211,101 @@ Current single-HAP layout:
 ```text
 entry/src/main/ets/
 ├── entryability/        # UIAbility lifecycle only
-├── pages/               # Index (HDS shell: 3 tabs, title bar actions), EditorPage (NavDestination)
+├── pages/               # Index (HDS shell: 3 tabs, title bar actions),
+│                        # EditorPage / TrashPage / WebDavPage (NavDestination)
 ├── components/          # NoteCard
 ├── models/              # Note (V2 @ObservedV2/@Trace)
-├── services/            # NoteStore (files), Frontmatter (YAML)
-└── common/              # (reserved)
+├── services/            # NoteStore (files), Frontmatter (YAML),
+│                        # WebDav (RCP client), SyncEngine (three-way merge),
+│                        # Credentials (Asset Store), SettingsStore (prefs)
+└── common/              # WindowService, Palette
 
 entry/src/main/resources/rawfile/editor/
 └── index.html           # Vite single-file build of editor-web/ (do not hand-edit)
 
 editor-web/              # Milkdown/Crepe + Vite source for the WYSIWYG editor
 ```
+
+### WebDAV sync
+
+Sync is **native WebDAV over RCP**, not a third-party SDK, and the design
+decisions below are all load-bearing — each one was chosen after an alternative
+failed on the device.
+
+- **Transport is `@kit.RemoteCommunicationKit` (RCP), not `@ohos.net.http`.**
+  `http.RequestMethod` is a closed enum with no `PROPFIND`/`MKCOL`/`MOVE`, so
+  WebDAV cannot be expressed with it at all. `rcp.HttpMethod` accepts arbitrary
+  verbs, and `security.serverAuthentication` does RFC 7617 basic auth natively.
+- **`dns` and `proxy` live on `requestConfiguration` (`rcp.Configuration`), not
+  on `SessionConfiguration`.** A `StaticDnsRule` is keyed on host **and port**, so
+  the port must come from the URL, not a hardcoded 443. `WebProxy.createTunnel`
+  must be `'always'` for HTTPS — anything less sends an absolute-URI GET to the
+  proxy and TLS never happens.
+- **A request is retried on a 5xx or a transport throw (3 attempts).** Behind a
+  CONNECT proxy the tunnel intermittently dies during setup and RCP reports
+  `500 Connection established` — the proxy's tunnel status, not the origin's
+  answer. `curl` against the same URL succeeds on every attempt. Every verb used
+  here is idempotent for the same body, so a retry is safe.
+- **Sync identity is the frontmatter `id`, never the filename.** Every device
+  names an untouched note 无标题, so pairing by name would merge unrelated notes.
+- **Three-way merge against a persisted baseline, not timestamp guessing.**
+  `settings.syncBase` holds one line per note (`id \t updatedAt \t relPath`;
+  flat text because ArkTS forbids index signatures). Per id: only-local-changed
+  → upload; only-remote-changed → apply; both changed → conflict copy
+  `<title> (冲突 HHmm).md` with a freshly minted id, so **both** bodies survive.
+- **The baseline records what the server is *confirmed* to hold.** Only an
+  operation that actually reached the server may write a row. A failed PUT
+  records nothing, so the next run still sees "local changed, remote unchanged"
+  and retries. Writing an unconfirmed row is the data-loss bug: the baseline then
+  claims the server already has the new body, the next run reads the old remote
+  file, calls it "the remote changed", and overwrites the newer local note.
+  Verified the hard way on the emulator — it did exactly that.
+- **A failed remote read aborts the whole run.** A partial listing cannot drive
+  a merge: an id that failed to load is *absent* from the index, so the merge
+  concludes "never uploaded" or "deleted remotely" and destroys data.
+- **`updatedAt` is monotonic: a remote copy older than the local one never
+  wins.** A stale sibling, a restore, or a rename leftover all present as "remote
+  changed" with an older timestamp. Local is then re-uploaded instead.
+- **One id must own exactly one remote path.** A note renamed in the editor
+  after upload otherwise leaves its old file behind, and the id then names two
+  bodies that flip on every sync. Any id this run pushed is authoritative: every
+  *other* remote file carrying that id is deleted, re-listed after the run
+  because the new path was never in the pre-run listing. Cleanup only fires when
+  the local filename provably exists remotely — a merely-downloaded note keeps
+  the server's filename locally, and deleting "everything but the local name"
+  would remove the file it was just read from.
+- **Remote paths and local paths are different dialects.** `WebDavClient` reports
+  paths relative to the base URL (`zhijian/a.md`); `Note.relPath` is a bare
+  filename (`a.md`). `SyncEngine.localRel()` normalises at parse time and
+  prefixes are re-added only when a request is built. Comparing the two directly
+  made every note look renamed on every run, so the vault was re-uploaded in full
+  each sync.
+- **XML is parsed by splitting on `<...response` boundaries with
+  prefix-tolerant regexes.** `convertxml` returns untyped `object` (banned), and
+  `XmlPullParser`'s `tagValueCallbackFunction` only fires for elements that have
+  text, so `<D:collection/>` would be invisible.
+- **`NoteStore.importFromSync()` / `overwriteFromSync()` exist instead of reusing
+  `saveNote()`.** `saveNote()` renames the file to match the H1, so every pull
+  would immediately re-upload under a new name.
+- **The conflict mark lives in the body's H1, not just the filename.** The list
+  renders `note.title`, and `reload()` re-derives it from the H1 — stamping only
+  the filename left two cards reading the same title with no way to tell which
+  one sync produced.
+- **Deletions are not propagated.** A note missing remotely is treated as "never
+  uploaded" and re-uploaded; nothing is destroyed. There are no tombstones.
+- **Remote folder is a dedicated `zhijian/`**, auto-created with `MKCOL` (405 =
+  already there), so the user's existing `Obsidian/` is untouched.
+- **The password lives in Asset Store Kit** (`@kit.AssetStoreKit`, alias
+  `zhijian.webdav`). URL / username / DNS pin / proxy are preferences. The field
+  is never prefilled: a stored password shows as 「已保存，留空则不修改」 and a
+  blank submit means "keep the existing one". Never put a password in source, in
+  preferences, or in a commit.
+- **`DavConfig.dnsHost`/`dnsIp` and `DavConfig.proxyUrl` are product features,
+  not test scaffolding.** The emulator has no working DNS (its `resolv.conf`
+  points at unreachable servers and `hdc` cannot fix it: `target mount` needs
+  debug mode, `shell` is uid 2000) and no direct egress (the host reaches the
+  server only through a corporate CONNECT proxy). Real devices behind split DNS
+  or a corporate proxy need the same two escape hatches.
 
 The editor is **ArkWeb + Milkdown/Crepe**; the native shell owns file storage,
 navigation, search, tags and settings. All notes are flat in `notes/`. Markdown text is the source of
@@ -800,4 +884,36 @@ commit message.
   notes dir is uid 20020064 with `-rw-rw----`, so `ls`/`rm`/`cat` work but
   `echo >`, `cp`, and `file send` return `Permission denied`. `/data/local/tmp`
   is writable. To change note content, drive the UI or reinstall — do not assume
-  you can patch the `.md` files directly.
+  you can patch the `.md` files directly. (`rm` on a file inside `notes/` does
+  work because the directory itself is `drwxrwxrwx`; that is the only escape
+  hatch, and it edits the collection out from under the app's index.)
+- **WebDAV: do not rebuild the baseline from local state.** See §6 *WebDAV sync*.
+  Writing `note.updatedAt` for every local note after a run — including notes
+  whose PUT failed — makes the next run read the stale remote file, classify it
+  as "the remote changed", and overwrite the newer local body. Reproduced on the
+  emulator with the user's own vault shape. Only server-confirmed operations may
+  advance the baseline, and a failed remote GET must abort the run outright.
+- **WebDAV: `zhijian/a.md` is not `a.md`.** `WebDavClient` speaks paths relative
+  to the base URL and `Note.relPath` is a bare filename. Any comparison across
+  the two without `SyncEngine.localRel()` makes every note look renamed, and the
+  whole vault is re-uploaded on each sync (observed: `upload=16` on every run,
+  forever, with `lc=false rc=false` for every note).
+- **WebDAV: one id, one remote path.** A rename leaves the old remote file
+  behind; the id then names two bodies and they flip on every sync — this is the
+  path that silently rolled a note back to an older body. Clean up every other
+  path for an id this run pushed, but only when the local filename provably
+  exists remotely, otherwise the cleanup deletes the file it just read from.
+- **WebDAV: a conflict copy needs the mark in its H1.** The note list renders
+  `note.title`, which `reload()` re-derives from the body's H1, so a filename-only
+  `(冲突 HHmm)` leaves two indistinguishable cards — and the first edit through
+  the editor renames the file back and erases the mark entirely.
+- **WebDAV: `500 Connection established` is the proxy's tunnel status.** Behind a
+  CONNECT proxy RCP can surface the failed CONNECT as a 500 with that reason
+  phrase; `curl` against the same URL succeeds every time. Retry (all verbs used
+  here are idempotent for the same body) instead of treating it as an origin
+  error.
+- **Do not verify a sync by deleting test notes through the grid.** A long-press
+  then delete re-flows the `WaterFlow`, so the second long-press in the same spot
+  hits a *different* card — it deleted a real 无标题 note during this work. Delete
+  test fixtures from the WebDAV side (`curl -X DELETE`) and leave the grid alone,
+  or re-read `ui_dump` bounds before every long-press.

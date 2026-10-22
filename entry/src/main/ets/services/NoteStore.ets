@@ -419,6 +419,53 @@ const hello = 'HarmonyOS';
     }
   }
 
+  /**
+   * Sync entry point: writes a note into the collection without applying the
+   * "filename follows the H1" rule.
+   *
+   * `saveNote()` renames the file to match the body's first heading, which is
+   * right for editing but wrong for sync — a downloaded note must land on the
+   * path the *remote* chose, or the next sync uploads it again under a new name
+   * and the vault grows a copy on every round trip.
+   */
+  importFromSync(note: Note): boolean {
+    if (this.root.length === 0) {
+      return false;
+    }
+    const relPath = this.uniquePath(note.title.length > 0 ? this.sanitize(note.title) : '无标题',
+      undefined);
+    note.relPath = relPath;
+    note.folder = '';
+    try {
+      this.writeNote(note);
+    } catch (e) {
+      hilog.error(0x0000, 'HMStartStore', 'import failed: %{public}s', JSON.stringify(e));
+      return false;
+    }
+    this.notes = [note, ...this.notes.filter((item: Note) => item.id !== note.id)];
+    this.tags = this.collectTags(this.notes);
+    return true;
+  }
+
+  /**
+   * Sync entry point: replaces a note's content in place, keeping its existing
+   * filename so the local list does not churn on every pull.
+   */
+  overwriteFromSync(note: Note): boolean {
+    if (this.root.length === 0 || note.relPath.length === 0) {
+      return false;
+    }
+    try {
+      this.writeNote(note);
+    } catch (e) {
+      hilog.error(0x0000, 'HMStartStore', 'overwrite failed: %{public}s', JSON.stringify(e));
+      return false;
+    }
+    this.notes = [...this.notes];
+    this.tags = this.collectTags(this.notes);
+    return true;
+  }
+
   private writeNote(note: Note): void {
     this.ensureDir(this.root);
     const content = FrontmatterCodec.build(note);
@@ -447,8 +494,7 @@ const hello = 'HarmonyOS';
     return result;
   }
 
-  private uniquePath(base: string, currentRelPath: string | undefined): string {
-    const safe = this.sanitize(base);
+  private uniquePath(base: string, currentRelPath: string | undefined): string {    const safe = this.sanitize(base);
     let candidate = `${safe}.md`;
     if (currentRelPath !== undefined && candidate === currentRelPath) {
       return candidate;

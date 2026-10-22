@@ -11,6 +11,13 @@ const KEY_ACCENT = 'accentMode';
 const KEY_FONT_SIZE = 'editorFontSize';
 const KEY_LINE_HEIGHT = 'editorLineHeight';
 const KEY_GLASS = 'glassLevel';
+const KEY_DAV_URL = 'davUrl';
+const KEY_DAV_USER = 'davUser';
+const KEY_DAV_HOST = 'davDnsHost';
+const KEY_DAV_IP = 'davDnsIp';
+const KEY_DAV_PROXY = 'davProxy';
+const KEY_SYNC_BASE = 'syncBase';
+const KEY_SYNC_AT = 'syncFinishedAt';
 
 export const FONT_SIZE_MIN = 14;
 export const FONT_SIZE_MAX = 22;
@@ -66,6 +73,30 @@ export class SettingsStore {
   editorLineHeight: number = 175;
   /** Immersive glass strength gear, 0 = restrained … 2 = deepest. */
   glassLevel: number = GLASS_LEVEL_DEFAULT;
+  /** WebDAV base URL, normalised with a trailing slash. Not a secret. */
+  davUrl: string = '';
+  /** WebDAV username. The password lives in Asset Store, never here. */
+  davUser: string = '';
+  /** Hostname that the static DNS rule applies to; empty = use system DNS. */
+  davDnsHost: string = '';
+  /** IP that `davDnsHost` resolves to, for networks without working DNS. */
+  davDnsIp: string = '';
+  /** Optional CONNECT proxy URL; empty follows the device setting. */
+  davProxy: string = '';
+  /**
+   * Last-sync baseline: one line per note, `id<TAB>updatedAt<TAB>relPath`.
+   *
+   * Three-way sync needs to know what the note looked like at the end of the
+   * previous run, not just "what is on disk now". Without this baseline, a note
+   * edited on both devices since the last sync is indistinguishable from one
+   * edited on only one, and the engine would have to guess by timestamp —
+   * silently destroying whichever edit happened first. A flat text blob keeps
+   * the shape ArkTS handles comfortably: no index signatures, no untyped
+   * `JSON.parse` result.
+   */
+  syncBase: string = '';
+  /** Epoch ms of the last successful sync, 0 when never synced. */
+  syncFinishedAt: number = 0;
 
   private prefs: preferences.Preferences | null = null;
   private initialized: boolean = false;
@@ -85,6 +116,13 @@ export class SettingsStore {
         LINE_HEIGHT_MIN, LINE_HEIGHT_MAX);
       this.glassLevel = this.clamp(this.readNumber(KEY_GLASS, this.glassLevel),
         GLASS_LEVEL_MIN, GLASS_LEVEL_MAX);
+      this.davUrl = this.readString(KEY_DAV_URL, this.davUrl);
+      this.davUser = this.readString(KEY_DAV_USER, this.davUser);
+      this.davDnsHost = this.readString(KEY_DAV_HOST, this.davDnsHost);
+      this.davDnsIp = this.readString(KEY_DAV_IP, this.davDnsIp);
+      this.davProxy = this.readString(KEY_DAV_PROXY, this.davProxy);
+      this.syncBase = this.readString(KEY_SYNC_BASE, this.syncBase);
+      this.syncFinishedAt = this.readNumber(KEY_SYNC_AT, this.syncFinishedAt);
       this.initialized = true;
     } catch (error) {
       hilog.error(DOMAIN, 'SettingsStore', 'init failed: %{public}s', JSON.stringify(error));
@@ -121,6 +159,49 @@ export class SettingsStore {
     this.writeNumber(KEY_GLASS, this.glassLevel);
   }
 
+  setDavUrl(url: string): void {
+    this.davUrl = url;
+    this.writeString(KEY_DAV_URL, url);
+  }
+
+  setDavUser(user: string): void {
+    this.davUser = user;
+    this.writeString(KEY_DAV_USER, user);
+  }
+
+  setDavDnsHost(host: string): void {
+    this.davDnsHost = host;
+    this.writeString(KEY_DAV_HOST, host);
+  }
+
+  setDavDnsIp(ip: string): void {
+    this.davDnsIp = ip;
+    this.writeString(KEY_DAV_IP, ip);
+  }
+
+  /** Writes the host/IP pair in one flush; both halves are useless alone. */
+  setDavHostAndIp(host: string, ip: string): void {
+    this.davDnsHost = host;
+    this.davDnsIp = ip;
+    this.writeString(KEY_DAV_HOST, host);
+    this.writeString(KEY_DAV_IP, ip);
+  }
+
+  setDavProxy(proxy: string): void {
+    this.davProxy = proxy;
+    this.writeString(KEY_DAV_PROXY, proxy);
+  }
+
+  setSyncBase(base: string): void {
+    this.syncBase = base;
+    this.writeString(KEY_SYNC_BASE, base);
+  }
+
+  setSyncFinishedAt(at: number): void {
+    this.syncFinishedAt = at;
+    this.writeNumber(KEY_SYNC_AT, at);
+  }
+
   private readNumber(key: string, fallback: number): number {
     if (this.prefs === null) {
       return fallback;
@@ -131,6 +212,28 @@ export class SettingsStore {
 
   private clamp(value: number, min: number, max: number): number {
     return value < min ? min : (value > max ? max : value);
+  }
+
+  private readString(key: string, fallback: string): string {
+    if (this.prefs === null) {
+      return fallback;
+    }
+    const value = this.prefs.getSync(key, fallback);
+    return typeof value === 'string' ? value : fallback;
+  }
+
+  private writeString(key: string, value: string): void {
+    if (this.prefs === null) {
+      return;
+    }
+    try {
+      this.prefs.putSync(key, value);
+      this.prefs.flush().catch((error: BusinessError) => {
+        hilog.error(DOMAIN, 'SettingsStore', 'flush failed: %{public}s', JSON.stringify(error));
+      });
+    } catch (error) {
+      hilog.error(DOMAIN, 'SettingsStore', 'write failed: %{public}s', JSON.stringify(error));
+    }
   }
 
   private writeNumber(key: string, value: number): void {

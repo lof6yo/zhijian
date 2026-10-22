@@ -10,6 +10,18 @@ export class ParsedNote {
   createdAt: number = 0;
   updatedAt: number = 0;
   excerpt: string = '';
+  /**
+   * Whether the file actually carried an `updated:` field.
+   *
+   * `updatedAt` falls back to *now* for a file with no frontmatter, which is the
+   * right default when reading a note but poison for sync: a hand-written
+   * Markdown file with no metadata would look like the most recent edit in the
+   * vault and win against every real note. Sync must ask this flag instead of
+   * comparing `updatedAt > 0`.
+   */
+  hasUpdatedAt: boolean = false;
+  /** Whether the file carried an `id:` field. Files dropped in by hand do not. */
+  hasId: boolean = false;
 }
 
 export class FrontmatterCodec {
@@ -43,6 +55,7 @@ export class FrontmatterCodec {
       const value = line.substring(idx + 1).trim();
       if (key === 'id') {
         parsed.id = FrontmatterCodec.unquote(value);
+        parsed.hasId = parsed.id.length > 0;
       } else if (key === 'tags') {
         parsed.tags = FrontmatterCodec.parseTags(value);
       } else if (key === 'pinned') {
@@ -53,6 +66,7 @@ export class FrontmatterCodec {
         parsed.createdAt = FrontmatterCodec.parseTime(value, parsed.createdAt);
       } else if (key === 'updated') {
         parsed.updatedAt = FrontmatterCodec.parseTime(value, parsed.updatedAt);
+        parsed.hasUpdatedAt = true;
       }
     }
     return parsed;

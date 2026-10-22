@@ -9,7 +9,10 @@ import { NoteStore } from '../services/NoteStore';
 import { NoteCard } from '../components/NoteCard';
 import { EditorPage } from './EditorPage';
 import { TrashPage } from './TrashPage';
+import { WebDavPage } from './WebDavPage';
 import { NoteTransfer, TransferResult } from '../services/NoteTransfer';
+import { Credentials } from '../services/Credentials';
+import { SyncEngine } from '../services/SyncEngine';
 import { AccentScheme, Palette } from '../common/Palette';
 import { FONT_SIZE_MAX, FONT_SIZE_MIN, GEAR_ADAPTIVE, GEAR_HIGH, GEAR_LOW, GEAR_MEDIUM,
   GLASS_LEVEL_DEFAULT, GLASS_LEVEL_MAX, GLASS_LEVEL_MIN,
@@ -151,6 +154,7 @@ struct Index {
     this.store.init(context.filesDir);
     this.refreshList();
     this.bindTabScrollers();
+    this.hydrateSync();
   }
 
   private bindTabScrollers(): void {
@@ -160,6 +164,32 @@ struct Index {
     this.hdsTabs.bindScroller(0, this.notesScroller);
     this.hdsTabs.bindScroller(1, this.tagsScroller);
     this.hdsTabs.bindScroller(2, this.settingsScroller);
+  }
+
+  /**
+   * Seeds `SyncEngine.config` from the stored settings once per launch.
+   *
+   * The password is fetched from Asset Store Kit asynchronously, so a sync can
+   * never start before this resolves — the settings page awaits its own
+   * `saveSettings()` round trip and therefore re-reads the secret there. This
+   * call exists so the 设置 row can report 已配置 without the page being opened,
+   * and so a future background sync has credentials available.
+   */
+  private hydrateSync(): void {
+    const settings = SettingsStore.instance;
+    if (settings.davUrl.length === 0) {
+      return;
+    }
+    Credentials.loadPassword()
+      .then((secret: string) => {
+        SyncEngine.applySettings(settings, secret);
+        if (secret.length === 0) {
+          hilog.warn(DOMAIN, TAG, 'webdav configured without a stored password');
+        }
+      })
+      .catch((error: BusinessError) => {
+        hilog.warn(DOMAIN, TAG, 'credential hydrate failed: %{public}d', error.code);
+      });
   }
 
   /**
@@ -377,6 +407,11 @@ struct Index {
       })
     } else if (name === 'trash') {
       TrashPage({
+        pathStack: this.pathStack,
+        accentColor: this.accentColor()
+      })
+    } else if (name === 'webdav') {
+      WebDavPage({
         pathStack: this.pathStack,
         accentColor: this.accentColor()
       })
@@ -1287,10 +1322,10 @@ struct Index {
     Column({ space: 12 }) {
       List({ space: 8, scroller: this.settingsScroller }) {
         ListItem() {
-          this.SettingRow('WebDAV 同步', '下一步接入')
+          this.SettingRow('WebDAV 同步', this.davRowValue())
         }
         .onClick(() => {
-          this.showWebDavInfo();
+          this.openWebDav();
         })
 
         ListItem() {
@@ -1581,15 +1616,26 @@ struct Index {
     .borderRadius(20)
   }
 
-  private showWebDavInfo(): void {
-    this.getUIContext().showAlertDialog({
-      title: 'WebDAV 同步',
-      message: '同步将在下一阶段接入：单账号、默认仅 Wi-Fi、冲突时保留副本。',
-      confirm: {
-        value: '知道了',
-        action: () => {}
-      }
-    });
+  /**
+   * Right-hand value of the 设置 › WebDAV 同步 row.
+   *
+   * It reports the state the user cares about — whether this device can actually
+   * reach the server — rather than repeating the URL back. A URL with no
+   * username is configured-but-unusable, so it reads 未完成, not the URL.
+   */
+  private davRowValue(): string {
+    const settings = SettingsStore.instance;
+    if (settings.davUrl.length === 0) {
+      return '未配置';
+    }
+    if (settings.syncFinishedAt > 0) {
+      return '已同步';
+    }
+    return settings.davUser.length > 0 ? '待同步' : '未完成';
+  }
+
+  private openWebDav(): void {
+    this.pathStack.pushPath({ name: 'webdav' });
   }
 
   private showTransferSheet(): void {
