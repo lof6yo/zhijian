@@ -7,21 +7,24 @@ Add-Type -AssemblyName System.Drawing
 #   no self-applied rounded corners, no self-applied inner padding
 #
 # The mark is a sheet with a dog-eared corner and three text lines, drawn as a
-# monoline so it stays crisp at 20 px. It is scaled about the canvas centre so
-# its half-diagonal (~443 px at scale 1.35) stays inside the 512 px circle that
-# the launcher mask applies.
+# monoline so it stays crisp at 20 px. It is scaled about the *canvas centre* so
+# the outer fold point (327.8 px from centre at scale 1.0) stays inside the
+# 512 px circle that the launcher mask applies: 327.8 * 1.44 = 472, plus a
+# half-stroke ≈ 24 → 496 < 512. Anything larger clips the corner.
 
 $DESIGN = 1024.0
-$SCALE = 1.44          # artwork is authored at scale 1.0, drawn at 1.35
+$SCALE = 1.44          # artwork is authored at scale 1.0; 1.44 is the mask-safe max
 
-function Add-Mark([System.Drawing.Graphics]$g, [System.Drawing.Color]$ink, [double]$s) {
+# $size is the real canvas edge in px. The design canvas is always 1024, so the
+# centre/scale transform must be computed from $size, not from $DESIGN —
+# hard-coding 512 silently draws the 216 px start icon completely off-canvas.
+function Add-Mark([System.Drawing.Graphics]$g, [System.Drawing.Color]$ink, [double]$size) {
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-    # Scale about the canvas centre. Order matters: translate the centre to the
-    # origin *first*, scale, then translate back — reversing these shifts the
-    # artwork off-centre by (scale-1)*half-canvas.
-    $g.TranslateTransform($DESIGN / 2, $DESIGN / 2)
-    $g.ScaleTransform($s, $s)
+    $k = $size / $DESIGN * $SCALE
+    # Translate the canvas centre to the origin, scale, translate back.
+    $g.TranslateTransform($size / 2, $size / 2)
+    $g.ScaleTransform($k, $k)
     $g.TranslateTransform(-$DESIGN / 2, -$DESIGN / 2)
 
     $pen = New-Object System.Drawing.Pen $ink, 34.0
@@ -76,7 +79,7 @@ $white = [System.Drawing.Color]::White
 $fg = New-Object System.Drawing.Bitmap(1024, 1024, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
 $g = [System.Drawing.Graphics]::FromImage($fg)
 $g.Clear([System.Drawing.Color]::Transparent)
-Add-Mark $g $white $SCALE
+Add-Mark $g $white 1024.0
 $g.Dispose()
 Save-Png $fg (Join-Path $media 'foreground.png')
 
@@ -91,7 +94,7 @@ Save-Png $bg (Join-Path $media 'background.png')
 $si = New-Object System.Drawing.Bitmap(216, 216, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
 $g = [System.Drawing.Graphics]::FromImage($si)
 $g.Clear([System.Drawing.Color]::Transparent)
-Add-Mark $g $brand (216.0 / $DESIGN * $SCALE)
+Add-Mark $g $brand 216.0
 $g.Dispose()
 Save-Png $si (Join-Path $entryMedia 'startIcon.png')
 
