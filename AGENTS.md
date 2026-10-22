@@ -291,8 +291,9 @@ failed on the device.
   renders `note.title`, and `reload()` re-derives it from the H1 — stamping only
   the filename left two cards reading the same title with no way to tell which
   one sync produced.
-- **Deletions are not propagated.** A note missing remotely is treated as "never
-  uploaded" and re-uploaded; nothing is destroyed. There are no tombstones.
+- **Deletions propagate through the baseline row, which is also the tombstone.**
+  See *Deletion propagation* below — a note missing on one side is archived on
+  the other (local 回收站 / remote `zhijian/.trash`), never re-uploaded blindly.
 - **Remote folder is a dedicated `zhijian/`**, auto-created with `MKCOL` (405 =
   already there), so the user's existing `Obsidian/` is untouched.
 - **The password lives in Asset Store Kit** (`@kit.AssetStoreKit`, alias
@@ -306,6 +307,73 @@ failed on the device.
   debug mode, `shell` is uid 2000) and no direct egress (the host reaches the
   server only through a corporate CONNECT proxy). Real devices behind split DNS
   or a corporate proxy need the same two escape hatches.
+
+### Deletion propagation
+
+Deleting a note is a *decision*, and it now propagates in both directions. The
+hard part is that "missing on one side" is ambiguous — it means either *never
+existed there* or *was deleted there*. Getting that wrong either resurrects a
+deleted note or destroys a live one, so the baseline row doubles as the
+tombstone: it already records "the server held this id at the end of the last
+run".
+
+| local | remote | baseline | verdict |
+|---|---|---|---|
+| yes | yes | — | three-way merge (§ above) |
+| yes | no | yes | deleted remotely → local file → 回收站 |
+| no | yes | yes | deleted locally → server file → `zhijian/.trash` |
+| yes | no | no | never uploaded → upload |
+| no | yes | no | new on another device → download |
+
+- **A note missing remotely with a baseline row moves to the local 回收站**, not
+  the void: `NoteStore.deleteNote()` renames it into `.trash` with a `<millis>-`
+  prefix, and `purgeExpiredTrash(30)` already owns the retention. That is why
+  propagating deletions is safe at all — it is reversible for 30 days.
+- **A note missing locally with a baseline row has its server copy MOVEd into
+  `zhijian/.trash/<millis>-<name>.md`.** `WebDavClient.moveTo` sends `MOVE` with
+  an absolute `Destination` header and falls back to `GET` → `PUT` → `DELETE` if
+  the server refuses (405/501); the fallback is exactly equivalent for one file.
+  `.trash` is created with `MKCOL` on first use.
+- **The timestamp prefix is the retention clock, not `getlastmodified`.** A
+  `MOVE` may preserve the note's own mtime, so a note deleted today but last
+  edited 40 days ago would be swept immediately. `purgeRemoteTrash()` parses the
+  leading `<millis>-` (same rule as `NoteStore.trashTimeOf`) and falls back to
+  `entry.modifiedAt` only when the name has no stamp.
+- **`.trash` sits inside `zhijian/`** so the vault stays one folder. Nothing is
+  re-imported from it because every listing runs at `Depth: 1` and skips
+  directory entries.
+- **`archiveSeq` disambiguates same-millisecond archives.** Two notes deleted in
+  one run would otherwise both target `zhijian/.trash/<same millis>-…`; the
+  second `MOVE` would overwrite the first, i.e. data loss in the folder that
+  exists to prevent it.
+- **A refused delete keeps its baseline row; only a confirmed one drops it.**
+  `archiveRemote()` returns true only when *every* path for that id was archived,
+  and `deleteNote()` now returns whether the file actually reached `.trash`. A
+  failed `MOVE` that also lost its row would make the next run see a remote file
+  with no baseline, call it "new from another device", and *download the note the
+  user just deleted*. `buildBase()` is therefore a carry-forward: it starts from
+  the previous rows and applies this run's outcomes, instead of rebuilding from
+  `confirmed` alone.
+- **The baseline is scoped to the server it describes** — `syncBaseScope` holds
+  `<baseUrl>\t<username>`, written with the baseline and checked before reading
+  it. Point the app at a different URL and the old rows would claim the new
+  server had deleted the entire vault. An unrecognised scope means "no
+  baseline", which re-uploads instead of trashing.
+- **A note that merely lost its `id:` line is not a deletion.** Identity is
+  recovered from the *baseline path* before the merge runs: `baseByPath` maps the
+  path the baseline last recorded to its id, so a remote file that kept its name
+  but lost its frontmatter id is adopted as that note and merges normally. The
+  mirror case is handled in the remote-only pass: a local file still sitting at
+  the baseline path under a filename-derived id gets its id restored from the
+  baseline. Deciding by id alone would trash a live note, import a duplicate, or
+  archive the server copy of a note that is still on this device.
+- **Never repair frontmatter by overwriting the body.** The earlier design
+  re-uploaded the local note when the remote file lost its id, which silently
+  rolled the remote text back to whatever this device held. Recovering the
+  identity and merging is the only safe repair.
+- **`deleteNote()` returns `boolean`.** Callers that ignore it are fine (the
+  editor's 删除 just wants the note gone from the list); sync uses it to decide
+  whether the deletion is confirmed.
 
 The editor is **ArkWeb + Milkdown/Crepe**; the native shell owns file storage,
 navigation, search, tags and settings. All notes are flat in `notes/`. Markdown text is the source of
@@ -333,6 +401,22 @@ dependency on a plain singleton's `@Trace` array is not reliable across a
 `NavDestination` pop, and `listVersion`/`.id()` alone does not trigger a
 rebuild. The snapshot assignment is what guarantees the note list refreshes
 immediately on return.
+
+**A `@Builder`'s parameters are passed by value — a `@Local` read inside the
+argument expression is not a dependency of the built nodes.** The 设置 ›
+WebDAV 同步 row was written as
+`this.SettingRow('WebDAV 同步', this.davRowValue(), this.davRowSubtitle())`.
+On device the `didShow` hook proved it ran (`davLastSync` logged the fresh
+timestamp) yet the row kept rendering the pre-sync text — the framework
+compared the evaluated strings, found them equal to the previous call, and
+skipped the subtree, so reassigning `@Local davLastSync` never reached
+`Text(subtitle)`. So the "copy the singleton into `@Local`, then reassign on
+pop" pattern is only half the fix: the builder must also **read the state
+itself**, with no parameters. `Index.WebDavRow()` is the worked example —
+`if (this.davLastSync > 0) { Text(\`上次同步 · ${Index.formatSyncTime(this.davLastSync)}\`) }`
+inside the builder body is what re-renders. Pass only genuinely constant
+arguments to a `@Builder`; anything that changes at runtime belongs in a
+parameter-less builder or a `@ComponentV2` with `@Param`.
 
 `EditorPage.persist()` skips the write when the markdown is unchanged. Without
 that guard every open→close bumped `updatedAt`, reordered the list and
@@ -866,6 +950,12 @@ commit message.
 - **`stateStyles({...})`**: rejected by this toolchain in both forms (inline
   attribute object literal and `@Styles` function reference). Use
   `.clickEffect()` / `.hoverEffect()` for press feedback.
+- **A `@Builder` argument is not a state dependency.** Passing
+  `this.davRowSubtitle()` into `SettingRow(...)` evaluated the `@Local` once at
+  the call site; reassigning the field never reached the built `Text`, so the
+  设置 › WebDAV 同步 row showed pre-sync text on device even though `didShow`
+  had already updated the value. Read runtime state inside a parameter-less
+  builder (`Index.WebDavRow()`), or use `@ComponentV2` + `@Param`.
 - **`WaterFlow` width**: a `FlowItem`'s child is measured against the whole flow,
   so percentage widths bleed into the neighbouring column. Give cells an explicit
   computed width, and never put a full-width header inside a multi-column flow.
@@ -912,8 +1002,27 @@ commit message.
   phrase; `curl` against the same URL succeeds every time. Retry (all verbs used
   here are idempotent for the same body) instead of treating it as an origin
   error.
+- **WebDAV: a deletion is only confirmed when it provably happened.** Two
+  independent halves, both learned the hard way: `NoteStore.deleteNote()` returns
+  whether the file reached `.trash`, and `archiveRemote()` returns true only when
+  *every* path for the id was archived. Dropping the baseline row on a failed
+  attempt makes the next run read the surviving file as "new from another
+  device" and download the note the user just deleted. Never infer "deleted" from
+  `ok` on the transport call alone.
+- **WebDAV: the baseline belongs to one server.** `syncBaseScope`
+  (`<baseUrl>\t<username>`) is written with it and checked before use. Reusing a
+  baseline after changing the URL makes every note look deleted remotely — one
+  tap from trashing the entire vault.
+- **WebDAV: never read "the id is gone" as "the note is gone".** A hand-edited or
+  externally rewritten `.md` can keep its path and lose its `id:` line. Identity
+  is recovered from the baseline path (`baseByPath`) before the merge, in both
+  directions; an id-only test either trashes a live note or imports a duplicate.
+  Never "repair" the frontmatter by re-uploading this device's body over the
+  remote one — that rolls the remote text back.
 - **Do not verify a sync by deleting test notes through the grid.** A long-press
   then delete re-flows the `WaterFlow`, so the second long-press in the same spot
   hits a *different* card — it deleted a real 无标题 note during this work. Delete
   test fixtures from the WebDAV side (`curl -X DELETE`) and leave the grid alone,
-  or re-read `ui_dump` bounds before every long-press.
+  or re-read `ui_dump` bounds before every long-press. The same rule now applies
+  to testing deletion propagation: delete on the *server* (or via a note you
+  created for the purpose) and let the next sync move the local copy to 回收站.

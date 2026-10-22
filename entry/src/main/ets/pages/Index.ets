@@ -1,6 +1,6 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { display, LengthMetrics, uiMaterial, CircleShape } from '@kit.ArkUI';
-import { deviceInfo, BusinessError } from '@kit.BasicServicesKit';
+import { deviceInfo, BusinessError, systemDateTime } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { WindowService } from '../common/WindowService';
 import { SettingsStore } from '../services/SettingsStore';
@@ -88,6 +88,23 @@ struct Index {
    */
   @Local glassLevel: number = GLASS_LEVEL_DEFAULT;
   @Local pathStack: NavPathStack = new NavPathStack();
+  /**
+   * Snapshot of `syncFinishedAt`, and of the state word the 设置 › WebDAV 同步
+   * row renders.
+   *
+   * `SettingsStore` is a plain singleton, not `@ObservedV2`, so a `@Builder` that
+   * reads it directly is not guaranteed to re-render when a `NavDestination`
+   * pops — the same trap the note list hit (see `refreshList`). Copying into
+   * `@Local` fields and reassigning them in the `didShow` interception is what
+   * makes the row update the moment the user returns from `WebDavPage`.
+   *
+   * Copying alone is not enough: the row must also *read* these fields inside a
+   * parameter-less builder. See `WebDavRow()` — passing
+   * `this.davRowSubtitle()` into `SettingRow(...)` registered the read against
+   * the call site, not the built nodes, so the text never refreshed on device.
+   */
+  @Local davLastSync: number = 0;
+  @Local davStateLabel: string = '未配置';
   private store: NoteStore = NoteStore.instance;
 
   // One scroller per tab: each tab keeps its own scroll position, which is a
@@ -124,6 +141,7 @@ struct Index {
     this.fontSize = SettingsStore.instance.editorFontSize;
     this.lineHeight = SettingsStore.instance.editorLineHeight;
     this.glassLevel = SettingsStore.instance.glassLevel;
+    this.refreshDavState();
 
     this.hdsSupported = deviceInfo.sdkApiVersion >= HDS_MIN_API;
     if (this.hdsSupported) {
@@ -300,6 +318,7 @@ struct Index {
         }
         this.store.reload();
         this.refreshList();
+        this.refreshDavState();
       }
     });
   }
@@ -1322,21 +1341,21 @@ struct Index {
     Column({ space: 12 }) {
       List({ space: 8, scroller: this.settingsScroller }) {
         ListItem() {
-          this.SettingRow('WebDAV 同步', this.davRowValue())
+          this.WebDavRow()
         }
         .onClick(() => {
           this.openWebDav();
         })
 
         ListItem() {
-          this.SettingRow('导入 / 导出', 'Markdown + ZIP')
+          this.SettingRow('导入 / 导出', 'Markdown + ZIP', '')
         }
         .onClick(() => {
           this.showTransferSheet();
         })
 
         ListItem() {
-          this.SettingRow('回收站', '删除的笔记保留 30 天')
+          this.SettingRow('回收站', '删除的笔记保留 30 天', '')
         }
         .onClick(() => {
           this.pathStack.pushPath({ name: 'trash' });
@@ -1511,7 +1530,7 @@ struct Index {
         }
 
         ListItem() {
-          this.SettingRow('关于 纸见', 'API 26 · 本地优先')
+          this.SettingRow('关于 纸见', 'API 26 · 本地优先', '')
         }
       }
       .width('100%')
@@ -1596,15 +1615,25 @@ struct Index {
   }
 
   @Builder
-  SettingRow(title: string, value: string) {
+  SettingRow(title: string, value: string, subtitle: string) {
     Row() {
-      Text(title)
-        .fontSize(16)
-        .fontColor($r('app.color.text_primary'))
-      Blank()
+      Column({ space: 2 }) {
+        Text(title)
+          .fontSize(16)
+          .fontColor($r('app.color.text_primary'))
+        if (subtitle.length > 0) {
+          Text(subtitle)
+            .fontSize(11)
+            .fontColor($r('app.color.text_secondary'))
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
       Text(value)
         .fontSize(12)
         .fontColor($r('app.color.text_secondary'))
+        .margin({ left: 8 })
       SymbolGlyph($r('sys.symbol.chevron_right'))
         .fontSize(16)
         .fontColor([$r('app.color.text_secondary')])
@@ -1617,21 +1646,86 @@ struct Index {
   }
 
   /**
-   * Right-hand value of the 设置 › WebDAV 同步 row.
+   * The 设置 › WebDAV 同步 row.
    *
-   * It reports the state the user cares about — whether this device can actually
-   * reach the server — rather than repeating the URL back. A URL with no
-   * username is configured-but-unusable, so it reads 未完成, not the URL.
+   * Deliberately **not** `SettingRow('WebDAV 同步', this.davRowValue(), ...)`.
+   * A `@Builder`'s parameters are passed by value: the framework compares them
+   * and skips the subtree when they are unchanged, so a `@Local` read *inside the
+   * argument expression* is not a dependency of the built nodes. Measured on the
+   * device: `didShow` fired and `davLastSync` advanced to the new timestamp, yet
+   * the row kept rendering the pre-sync text. Reading the state directly in a
+   * parameter-less builder is what makes it re-render.
    */
-  private davRowValue(): string {
+  @Builder
+  WebDavRow() {
+    Row() {
+      Column({ space: 2 }) {
+        Text('WebDAV 同步')
+          .fontSize(16)
+          .fontColor($r('app.color.text_primary'))
+        if (this.davLastSync > 0) {
+          Text(`上次同步 · ${Index.formatSyncTime(this.davLastSync)}`)
+            .fontSize(11)
+            .fontColor($r('app.color.text_secondary'))
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      Text(this.davStateLabel)
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .margin({ left: 8 })
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(16)
+        .fontColor([$r('app.color.text_secondary')])
+        .margin({ left: 4 })
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor($r('app.color.glass_bg'))
+    .borderRadius(20)
+  }
+
+  /** Recomputes the 设置 › WebDAV 同步 row from the settings singleton. */
+  private refreshDavState(): void {
     const settings = SettingsStore.instance;
+    this.davLastSync = settings.syncFinishedAt;
     if (settings.davUrl.length === 0) {
-      return '未配置';
+      this.davStateLabel = '未配置';
+      return;
     }
     if (settings.syncFinishedAt > 0) {
-      return '已同步';
+      this.davStateLabel = '已同步';
+      return;
     }
-    return settings.davUser.length > 0 ? '待同步' : '未完成';
+    this.davStateLabel = settings.davUser.length > 0 ? '待同步' : '未完成';
+  }
+
+  private static formatSyncTime(at: number): string {
+    const now = systemDateTime.getTime();
+    const diff = now - at;
+    const minute = 60_000;
+    const hour = 3_600_000;
+    const day = 86_400_000;
+    if (diff < minute) {
+      return '刚刚';
+    }
+    if (diff < hour) {
+      return `${Math.floor(diff / minute)} 分钟前`;
+    }
+    if (diff < day) {
+      return `${Math.floor(diff / hour)} 小时前`;
+    }
+    if (diff < day * 2) {
+      return '昨天';
+    }
+    const date = new Date(at);
+    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+    const dayNum = date.getDate().toString().padStart(2, '0');
+    const hh = date.getHours().toString().padStart(2, '0');
+    const mm = date.getMinutes().toString().padStart(2, '0');
+    return `${month}-${dayNum} ${hh}:${mm}`;
   }
 
   private openWebDav(): void {

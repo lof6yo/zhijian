@@ -11,6 +11,18 @@ const TAG = 'ZhijianSync';
 
 /** Folder under the WebDAV base that holds the notes. Created on first sync. */
 const REMOTE_DIR = 'zhijian';
+/**
+ * Server-side 回收站, created lazily the first time a note is deleted here.
+ *
+ * It lives *inside* `zhijian/` rather than beside it so the vault stays one
+ * self-contained folder, and it is safe from the listing loops because they run
+ * at `Depth: 1` and skip directory entries — nothing in `.trash` is ever
+ * re-imported as a note.
+ */
+const REMOTE_TRASH_DIR = `${REMOTE_DIR}/.trash`;
+/** Same retention as the local 回收站 (`NoteStore.purgeExpiredTrash`). */
+const TRASH_RETENTION_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * One note as this device last saw the *server*.
@@ -32,6 +44,10 @@ export class SyncOutcome {
   downloaded: number = 0;
   conflicts: number = 0;
   skipped: number = 0;
+  /** Notes moved into the *local* 回收站 because the server no longer had them. */
+  trashedLocal: number = 0;
+  /** Notes whose server copy was moved into `zhijian/.trash` because they were deleted here. */
+  trashedRemote: number = 0;
   message: string = '';
   finishedAt: number = 0;
 }
@@ -60,18 +76,52 @@ class RemoteNote {
  * directly. Comparing only `local.updatedAt` vs `remote.updatedAt` cannot make
  * that distinction, so it silently discards whichever edit was typed first.
  *
- * ### Nothing is ever destroyed
- * - A conflict writes the loser as `<title> (冲突 <time>).md` and keeps both.
- * - A note deleted locally is re-uploaded, not re-downloaded over: the engine
- *   treats "missing on the server" as "never uploaded" rather than "deleted on
- *   another device". Propagating deletions needs tombstones, and a wrong guess
- *   there wipes a vault; re-uploading merely costs one PUT.
- * - A remote file whose frontmatter has no `id` is imported with a *generated*
- *   id instead of being overwritten with this device's naming.
+ * ### The baseline is also the tombstone, so deletions propagate
+ * "Missing on the server" is ambiguous on its own: it means either *never
+ * uploaded* or *deleted on another device*, and guessing wrong either resurrects
+ * a deleted note or destroys a real one. A baseline row resolves it without a
+ * separate tombstone file, because the row already says "the server held this id
+ * at the end of the last run":
+ *
+ * | local | remote | baseline | verdict |
+ * |---|---|---|---|
+ * | yes | yes | — | three-way merge as above |
+ * | yes | no | yes | deleted remotely → local file moves to 回收站 |
+ * | no | yes | yes | deleted locally → server file moves to `zhijian/.trash` |
+ * | yes | no | no | never uploaded → upload |
+ * | no | yes | no | new elsewhere → download |
+ *
+ * A deletion always beats an edit on the other side, and it is never final: the
+ * local side lands in `.trash` (30 days, restored from 回收站) and the server side
+ * in `zhijian/.trash` (30 days, purged by this engine). Nothing is destroyed
+ * outright — that is what makes propagating deletions safe at all.
+ *
+ * An id that exists on neither side simply loses its row, which is the "both
+ * sides agree it is gone" state.
+ *
+ * ### A refused delete keeps its row
+ * Only an operation that actually reached the server may advance or drop the
+ * baseline. If the `MOVE` into `zhijian/.trash` fails, the row is carried forward
+ * verbatim — otherwise the next run would see a remote file with no baseline,
+ * call it "new from another device", and download the note the user just deleted.
+ *
+ * ### Conflict copies keep both bodies
+ * A conflict writes the loser as `<title> (冲突 <time>).md` with a fresh id, and
+ * the mark goes into the body's H1 so the list can distinguish the two cards.
  */
 export class SyncEngine {
   /** Base URL + credentials. Password is hydrated from Asset Store per run. */
   static config: DavConfig = new DavConfig();
+
+  /**
+   * Monotonic disambiguator for remote-trash names.
+   *
+   * Two notes archived inside the same millisecond would otherwise produce the
+   * same `zhijian/.trash/<millis>-<name>` target and the second `MOVE` would
+   * overwrite the first — silent data loss in exactly the folder that exists to
+   * prevent it.
+   */
+  private static archiveSeq: number = 0;
 
   static get configured(): boolean {
     return SyncEngine.config.baseUrl.length > 0 && SyncEngine.config.username.length > 0;
@@ -97,6 +147,17 @@ export class SyncEngine {
       return '';
     }
     return match[1];
+  }
+
+  /**
+   * Identity of the server the baseline describes: `baseUrl<TAB>username`.
+   *
+   * Included in every baseline write and checked before every read. Without it,
+   * switching the URL makes the old baseline look authoritative and every note
+   * looks "deleted on the server" — one tap away from trashing the whole vault.
+   */
+  static scopeOf(): string {
+    return `${SyncEngine.config.baseUrl}\t${SyncEngine.config.username}`;
   }
 
   /**
@@ -168,6 +229,19 @@ export class SyncEngine {
       return outcome;
     }
 
+    const baseById: Map<string, BaselineEntry> = SyncEngine.parseBase(
+      settings.syncBaseScope === SyncEngine.scopeOf() ? settings.syncBase : '');
+    if (settings.syncBase.length > 0 && settings.syncBaseScope !== SyncEngine.scopeOf()) {
+      // A baseline from a *different* server is not evidence about this one: its
+      // rows would make every note look deleted remotely and file the whole
+      // vault into 回收站. Treat it as absent — the run re-uploads instead.
+      hilog.warn(DOMAIN, TAG, 'baseline belongs to another server, ignoring it');
+    }
+    // The baseline is also the record of which path belongs to which id, which is
+    // what lets a file that lost its `id:` line still be recognised. Parsed
+    // before the remote listing so the fetch loop below can use it.
+    const baseByPath: Map<string, BaselineEntry> = SyncEngine.pathIndex(baseById);
+
     const remoteById: Map<string, RemoteNote> = new Map<string, RemoteNote>();
     // Every remote path that carries a given id. A note renamed after upload
     // leaves its old file behind, so an id can legitimately map to several
@@ -194,10 +268,23 @@ export class SyncEngine {
         return outcome;
       }
       const parsed: ParsedNote = FrontmatterCodec.parse(got.message);
+      const localPath = SyncEngine.localRel(entry.relPath);
+      // A file that keeps its path but lost its `id:` line is the *same note*, not
+      // a deletion and not a new one. The baseline knows which id owned this
+      // path, so adopt it and let the normal merge run. Deciding by id alone
+      // would either trash the local copy (remote "missing") or import a
+      // duplicate (this file "new"). Never overwrite the body to repair it —
+      // the remote text may be the newer one.
+      const owner = parsed.hasId ? undefined : baseByPath.get(localPath);
+      const effectiveId = parsed.hasId ? parsed.id : (owner?.id ?? '');
+      if (!parsed.hasId && owner !== undefined) {
+        hilog.warn(DOMAIN, TAG, 'remote %{public}s lost its id; recovering %{public}s from baseline',
+          localPath, owner.id);
+      }
       const remote = new RemoteNote();
       remote.remotePath = entry.relPath;
       remote.etag = entry.etag;
-      remote.note.id = parsed.hasId ? parsed.id : '';
+      remote.note.id = effectiveId;
       remote.note.title = parsed.title;
       remote.note.body = parsed.body;
       remote.note.tags = parsed.tags;
@@ -213,9 +300,12 @@ export class SyncEngine {
       // looked renamed on every run and the whole vault was re-uploaded each
       // time — 16 PUTs per sync, forever. Prefixes are re-added only when a
       // request is built.
-      remote.note.relPath = SyncEngine.localRel(entry.relPath);
+      remote.note.relPath = localPath;
       remote.note.excerpt = parsed.excerpt;
-      const key = parsed.hasId ? parsed.id : `path:${entry.relPath}`;
+      // No id and no baseline row for this path: genuinely a new, hand-written
+      // file. Key it by path so several such files stay distinct; the
+      // remote-only pass below mints a real id for each.
+      const key = effectiveId.length > 0 ? effectiveId : `path:${entry.relPath}`;
       // An id may appear at several paths (a note renamed after upload leaves
       // its old file behind). Picking "whichever was read last" is arbitrary —
       // the loop order is the server's, not time's — so an older sibling could
@@ -225,20 +315,21 @@ export class SyncEngine {
       if (previous === undefined || remote.note.updatedAt > previous.note.updatedAt) {
         remoteById.set(key, remote);
       }
-      if (parsed.hasId) {
-        const paths = remotePathsById.get(parsed.id) ?? [];
-        paths.push(SyncEngine.localRel(entry.relPath));
-        remotePathsById.set(parsed.id, paths);
+      if (effectiveId.length > 0) {
+        const paths = remotePathsById.get(effectiveId) ?? [];
+        paths.push(localPath);
+        remotePathsById.set(effectiveId, paths);
       }
     }
 
-    const baseById: Map<string, BaselineEntry> = SyncEngine.parseBase(settings.syncBase);
     store.reload();
-    const localById: Map<string, Note> = new Map<string, Note>();
+    // Paths the local vault occupies, independent of the frontmatter id. Mirrors
+    // `baseByPath`: a note that lost its `id:` line still has a file on disk,
+    // and that must not be read as "the user deleted it".
+    const localPaths: Set<string> = new Set<string>();
     for (const note of store.notes) {
-      localById.set(note.id, note);
+      localPaths.add(note.relPath);
     }
-
     // What the server is *confirmed* to hold once this run ends, per id.
     //
     // Only an operation that actually reached the server may record an entry:
@@ -260,14 +351,35 @@ export class SyncEngine {
 
     // ---- per-id three-way decision ----------------------------------------
     const handledLocal: Set<string> = new Set<string>();
+    // Notes whose server copy is gone, collected here and removed from the
+    // store after the loop: `deleteNote()` reassigns `store.notes`, so mutating
+    // it while iterating it is asking for a skipped note.
+    const locallyDeleted: Note[] = [];
+    // Ids whose baseline row must *not* survive this run: both sides are now
+    // known to be gone (or the note was just archived on both).
+    const dropped: Set<string> = new Set<string>();
     for (const note of store.notes) {
       handledLocal.add(note.id);
       const remote = remoteById.get(note.id);
       const base = baseById.get(note.id);
 
       if (remote === undefined) {
-        // Never seen on the server: upload. A locally-deleted note lands here
-        // too and is re-created remotely, which is the safe direction.
+        if (base !== undefined) {
+          // The baseline says the server held this id at the end of the last
+          // run, and the listing above was complete (any failed GET aborts the
+          // whole run), so its absence is a deletion — not "never uploaded".
+          // Moving it to 回收站 rather than unlinking keeps it recoverable for
+          // 30 days, which is the whole reason propagating deletions is safe.
+          //
+          // A remote file that merely lost its `id:` line does *not* land here:
+          // the fetch loop recovers its identity from the baseline path, so it
+          // is present in `remoteById` under the right key.
+          hilog.info(DOMAIN, TAG, 'remote deleted %{public}s, moving local copy to trash',
+            note.relPath);
+          locallyDeleted.push(note);
+          continue;
+        }
+        // Never seen on the server: upload.
         if (await SyncEngine.push(note, pushed)) {
           outcome.uploaded++;
           confirmed.set(note.id, note.updatedAt);
@@ -388,6 +500,40 @@ export class SyncEngine {
       if (knownId.length > 0 && handledLocal.has(knownId)) {
         continue;
       }
+      if (knownId.length > 0 && baseById.get(knownId) !== undefined) {
+        // Local deletion. The baseline proves this device had the note last run
+        // and it is gone from `notes/` now — the user deleted it, so the server
+        // copy follows it into `zhijian/.trash` instead of being pulled back.
+        //
+        // The mirror image of the remote case: a *local* file may still sit at
+        // the baseline path because it lost its `id:` line, not because the user
+        // deleted anything. `NoteStore.reload()` falls back to the filename as
+        // the id in that case, so the note is here under a foreign key. Restore
+        // the id and leave the remote copy alone — archiving it would delete a
+        // note that is still on this device.
+        const row = baseById.get(knownId);
+        if (row !== undefined && localPaths.has(row.relPath)) {
+          const damaged = SyncEngine.noteAtPath(store, row.relPath);
+          if (damaged !== undefined && damaged.id !== knownId) {
+            hilog.warn(DOMAIN, TAG,
+              'local %{public}s lost its id; restoring %{public}s from baseline',
+              row.relPath, knownId);
+            damaged.id = knownId;
+            store.overwriteFromSync(damaged);
+            confirmed.set(knownId, damaged.updatedAt);
+          }
+          continue;
+        }
+        // Every path carrying the id is archived: a note renamed after upload
+        // can leave a sibling behind, and leaving one of them would resurrect
+        // the note on the next run as "new from another device".
+        const paths = remotePathsById.get(knownId) ?? [remote.note.relPath];
+        if (await SyncEngine.archiveRemote(paths)) {
+          outcome.trashedRemote++;
+          dropped.add(knownId);
+        }
+        continue;
+      }
       // Either a note from another device, or a hand-written file with no
       // frontmatter. Both are new here, so import under a generated id when the
       // file carried none.
@@ -397,6 +543,19 @@ export class SyncEngine {
       if (SyncEngine.applyRemote(store, undefined, remote.note)) {
         outcome.downloaded++;
         confirmed.set(remote.note.id, remote.note.updatedAt);
+      }
+    }
+
+    // Apply the local deletions only now: `deleteNote()` reassigns `store.notes`,
+    // so doing it inside the loop above would skip whichever note shifted into
+    // the current index. The baseline row is dropped only when the file provably
+    // reached `.trash` — a failed rename keeps the row, so the next run sees the
+    // same "remote deleted, local present, baseline present" state and retries
+    // instead of silently uploading the note back to the server.
+    for (const note of locallyDeleted) {
+      if (store.deleteNote(note)) {
+        dropped.add(note.id);
+        outcome.trashedLocal++;
       }
     }
 
@@ -474,27 +633,139 @@ export class SyncEngine {
       }
     }
 
-    settings.setSyncBase(SyncEngine.buildBase(store.notes, remoteById, confirmed));
+    settings.setSyncState(SyncEngine.buildBase(baseById, store.notes, remoteById, confirmed, dropped),
+      SyncEngine.scopeOf());
     outcome.ok = true;
     outcome.finishedAt = systemDateTime.getTime();
     settings.setSyncFinishedAt(outcome.finishedAt);
+    // Runs after the baseline is settled, and never affects `ok`: a vault whose
+    // notes all synced must not read as failed because an expired trash entry
+    // refused to unlink.
+    await SyncEngine.purgeRemoteTrash();
     outcome.message = SyncEngine.summary(outcome);
-    hilog.info(DOMAIN, TAG, 'sync upload=%{public}d download=%{public}d conflict=%{public}d',
-      outcome.uploaded, outcome.downloaded, outcome.conflicts);
+    hilog.info(DOMAIN, TAG,
+      'sync upload=%{public}d download=%{public}d conflict=%{public}d trashLocal=%{public}d trashRemote=%{public}d',
+      outcome.uploaded, outcome.downloaded, outcome.conflicts,
+      outcome.trashedLocal, outcome.trashedRemote);
     return outcome;
+  }
+
+  /**
+   * Moves every server path carrying one id into `zhijian/.trash`.
+   *
+   * Returns true only when *all* paths were archived, so the caller drops the
+   * baseline row only for a deletion that provably happened. A partial success
+   * keeps the row: the next run finds the surviving path, still sees "local gone,
+   * baseline says the server had it", and retries — which is exactly the
+   * behaviour a half-finished archive needs.
+   */
+  private static async archiveRemote(paths: string[]): Promise<boolean> {
+    if (paths.length === 0) {
+      return false;
+    }
+    const made = await WebDavClient.makeCollection(SyncEngine.config, `${REMOTE_TRASH_DIR}/`);
+    if (!made.ok && made.status !== 405) {
+      hilog.error(DOMAIN, TAG, 'remote trash unavailable: %{public}s', made.message);
+      return false;
+    }
+    let all = true;
+    for (const path of paths) {
+      // The timestamp prefix is what the retention sweep reads, exactly like the
+      // local 回收站 reads `<millis>-name.md`. `now + seq` keeps two notes
+      // trashed in the same millisecond from colliding, and lands inside the
+      // same second so the recorded time is still honest.
+      const stamp = systemDateTime.getTime() + SyncEngine.archiveSeq;
+      SyncEngine.archiveSeq++;
+      const base = path.substring(path.lastIndexOf('/') + 1);
+      const target = `${REMOTE_TRASH_DIR}/${stamp}-${base}`;
+      const moved = await WebDavClient.moveTo(SyncEngine.config,
+        SyncEngine.encodePath(`${REMOTE_DIR}/${path}`), SyncEngine.encodePath(target));
+      if (!moved.ok) {
+        all = false;
+        hilog.error(DOMAIN, TAG, 'archive %{public}s failed: %{public}s', path, moved.message);
+        continue;
+      }
+      hilog.info(DOMAIN, TAG, 'archived remote %{public}s -> %{public}s', path, target);
+    }
+    return all;
+  }
+
+  /**
+   * Deletes expired entries from the server-side 回收站.
+   *
+   * Best-effort by design: a vault whose notes all synced fine must not be
+   * reported as failed because an old trash entry could not be unlinked. A
+   * missing `.trash` (404) simply means nothing was ever deleted here.
+   */
+  private static async purgeRemoteTrash(): Promise<number> {
+    const listing = await WebDavClient.list(SyncEngine.config, `${REMOTE_TRASH_DIR}/`);
+    if (!listing.ok) {
+      return 0;
+    }
+    const cutoff = systemDateTime.getTime() - TRASH_RETENTION_DAYS * DAY_MS;
+    let removed = 0;
+    for (const entry of listing.entries) {
+      if (entry.isDir || !entry.relPath.endsWith('.md')) {
+        continue;
+      }
+      const name = entry.relPath.substring(entry.relPath.lastIndexOf('/') + 1);
+      // Trust the name's stamp first — it records when the note was trashed,
+      // while `getlastmodified` may still be the note's own last edit if the
+      // server preserved it across the MOVE.
+      const stamped = SyncEngine.trashStampOf(name);
+      const when = stamped > 0 ? stamped : entry.modifiedAt;
+      if (when <= 0 || when >= cutoff) {
+        continue;
+      }
+      const gone = await WebDavClient.remove(SyncEngine.config,
+        SyncEngine.encodePath(entry.relPath));
+      if (gone.ok) {
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      hilog.info(DOMAIN, TAG, 'remote trash purge removed=%{public}d', removed);
+    }
+    return removed;
+  }
+
+  /** Leading `<milliseconds>-` of a trash file name; 0 when there is none. */
+  private static trashStampOf(fileName: string): number {
+    const dash = fileName.indexOf('-');
+    if (dash <= 0) {
+      return 0;
+    }
+    const raw = fileName.substring(0, dash);
+    for (let i = 0; i < raw.length; i++) {
+      const code = raw.charCodeAt(i);
+      if (code < 48 || code > 57) {
+        return 0;
+      }
+    }
+    const value = Number.parseInt(raw, 10);
+    return Number.isNaN(value) ? 0 : value;
   }
 
   /**
    * The post-run baseline: what the server is *confirmed* to hold.
    *
-   * Only ids in `confirmed` get a refreshed row. Everything else — a PUT that
-   * failed, a note that was never touched — keeps its previous row verbatim,
-   * and an id with no previous row simply has none, which makes the next run
-   * treat it as "never synced" and upload. Writing an unconfirmed row would be
-   * the data-loss bug described at the `confirmed` declaration.
+   * Starts from the previous rows and applies this run's outcomes, rather than
+   * rebuilding from `confirmed` alone. That distinction is load-bearing twice
+   * over:
+   *
+   * - A PUT that failed must keep its old row, so the next run still sees
+   *   "local changed, remote unchanged" and retries the upload. Dropping it
+   *   would make the id look never-synced and re-upload — harmless. But for a
+   *   *deletion* it is the difference between retrying and resurrecting: a
+   *   failed `MOVE` to `.trash` that also lost its row makes the next run treat
+   *   the still-present remote file as "new from another device" and download
+   *   the note the user just deleted.
+   * - An id whose row is `dropped` must not be carried forward, or it would be
+   *   archived again on every subsequent run.
    */
-  private static buildBase(localNotes: Note[], remoteById: Map<string, RemoteNote>,
-    confirmed: Map<string, number>): string {
+  private static buildBase(previous: Map<string, BaselineEntry>, localNotes: Note[],
+    remoteById: Map<string, RemoteNote>, confirmed: Map<string, number>,
+    dropped: Set<string>): string {
     const pathById: Map<string, string> = new Map<string, string>();
     for (const note of localNotes) {
       pathById.set(note.id, note.relPath);
@@ -509,15 +780,46 @@ export class SyncEngine {
       }
     }
     const lines: string[] = [];
+    const written: Set<string> = new Set<string>();
     for (const id of Array.from(confirmed.keys())) {
       const updatedAt = confirmed.get(id);
-      if (updatedAt === undefined) {
+      if (updatedAt === undefined || dropped.has(id)) {
         continue;
       }
       const relPath = pathById.get(id) ?? '';
       lines.push(`${id}\t${updatedAt}\t${relPath}`);
+      written.add(id);
+    }
+    for (const id of Array.from(previous.keys())) {
+      if (written.has(id) || dropped.has(id)) {
+        continue;
+      }
+      const row = previous.get(id);
+      if (row === undefined) {
+        continue;
+      }
+      // Carry a row forward only while the id still exists on at least one side.
+      // An id gone from both is the "both devices agree" state and needs no
+      // tombstone, which is what keeps this file from growing forever.
+      if (!pathById.has(id) && remoteById.get(id) === undefined) {
+        continue;
+      }
+      lines.push(`${id}\t${row.updatedAt}\t${row.relPath}`);
     }
     return lines.join('\n');
+  }
+
+  /** Index of the baseline by the *local* path it last recorded per id. */
+  private static pathIndex(base: Map<string, BaselineEntry>): Map<string, BaselineEntry> {
+    const index: Map<string, BaselineEntry> = new Map<string, BaselineEntry>();
+    for (const id of Array.from(base.keys())) {
+      const entry = base.get(id);
+      if (entry === undefined || entry.relPath.length === 0) {
+        continue;
+      }
+      index.set(entry.relPath, entry);
+    }
+    return index;
   }
 
   private static parseBase(text: string): Map<string, BaselineEntry> {
@@ -541,6 +843,16 @@ export class SyncEngine {
       }
     }
     return map;
+  }
+
+  /** Finds the note that currently occupies a path (id-independent). */
+  private static noteAtPath(store: NoteStore, relPath: string): Note | undefined {
+    for (const note of store.notes) {
+      if (note.relPath === relPath) {
+        return note;
+      }
+    }
+    return undefined;
   }
 
   /** Writes a remote note locally: over `existing` when given, else as new. */
@@ -703,6 +1015,14 @@ export class SyncEngine {
     }
     if (outcome.conflicts > 0) {
       parts.push(`冲突 ${outcome.conflicts}`);
+    }
+    // Reported as 回收站 rather than 删除: the note is recoverable for 30 days on
+    // whichever side it left, so "deleted" would overstate what happened.
+    if (outcome.trashedLocal > 0) {
+      parts.push(`远端删除 ${outcome.trashedLocal} · 已进回收站`);
+    }
+    if (outcome.trashedRemote > 0) {
+      parts.push(`本地删除 ${outcome.trashedRemote} · 已归档到远端`);
     }
     if (parts.length === 0) {
       return '已是最新';

@@ -134,21 +134,40 @@ export class NoteStore {
     hilog.info(0x0000, 'HMStartStore', 'save %{public}s notes=%{public}d', note.relPath, this.notes.length);
   }
 
-  deleteNote(note: Note): void {
+  /**
+   * Moves a note into `.trash` and drops it from the index.
+   *
+   * Returns whether the file actually reached `.trash`, and the index is updated
+   * only in that case. A failed rename used to remove the note from the list
+   * anyway, which leaves the file on disk forever with nothing pointing at it —
+   * invisible, uncounted, and re-read by the next `reload()` as if the user had
+   * never deleted it. Keeping the row is the honest outcome: sync can then tell
+   * "the move failed" from "the note is gone" and retry, and the list keeps
+   * showing a note that still exists.
+   */
+  deleteNote(note: Note): boolean {
     const full = `${this.root}/${note.relPath}`;
     const trashDir = `${this.root}/${TRASH}`;
     this.ensureDir(trashDir);
     const name = this.uniqueTrashName(trashDir, `${systemDateTime.getTime()}-${this.fileName(note.relPath)}`);
+    let trashed = true;
     try {
       if (fs.accessSync(full)) {
         fs.renameSync(full, `${trashDir}/${name}`);
       }
     } catch (e) {
-      // Ignore; remove from index anyway.
+      trashed = false;
+      hilog.error(0x0000, 'HMStartStore', 'delete %{public}s could not be trashed: %{public}s',
+        note.relPath, JSON.stringify(e));
+    }
+    if (!trashed) {
+      return false;
     }
     this.notes = this.notes.filter((item: Note) => item.id !== note.id);
     this.tags = this.collectTags(this.notes);
-    hilog.info(0x0000, 'HMStartStore', 'delete %{public}s trashed=%{public}s', note.relPath, name);
+    hilog.info(0x0000, 'HMStartStore', 'delete %{public}s trashed=%{public}s',
+      note.relPath, name);
+    return true;
   }
 
   /**

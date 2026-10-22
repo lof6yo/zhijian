@@ -17,6 +17,7 @@ const KEY_DAV_HOST = 'davDnsHost';
 const KEY_DAV_IP = 'davDnsIp';
 const KEY_DAV_PROXY = 'davProxy';
 const KEY_SYNC_BASE = 'syncBase';
+const KEY_SYNC_SCOPE = 'syncBaseScope';
 const KEY_SYNC_AT = 'syncFinishedAt';
 
 export const FONT_SIZE_MIN = 14;
@@ -95,6 +96,17 @@ export class SettingsStore {
    * `JSON.parse` result.
    */
   syncBase: string = '';
+  /**
+   * Which server the baseline belongs to: `<baseUrl>\t<username>`.
+   *
+   * The baseline is a set of *facts about one server*. Point the app at a
+   * different URL and those facts become lies — every row claims "the server
+   * held this id", the new server's listing does not contain it, and the merge
+   * concludes the whole vault was deleted and files it all into 回收站. Scoping
+   * the baseline keeps a server change on the safe side: an unrecognised scope
+   * means "no baseline", which re-uploads instead of trashing.
+   */
+  syncBaseScope: string = '';
   /** Epoch ms of the last successful sync, 0 when never synced. */
   syncFinishedAt: number = 0;
 
@@ -122,6 +134,7 @@ export class SettingsStore {
       this.davDnsIp = this.readString(KEY_DAV_IP, this.davDnsIp);
       this.davProxy = this.readString(KEY_DAV_PROXY, this.davProxy);
       this.syncBase = this.readString(KEY_SYNC_BASE, this.syncBase);
+      this.syncBaseScope = this.readString(KEY_SYNC_SCOPE, this.syncBaseScope);
       this.syncFinishedAt = this.readNumber(KEY_SYNC_AT, this.syncFinishedAt);
       this.initialized = true;
     } catch (error) {
@@ -195,6 +208,14 @@ export class SettingsStore {
   setSyncBase(base: string): void {
     this.syncBase = base;
     this.writeString(KEY_SYNC_BASE, base);
+  }
+
+  /** Stores the baseline together with the server it describes. */
+  setSyncState(base: string, scope: string): void {
+    this.syncBase = base;
+    this.syncBaseScope = scope;
+    this.writeString(KEY_SYNC_BASE, base);
+    this.writeString(KEY_SYNC_SCOPE, scope);
   }
 
   setSyncFinishedAt(at: number): void {

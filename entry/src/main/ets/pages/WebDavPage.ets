@@ -305,6 +305,9 @@ export struct WebDavPage {
       Text('按笔记 ID 配对并按修改时间三方合并；两端同时修改时保留冲突副本，不会覆盖。')
         .fontSize(11)
         .fontColor($r('app.color.text_secondary'))
+      Text('删除会同步到对端回收站并保留 30 天，不会直接销毁。')
+        .fontSize(11)
+        .fontColor($r('app.color.text_secondary'))
     }
     .alignItems(HorizontalAlign.Start)
     .width('100%')

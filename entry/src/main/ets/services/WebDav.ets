@@ -144,8 +144,9 @@ export class WebDavClient {
    * harmlessly.
    */
   private static async send(config: DavConfig, method: string, relPath: string,
-    body: string | undefined, extraHeaders: rcp.RequestHeaders | undefined): Promise<rcp.Response> {
-    const attempts = 3;
+    body: string | undefined, extraHeaders: rcp.RequestHeaders | undefined,
+    maxAttempts: number = 3): Promise<rcp.Response> {
+    const attempts = maxAttempts;
     let last: Error | undefined = undefined;
     for (let attempt = 0; attempt < attempts; attempt++) {
       const session = WebDavClient.session(config);
@@ -256,6 +257,86 @@ export class WebDavClient {
       result.message = WebDavClient.describe(error);
       return result;
     }
+  }
+
+  /**
+   * Whether the server has refused `MOVE` at least once this process.
+   *
+   * This server answers `MOVE` with 502 through its gateway, every time. The
+   * retry loop cannot tell that from a transient failure, so it burns three
+   * attempts on a verb the origin will never accept. Remembering the refusal
+   * makes the second and later archives go straight to the copy path, which is
+   * the one that actually works here. Reset per process, so a server that only
+   * hiccuped is still tried afresh next launch.
+   */
+  private static moveRefused: boolean = false;
+
+  /**
+   * Moves a file, with a copy-then-delete fallback.
+   *
+   * `MOVE` is part of WebDAV class 1 and is the right primitive for "archive this
+   * note": it is one request, it keeps the body byte-identical, and the source
+   * path is gone afterwards so the next `PROPFIND` cannot see it. It is still
+   * worth a fallback — a server (or the gateway in front of it) can refuse `MOVE`
+   * with 405/501/502 even though it happily accepts `GET`/`PUT`/`DELETE`, and the
+   * copy path below is exactly equivalent for a single file. Verified against the
+   * real server: `MOVE` returns 502 three times, the copy path succeeds.
+   *
+   * `toRelPath` must already be percent-encoded. The `Destination` header needs
+   * an absolute URI per RFC 4918 §9.9, so it is rebuilt against the base.
+   */
+  static async moveTo(config: DavConfig, fromRelPath: string, toRelPath: string): Promise<DavResult> {
+    if (WebDavClient.moveRefused) {
+      return WebDavClient.copyThenDelete(config, fromRelPath, toRelPath);
+    }
+    const result = new DavResult();
+    try {
+      const response = await WebDavClient.send(config, 'MOVE', fromRelPath, undefined, {
+        'destination': `${config.baseUrl}${toRelPath}`,
+        'overwrite': 'T'
+      }, 1);
+      result.status = response.statusCode;
+      result.ok = response.statusCode === 200 || response.statusCode === 201 ||
+        response.statusCode === 204;
+      if (result.ok) {
+        return result;
+      }
+      if (response.statusCode === 405 || response.statusCode === 501 || response.statusCode === 502) {
+        // Not a transient fault: the origin does not implement the verb.
+        WebDavClient.moveRefused = true;
+      }
+      result.message = `MOVE ${response.statusCode} ${response.reasonPhrase ?? ''}`.trim();
+      hilog.warn(DOMAIN, TAG, 'MOVE %{public}s refused (%{public}d), falling back to copy',
+        fromRelPath, response.statusCode);
+    } catch (error) {
+      result.message = WebDavClient.describe(error);
+      hilog.warn(DOMAIN, TAG, 'MOVE %{public}s threw, falling back to copy: %{public}s',
+        fromRelPath, result.message);
+    }
+    const copied = await WebDavClient.copyThenDelete(config, fromRelPath, toRelPath);
+    if (copied.ok) {
+      return copied;
+    }
+    // Report the failure that got furthest rather than the MOVE refusal.
+    result.ok = false;
+    if (copied.message.length > 0) {
+      result.status = copied.status;
+      result.message = copied.message;
+    }
+    return result;
+  }
+
+  private static async copyThenDelete(config: DavConfig, fromRelPath: string,
+    toRelPath: string): Promise<DavResult> {
+    const got = await WebDavClient.get(config, fromRelPath);
+    if (!got.ok) {
+      return got;
+    }
+    const put = await WebDavClient.put(config, toRelPath, got.message);
+    if (!put.ok) {
+      return put;
+    }
+    return WebDavClient.remove(config, fromRelPath);
   }
 
   /** `DELETE`. A 404 is reported as success — the desired end state is "gone". */
