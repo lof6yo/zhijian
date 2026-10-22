@@ -97,7 +97,7 @@ AppScope/resources/base/media/
 entry/src/main/resources/rawfile/editor/
   index.html                 # editor-web 构建产物（单文件，勿手改）
 editor-web/                  # Milkdown/Crepe + Vite 源码
-scripts/                     # 环境/构建/签名/截图/日志
+scripts/                     # 环境/构建/签名/截图/日志/图标生成
 signing/                     # 本地 debug 签名材料（.gitignore）
 docs/vibe-coding-harmonyos.md# 环境与 Agent 配置深度研究
 docs/prd-v0.1.md             # 产品需求 v0.1

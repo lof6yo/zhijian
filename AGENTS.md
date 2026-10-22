@@ -6,7 +6,9 @@ toolchain or project layout changes.
 
 ## 1. Project snapshot
 
-- **App**: `HMStart`, bundle `com.hmprojects.hmstart`, vendor `example`.
+- **App**: `纸见` (display name; `app_name` + `EntryAbility_label`), bundle
+  `com.hmprojects.hmstart` (kept — changing it invalidates the local debug
+  signing profile), vendor `example`.
 - **Platform**: HarmonyOS NEXT, Stage model, ArkTS + ArkUI, **API 26**.
 - **Build**: Hvigor 6.26.4 via DevEco CLI 1.3.6; SDK `HarmonyOS 26.0.0 Release`
   (API 26) at `D:\deveco\command-line-tools\sdk`.
@@ -136,6 +138,16 @@ scripts\run.ps1 -SkipBuild
 
 Do not hand-edit `entry/src/main/resources/rawfile/editor/index.html`; it is a
 Vite single-file build of `editor-web/`.
+
+App icon (`scripts/gen-icon.ps1`): redraws the layered icon and the start icon
+with GDI+. Run it only when the mark should change, then rebuild. HarmonyOS
+rules baked into the script: foreground and background are both **1024×1024**,
+the background is a **pure solid colour** (no gradient, no graphics, no
+transparency), nothing self-clips a rounded corner, nothing adds inner padding,
+and the mark is scaled about the canvas centre so its half-diagonal stays inside
+the launcher mask circle. The **entry** copy of `foreground/background.png`
+wins over `AppScope`, so the script writes both — editing only one leaves the
+launcher showing the old placeholder.
 
 Direct fallbacks (only when DevEco CLI is unavailable):
 
