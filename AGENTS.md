@@ -785,3 +785,19 @@ commit message.
 - **`WaterFlow` width**: a `FlowItem`'s child is measured against the whole flow,
   so percentage widths bleed into the neighbouring column. Give cells an explicit
   computed width, and never put a full-width header inside a multi-column flow.
+- **Editing the Crepe body through `uinput`/`uiInput` does not work.** Driving the
+  ArkWeb textField from the shell corrupts the note silently instead of failing:
+  `harmonyos_input_text` drops everything after the first newline (or pastes the
+  blob as one line, merging headings into list items); `KEYCODE_ENTER` (2054) is
+  swallowed by the IME — it commits the composition rather than inserting a break;
+  and `MOVE_HOME`/`MOVE_END`/`SHIFT+*` act on the page, not the WebView caret, so
+  the next keystroke replaces unrelated text. 全选 (`Ctrl+A`) + one paste is the
+  only reliable bulk edit, and even that drops fenced code blocks. Verify by
+  `cat`-ing the `.md` over hdc — the rendered view hides the damage (doubled `*`
+  emphasis, stray `%`) that the source keeps. Prefer fixing the template in
+  `NoteStore.createSample()` and reinstalling over hand-editing a live note.
+- **The app sandbox is not writable from `hdc`.** `shell` runs as uid 2000; the
+  notes dir is uid 20020064 with `-rw-rw----`, so `ls`/`rm`/`cat` work but
+  `echo >`, `cp`, and `file send` return `Permission denied`. `/data/local/tmp`
+  is writable. To change note content, drive the UI or reinstall — do not assume
+  you can patch the `.md` files directly.
