@@ -12,7 +12,7 @@ Add-Type -AssemblyName System.Drawing
 # the launcher mask applies.
 
 $DESIGN = 1024.0
-$SCALE = 1.35          # artwork is authored at scale 1.0, drawn at 1.35
+$SCALE = 1.44          # artwork is authored at scale 1.0, drawn at 1.35
 
 function Add-Mark([System.Drawing.Graphics]$g, [System.Drawing.Color]$ink, [double]$s) {
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
