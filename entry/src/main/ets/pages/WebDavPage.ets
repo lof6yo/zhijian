@@ -35,6 +35,10 @@ export struct WebDavPage {
   @Local showDnsPin: boolean = false;
   @Local hasStoredPassword: boolean = false;
   @Local busy: boolean = false;
+  /** 自动同步模式：0 = 关闭，1 = 打开时，2 = 定时。 */
+  @Local autoSyncMode: number = 0;
+  /** 自动同步间隔（分钟）。 */
+  @Local autoSyncInterval: number = 15;
   @Local status: string = '';
   @Local statusOk: boolean = false;
   @Local lastSync: number = 0;
@@ -47,6 +51,8 @@ export struct WebDavPage {
     this.proxy = settings.davProxy;
     this.showDnsPin = settings.davDnsIp.length > 0 || settings.davProxy.length > 0;
     this.lastSync = settings.syncFinishedAt;
+    this.autoSyncMode = settings.autoSyncMode;
+    this.autoSyncInterval = settings.autoSyncInterval;
     this.loadPasswordState();
   }
 
@@ -247,6 +253,8 @@ export struct WebDavPage {
                   .width('100%')
                   .padding({ left: 2 })
               }
+
+              this.AutoSyncGroup()
             }
             .width('100%')
             .padding({ left: 16, right: 16, top: 8, bottom: 32 })
@@ -294,6 +302,93 @@ export struct WebDavPage {
     .height(56)
     .padding({ left: 8, right: 16 })
     .backgroundColor($r('app.color.page_bg'))
+  }
+
+  @Builder
+  AutoSyncGroup() {
+    Column({ space: 10 }) {
+      Text('自动同步')
+        .fontSize(13)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.text_primary'))
+        .width('100%')
+
+      Row({ space: 2 }) {
+        this.AutoSyncChip('关闭', 0)
+        this.AutoSyncChip('打开时', 1)
+        this.AutoSyncChip('定时', 2)
+      }
+      .padding(3)
+      .borderRadius(14)
+      .backgroundColor($r('app.color.page_bg'))
+      .width('100%')
+
+      Text('间隔')
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+        .padding({ top: 4, bottom: 0 })
+
+      Row({ space: 2 }) {
+        this.AutoSyncChip('5 分钟', 5, true)
+        this.AutoSyncChip('15 分钟', 15, true)
+        this.AutoSyncChip('30 分钟', 30, true)
+        this.AutoSyncChip('60 分钟', 60, true)
+      }
+      .padding(3)
+      .borderRadius(14)
+      .backgroundColor($r('app.color.page_bg'))
+      .width('100%')
+
+      Text(this.autoSyncHint())
+        .fontSize(11)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+        .padding({ top: 2 })
+    }
+    .width('100%')
+    .padding(12)
+    .backgroundColor($r('app.color.glass_bg'))
+    .borderRadius(16)
+  }
+
+  @Builder
+  AutoSyncChip(label: string, value: number, isInterval: boolean = false) {
+    Text(label)
+      .fontSize(12)
+      .fontWeight(this.autoSyncSelected(value, isInterval) ? FontWeight.Medium : FontWeight.Normal)
+      .fontColor(this.autoSyncSelected(value, isInterval) ? this.accentColor : $r('app.color.text_secondary'))
+      .textAlign(TextAlign.Center)
+      .layoutWeight(1)
+      .height(28)
+      .borderRadius(14)
+      .backgroundColor(this.autoSyncSelected(value, isInterval) ? $r('app.color.chip_bg') : Color.Transparent)
+      .onClick(() => {
+        if (isInterval) {
+          SettingsStore.instance.setAutoSyncInterval(value);
+          this.autoSyncInterval = value;
+        } else {
+          SettingsStore.instance.setAutoSyncMode(value);
+          this.autoSyncMode = value;
+        }
+      })
+      .accessibilityText(label)
+  }
+
+  private autoSyncSelected(value: number, isInterval: boolean): boolean {
+    return isInterval ? this.autoSyncInterval === value : this.autoSyncMode === value;
+  }
+
+  /** 一句话说明当前这套自动同步到底会做什么。 */
+  private autoSyncHint(): string {
+    if (this.autoSyncMode === 0) {
+      return '关闭：只有你手动同步（下拉笔记页，或点上面的「立即同步」）。';
+    }
+    const every: string = `每 ${this.autoSyncInterval} 分钟`;
+    if (this.autoSyncMode === 1) {
+      return `打开应用时同步一次；如果距上次同步不到 ${this.autoSyncInterval} 分钟就不重复同步。`;
+    }
+    return `应用在前台时${every}同步一次。退到后台就不再同步。`;
   }
 
   @Builder

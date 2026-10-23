@@ -5,6 +5,7 @@ import { window } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
 import { SettingsStore } from '../services/SettingsStore';
 import { TagStore } from '../services/TagStore';
+import { AutoSync } from '../services/AutoSync';
 import { WindowService } from '../common/WindowService';
 
 const DOMAIN = 0x0000;
@@ -15,8 +16,7 @@ export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     SettingsStore.instance.init(this.context);
     TagStore.instance.init(this.context);
-    this.applyStoredTheme();
-    // Warm the ArkWeb engine during ability creation so the first editor open
+    this.applyStoredTheme();    // Warm the ArkWeb engine during ability creation so the first editor open
     // does not pay the full WebView cold-start cost on top of the 2.7 MB bundle.
     try {
       webview.WebviewController.initializeWebEngine();
@@ -95,11 +95,21 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
   }
 
+  /**
+   * 回到前台：起自动同步的心跳。
+   *
+   * 心跳只判断「该不该同步」，本身不发请求。它由 Ability 的前后台回调驱动，
+   * 而不是由页面驱动——应用退到后台后页面还活着，继续自动同步就意味着在用户
+   * 不知情时把内容发到服务器。
+   */
   onForeground(): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
+    AutoSync.instance.start();
   }
 
+  /** 退到后台：停表。 */
   onBackground(): void {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
+    AutoSync.instance.stop();
   }
 }

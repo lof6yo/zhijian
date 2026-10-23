@@ -29,6 +29,8 @@ const KEY_SYNC_AT = 'syncFinishedAt';
 const KEY_CARD_RADIUS = 'cardRadius';
 const KEY_SIMPLE_EDIT = 'simpleEditing';
 const KEY_FORMAT_BAR = 'formatBar';
+const KEY_AUTO_SYNC_MODE = 'autoSyncMode';
+const KEY_AUTO_SYNC_INTERVAL = 'autoSyncInterval';
 
 export const FONT_SIZE_MIN = 14;
 export const FONT_SIZE_MAX = 22;
@@ -156,6 +158,15 @@ export class SettingsStore {
   simpleEditing: boolean = false;
   /** 格式按钮条（默认关）。关掉时输入框就是纯文本，没有按钮干扰。 */
   formatBar: boolean = false;
+  /**
+   * 自动同步模式：0 = 关闭，1 = 打开应用时，2 = 定时。
+   *
+   * 默认**关闭**：自动同步会把内容发到服务器，这件事该由用户明确点头，
+   * 而不是默认开着。
+   */
+  autoSyncMode: number = 0;
+  /** 自动同步的间隔（分钟）。 */
+  autoSyncInterval: number = 15;
 
   private prefs: preferences.Preferences | null = null;
   private initialized: boolean = false;
@@ -186,6 +197,8 @@ export class SettingsStore {
         CARD_RADIUS_MIN, CARD_RADIUS_MAX);
       this.simpleEditing = this.readBool(KEY_SIMPLE_EDIT, this.simpleEditing);
       this.formatBar = this.readBool(KEY_FORMAT_BAR, this.formatBar);
+      this.autoSyncMode = this.readNumber(KEY_AUTO_SYNC_MODE, this.autoSyncMode);
+      this.autoSyncInterval = this.readNumber(KEY_AUTO_SYNC_INTERVAL, this.autoSyncInterval);
       this.initialized = true;
     } catch (error) {
       hilog.error(DOMAIN, 'SettingsStore', 'init failed: %{public}s', JSON.stringify(error));
@@ -230,6 +243,16 @@ export class SettingsStore {
   setFormatBar(on: boolean): void {
     this.formatBar = on;
     this.writeBool(KEY_FORMAT_BAR, on);
+  }
+
+  setAutoSyncMode(mode: number): void {
+    this.autoSyncMode = mode;
+    this.writeNumber(KEY_AUTO_SYNC_MODE, mode);
+  }
+
+  setAutoSyncInterval(minutes: number): void {
+    this.autoSyncInterval = minutes;
+    this.writeNumber(KEY_AUTO_SYNC_INTERVAL, minutes);
   }
 
   setDavUrl(url: string): void {

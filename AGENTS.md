@@ -506,6 +506,26 @@ button.
 - **搜索词是跨页签共享的**（标题栏只有一套搜索框），作用在当前页签上；切页签时
   清空，免得把笔记页的搜索词带到标签页。
 
+### 自动同步与下拉同步
+
+- **自动同步只在前台做。** 机制是「30 秒心跳 + 一条策略」：心跳只判断「该不该同步」，
+  本身不发请求。心跳由 `EntryAbility.onForeground` / `onBackground` 驱动——后台同步要
+  申请后台任务权限，而且一个本地优先的应用**不应该在用户不知情时把内容发到服务器**。
+- **自动同步在四种情况下不做**：没配 WebDAV；上一次同步还没结束（同步是串行的，重叠会
+  互相踩基线）；**详情页开着**（阅读器里可能有未提交的草稿，同步会改文件，草稿写回
+  就把同步下来的内容盖掉）；距上次尝试不足间隔（连续失败按 2 的幂退避，最多 4 倍）。
+- **手动下拉同步走同一条路径**，只是跳过间隔与退避判断——用户明确要求了。
+- **手势进行中 ArkUI 不重绘组件树。** 实测：手指还按着时把 `@Local` 改掉，界面纹丝
+  不动，松手后才一次性更新。所以「环随拉动进度填满」**不能**靠 `@Local` + `ForEach`
+  做出来，只能直接往 Canvas 上画（画完自动在下一帧重绘，不需要 `flush`）。
+- **`WaterFlow` 没有 `edgeEffect`**，平台不给它回弹，`Refresh` 的下拉手势与「把列表
+  整体下移」的弹性位移在它身上都不发生。笔记网格因此改用 `List` + `lanes(2)`——
+  平台原生下拉刷新的标准结构。代价：泳道**按列填**（左列 0,2,4…），而 `WaterFlow`
+  是按行填；泳道之间没有横向间隙，用外边距手搓出 12 vp 的缝（用 margin 不用 padding，
+  padding 会把卡片的文字宽度也缩掉，长标题多折一行）。
+- **环要做成浮层，不要放进 `Refresh` 的刷新区。** 刷新区的高度由平台按拉动距离给，
+  一旦平台没认下这次下拉，它的高度就是 0，里面的东西全被裁掉——环会凭空消失。
+
 The reader re-parses in `onShown`, not `pushPath({ onPop })` — the latter only
 fires when `pop(result)` carries a payload. It skips the reload while a draft is
 open, so returning to the page cannot clobber what the user is typing.
