@@ -6,7 +6,14 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 const DOMAIN = 0x0000;
 const STORE_NAME = 'hmstart_settings';
 const KEY_THEME = 'themeMode';
-const KEY_BACKGROUND = 'backgroundStyle';
+/*
+ * `backgroundStyle` is a retired setting: 背景 keeps only 光感 and follows 强调色.
+ * The key is intentionally *not* deleted — an installed build still has a value
+ * under it, and Preferences never garbage-collects. Reading it is a no-op, but
+ * leaving the name documented here stops someone re-introducing a parallel
+ * `backgroundStyle` field that silently disagrees with the palette-driven
+ * backdrop.
+ */
 const KEY_ACCENT = 'accentMode';
 const KEY_FONT_SIZE = 'editorFontSize';
 const KEY_LINE_HEIGHT = 'editorLineHeight';
@@ -19,11 +26,24 @@ const KEY_DAV_PROXY = 'davProxy';
 const KEY_SYNC_BASE = 'syncBase';
 const KEY_SYNC_SCOPE = 'syncBaseScope';
 const KEY_SYNC_AT = 'syncFinishedAt';
+const KEY_CARD_RADIUS = 'cardRadius';
 
 export const FONT_SIZE_MIN = 14;
 export const FONT_SIZE_MAX = 22;
 export const LINE_HEIGHT_MIN = 140;
 export const LINE_HEIGHT_MAX = 220;
+
+/**
+ * Note-card corner radius, in vp.
+ *
+ * The range starts at 8 rather than 0 because a square card is not a "0 radius
+ * card" in this layout — it reads as a broken card, and the press/hover effect
+ * still draws a rounded highlight. 36 is the ceiling because the card is only
+ * ~200 vp wide and a larger radius starts clipping the title's first line.
+ */
+export const CARD_RADIUS_MIN = 8;
+export const CARD_RADIUS_MAX = 36;
+export const CARD_RADIUS_DEFAULT = 26;
 
 /**
  * 沉浸光感挡位, following the platform's own vocabulary rather than an invented
@@ -66,7 +86,6 @@ export class SettingsStore {
   static readonly instance: SettingsStore = new SettingsStore();
 
   themeMode: number = 0;
-  backgroundStyle: number = 2;
   accentMode: number = 0;
   /** Editor body font size in px (web side uses px, not vp). */
   editorFontSize: number = 17;
@@ -109,6 +128,14 @@ export class SettingsStore {
   syncBaseScope: string = '';
   /** Epoch ms of the last successful sync, 0 when never synced. */
   syncFinishedAt: number = 0;
+  /**
+   * Note-card corner radius in vp, `CARD_RADIUS_DEFAULT` when untouched.
+   *
+   * Applies to the 笔记卡片 grid cells only. The settings rows, chips and the
+   * floating surfaces keep their own radii — this is a card-density preference,
+   * not a global shape token.
+   */
+  cardRadius: number = CARD_RADIUS_DEFAULT;
 
   private prefs: preferences.Preferences | null = null;
   private initialized: boolean = false;
@@ -120,7 +147,6 @@ export class SettingsStore {
     try {
       this.prefs = preferences.getPreferencesSync(context, { name: STORE_NAME });
       this.themeMode = this.readNumber(KEY_THEME, this.themeMode);
-      this.backgroundStyle = this.readNumber(KEY_BACKGROUND, this.backgroundStyle);
       this.accentMode = this.readNumber(KEY_ACCENT, this.accentMode);
       this.editorFontSize = this.clamp(this.readNumber(KEY_FONT_SIZE, this.editorFontSize),
         FONT_SIZE_MIN, FONT_SIZE_MAX);
@@ -136,6 +162,8 @@ export class SettingsStore {
       this.syncBase = this.readString(KEY_SYNC_BASE, this.syncBase);
       this.syncBaseScope = this.readString(KEY_SYNC_SCOPE, this.syncBaseScope);
       this.syncFinishedAt = this.readNumber(KEY_SYNC_AT, this.syncFinishedAt);
+      this.cardRadius = this.clamp(this.readNumber(KEY_CARD_RADIUS, this.cardRadius),
+        CARD_RADIUS_MIN, CARD_RADIUS_MAX);
       this.initialized = true;
     } catch (error) {
       hilog.error(DOMAIN, 'SettingsStore', 'init failed: %{public}s', JSON.stringify(error));
@@ -145,11 +173,6 @@ export class SettingsStore {
   setThemeMode(mode: number): void {
     this.themeMode = mode;
     this.writeNumber(KEY_THEME, mode);
-  }
-
-  setBackgroundStyle(style: number): void {
-    this.backgroundStyle = style;
-    this.writeNumber(KEY_BACKGROUND, style);
   }
 
   setAccentMode(mode: number): void {
@@ -170,6 +193,11 @@ export class SettingsStore {
   setGlassLevel(level: number): void {
     this.glassLevel = this.clamp(Math.round(level), GLASS_LEVEL_MIN, GLASS_LEVEL_MAX);
     this.writeNumber(KEY_GLASS, this.glassLevel);
+  }
+
+  setCardRadius(radius: number): void {
+    this.cardRadius = this.clamp(Math.round(radius), CARD_RADIUS_MIN, CARD_RADIUS_MAX);
+    this.writeNumber(KEY_CARD_RADIUS, this.cardRadius);
   }
 
   setDavUrl(url: string): void {

@@ -1,5 +1,22 @@
 import { systemDateTime } from '@kit.BasicServicesKit';
+import { MaterialLayer } from './MaterialLayer';
 
+/**
+ * `.background()` takes a typed options object: ArkTS rejects an inline object
+ * literal (`arkts-no-untyped-obj-literals`), and the resulting parse failure
+ * cascades into the rest of the attribute chain.
+ */
+const CARD_BG_OPTIONS: BackgroundOptions = { align: Alignment.Center };
+
+/**
+ * One 笔记卡片 in the grid.
+ *
+ * Takes **immutable primitive** props rather than a `Note`. `Note` is
+ * `@ObservedV2`, so passing the object through `@Param` would leave the card
+ * showing a pre-edit title until the whole grid happened to rebuild; the
+ * `ForEach` key `${note.id}-${note.updatedAt}` plus primitive props is what
+ * forces a fresh card when an existing note is edited.
+ */
 @ComponentV2
 export struct NoteCard {
   @Param noteId: string = '';
@@ -12,10 +29,47 @@ export struct NoteCard {
   /** Runtime accent from `Palette`; `$r('app.color.accent')` cannot follow the setting. */
   @Param accentColor: string = '#0A59F7';
   @Param accentChipColor: string = '#E8EEFF';
+  /**
+   * Card corner radius in vp, from 设置 › 卡片圆角.
+   *
+   * A `@Param` rather than a resource because the value is a runtime preference —
+   * ArkUI resolves `$r('app.*')` at build time, so a user-selectable radius can
+   * only travel as a number. The default matches `CARD_RADIUS_DEFAULT`; it is
+   * repeated literally here so `NoteCard` does not import the settings store.
+   */
+  @Param cornerRadius: number = 26;
+  /**
+   * Whether the card paints the platform 沉浸光感 material behind its surface.
+   *
+   * Gated by the caller rather than probed here, because `uiMaterial` is API 26
+   * and this component must keep working below it. When false the card falls
+   * back to the opaque system card fill — never to transparent, which would make
+   * the note disappear.
+   */
+  @Param glassOn: boolean = false;
+  /** 沉浸光感挡位, 0 = 自适应 … 3 = 低. Fed to `MaterialLayer`. */
+  @Param glassGear: number = 0;
+  /**
+   * A **translucent** veil painted *over* the material, giving the card its
+   * surface colour.
+   *
+   * This is the difference between "glass card" and "no card". The material
+   * refracts whatever is behind it, and this app's backdrop is a near-uniform
+   * light accent wash — so on its own the material is almost invisible and the
+   * grid loses all structure (verified on device: the first build with a bare
+   * material carrier made every card the same tone as the page). A frosted veil
+   * on top restores the surface while the material still supplies the edge
+   * refraction.
+   *
+   * It must stay translucent: an opaque fill sits above the material's visual
+   * layer and hides it completely.
+   */
+  @Param glassTint: string = '';
   @Event onOpen: (noteId: string) => void = () => {};
   @Event onTogglePin: (noteId: string) => void = () => {};
   @Event onToggleFavorite: (noteId: string) => void = () => {};
   @Event onDelete: (noteId: string) => void = () => {};
+  @Event onEditTags: (noteId: string) => void = () => {};
 
   build() {
     Column({ space: 8 }) {
@@ -76,12 +130,32 @@ export struct NoteCard {
     }
     .width('100%')
     .padding(16)
-    // Card surface follows the system card colour so light/dark both track the
-    // platform, and the 26 vp radius matches the Cube card language.
-    .backgroundColor($r('sys.color.ohos_id_color_card_bg'))
-    .borderRadius(26)
-    .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
     .alignItems(HorizontalAlign.Start)
+    // The surface is painted by `.background()`, in this order:
+    //
+    //   1. the material carrier (the Toggle that paints 沉浸光感), then
+    //   2. a translucent veil, then
+    //   3. the text above, as this Column's own children.
+    //
+    // Both choices are load-bearing.
+    //
+    // `.background(builder)` lays the carrier out against *this node's* already
+    // measured box, so the material cannot inflate the card. Putting the carrier
+    // in a `Stack` sibling instead did exactly that on device:
+    // `LayoutPolicy.matchParent` resolved against the flow's available size and
+    // every card grew to the full grid height — one row filled the screen.
+    //
+    // The veil has to sit above the material but below the text. Painting it as
+    // `backgroundColor` would put it *below* the material, because the material's
+    // visual layer is drawn above `backgroundColor`, and hide it entirely.
+    .background(this.CardSurface(), CARD_BG_OPTIONS)
+    // Transparent only when the carrier is actually painting. An opaque fallback
+    // here would be correct-looking but would also cover the material.
+    .backgroundColor(this.glassOn ? Color.Transparent : $r('sys.color.ohos_id_color_card_bg'))
+    // Do **not** clip: the shadow is painted outside the node's bounds, so
+    // `clip(true)` would cut it off and leave a hard edge.
+    .borderRadius(this.cornerRadius)
+    .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
     // Press feedback uses the platform interaction effect instead of
     // `.stateStyles()`: this toolchain rejects both the inline object literal
     // and `@Styles` function references as `StateStyles` values.
@@ -93,6 +167,31 @@ export struct NoteCard {
     .bindContextMenu(this.CardMenu(), ResponseType.LongPress, {
       preview: MenuPreviewMode.NONE
     })
+  }
+
+  /**
+   * Background layer: the material carrier under a translucent surface veil.
+   *
+   * Emits nothing when the device cannot render immersive material — the
+   * component's own opaque `backgroundColor` is then the whole surface.
+   */
+  @Builder
+  CardSurface() {
+    if (this.glassOn) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        MaterialLayer({
+          radius: this.cornerRadius,
+          gear: this.glassGear
+        })
+        Column()
+          .width('100%')
+          .height('100%')
+          .borderRadius(this.cornerRadius)
+          .backgroundColor(this.glassTint)
+      }
+      .width('100%')
+      .height('100%')
+    }
   }
 
   @Builder
@@ -108,6 +207,11 @@ export struct NoteCard {
         .onClick(() => {
           this.onToggleFavorite(this.noteId);
         })
+      MenuItem({ content: '标签…' })
+        .contentFontColor($r('app.color.text_primary'))
+        .onClick(() => {
+          this.onEditTags(this.noteId);
+        })
       MenuItem({ content: '删除' })
         .contentFontColor($r('app.color.danger'))
         .onClick(() => {
@@ -116,6 +220,12 @@ export struct NoteCard {
     }
   }
 
+  /**
+   * Deleting is a decision with a 30-day undo window, not a one-tap action: the
+   * note moves to 回收站 rather than vanishing, and the dialog says so. A bare
+   * `onDelete` from the menu would be one mis-tap from losing a note out of the
+   * grid, which is exactly the failure mode the confirmation exists to prevent.
+   */
   private confirmDelete(): void {
     const name = this.title.length > 0 ? this.title : '无标题';
     this.getUIContext().showAlertDialog({
@@ -136,6 +246,12 @@ export struct NoteCard {
     });
   }
 
+  /**
+   * Relative time, deliberately coarse.
+   *
+   * The grid re-sorts on `updatedAt`, so a precise stamp would tick in place
+   * without changing the order; whole units are all the card needs.
+   */
   private relativeTime(ms: number): string {
     const now = systemDateTime.getTime();
     const diff = Math.max(0, now - ms);

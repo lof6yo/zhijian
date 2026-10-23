@@ -213,7 +213,7 @@ entry/src/main/ets/
 ├── entryability/        # UIAbility lifecycle only
 ├── pages/               # Index (HDS shell: 3 tabs, title bar actions),
 │                        # EditorPage / TrashPage / WebDavPage (NavDestination)
-├── components/          # NoteCard
+├── components/          # NoteCard, MaterialLayer (沉浸光感 Toggle carrier)
 ├── models/              # Note (V2 @ObservedV2/@Trace)
 ├── services/            # NoteStore (files), Frontmatter (YAML),
 │                        # WebDav (RCP client), SyncEngine (three-way merge),
@@ -576,17 +576,53 @@ an older device degrades instead of crashing. The HDS libraries live in the
   `uiMaterial.isImmersiveMaterialSupported()` then `getGlobalMaterialLevel()` and
   the settings row renders `本机高算力 · 自适应优先`, so the 自适应 gear is
   verifiable rather than a black box. Do not use it to drive layout.
-- **Immersive material (`systemMaterial`) has a hard scope limit.** Per
-  `@ohos.arkui.uiMaterial`: it only takes effect inside a `Navigation` /
-  `NavDestination` title bar, a `barPosition(End)` horizontal bottom tab bar, or
-  the listed dialog/Slider/Toggle/Select cases — "在其他区域中设置沉浸光感效果不
-  生效". **Verified on device**: a chip capsule in the page content with
-  `.backgroundColor(Color.Red).systemMaterial(...)` kept the red fill, proving the
-  material never applied. So the filter/sort capsules can never use it; that is
-  why the whole hand-built surface family shares `glassEffect()` instead.
-  `titleBar.content.bottomBuilder` exists (`BottomBuilderParams` with `height` /
-  `showType`) and *would* move the chips into scope, but it grows the title bar and
-  invalidates `TITLE_BAR_CLEARANCE`, so it is not worth it for two chips.
+- **Immersive material (`systemMaterial`) has a hard scope limit — but a `Toggle`
+  carrier is the way around it.** Per `@ohos.arkui.uiMaterial` it only takes effect
+  inside a `Navigation` / `NavDestination` title bar, a `barPosition(End)`
+  horizontal bottom tab bar, or the listed dialog/Slider/Toggle/Select cases —
+  "在其他区域中设置沉浸光感效果不生效". **Verified on device**: a chip capsule in the
+  page content with `.backgroundColor(Color.Red).systemMaterial(...)` kept the red
+  fill, proving the material never applied. `Toggle` *is* in the documented list,
+  so `components/MaterialLayer.ets` paints the material from an invisible
+  `Toggle({ type: ToggleType.Button, isOn: false })` and the real content draws on
+  top of it. Every content-area surface (笔记卡片, the 筛选条/排序条 capsules) now
+  goes through that carrier instead of the hand-built `glassEffect()` stack.
+  `titleBar.content.bottomBuilder` exists and *would* move the chips into scope,
+  but it grows the title bar and invalidates `TITLE_BAR_CLEARANCE`, so it is not
+  worth it for two chips.
+- **The carrier must be mounted through `.background()`, not as a `Stack` sibling.**
+  This one cost a broken build on device. `MaterialLayer` sizes itself with
+  `LayoutPolicy.matchParent`, which inside a `Stack` resolves against the *flow's
+  available size* — every 笔记卡片 grew to the full grid height and one row filled
+  the screen. `.background(builder)` lays the carrier out against the node's
+  already-measured box, so it cannot inflate anything. Order inside the builder is
+  also load-bearing: carrier first, then a translucent veil, then the text as the
+  node's own children — the material's visual layer is drawn **above**
+  `backgroundColor` but **below** children, so an opaque `backgroundColor` hides it
+  and a bare carrier is swallowed by the near-uniform accent backdrop (the grid
+  lost all visible surface). The veil is `glassTint()`, currently `#D1FDFEFF` /
+  `#CC1C1C1E`: at 70 % the sampled card came out *darker* than the page
+  (`#EDF5F6` vs `#F1F9F9`), i.e. a slab sunk into the background; ~82 % puts it
+  above the backdrop while still passing the material's edge refraction.
+- **A `@Builder` used as `.background()` needs a typed options object.**
+  `.background(this.CardSurface(), { align: Alignment.Center })` fails ArkTS with
+  `arkts-no-untyped-obj-literals`, and the resulting parse failure cascades into
+  every attribute after it (`arkts-no-standalone-this`, `arkts-no-comma-outside-loops`,
+  90 errors from one line). Hoist a module-level `const CARD_BG_OPTIONS:
+  BackgroundOptions = { align: Alignment.Center }`.
+- **Gating: probe once, never per widget.** `glassOn()` requires both
+  `hdsSupported` (API ≥ 23) and `immersiveSupported` (`MaterialType.IMMERSIVE` in
+  `getSystemMaterialTypes()`). When false every surface falls back to its opaque
+  fill — never to transparent, which would make the note disappear. The material
+  also follows the **system** light/dark setting, not the app's 外观 choice (the API
+  exposes no switch), which is why the veil is chosen by `activeDark()` rather than
+  by the platform.
+- **`ImmersiveStyle` must be resolved through a function, never a module-level
+  constant.** `const S = uiMaterial.ImmersiveStyle.THIN` dereferences `uiMaterial`
+  at *module load*; on a device below API 26 that is `undefined`, the `.THIN` access
+  throws **outside any `try/catch`**, the module fails to load and the app crashes
+  on launch — not "no material", but no app. `MaterialLayer.styleFor()` exists for
+  exactly this.
 - **The two title-bar circles and the search field use the real material.**
   They live in `stackBuilder`, which is in scope. `CircleAction` /
   `SearchField` call `.systemMaterial(this.immersiveMaterial())` and fall back to
@@ -595,11 +631,13 @@ an older device degrades instead of crashing. The HDS libraries live in the
   transparent on high/medium tiers anyway, and on low tiers paints with
   `materialColor`), **never** set `border` (`borderWidth` is reset to none), and
   the circle comes from `clipShape(CircleShape)` rather than `borderRadius`.
-  `applyShadow` defaults true and overrides the `shadow` attribute.
+  `applyShadow` defaults true and overrides the `shadow` attribute — set it
+  **false** here (see the 边缘光感 entry above).
   `immersiveMaterial()` maps the gear to `ImmersiveStyle`
   (自适应 → REGULAR, 高 → ULTRA_THICK, 中 → REGULAR, 低 → THIN) and sets
   `interactive: true` for the press deformation. Note `ImmersiveStyle` has no
-  effect on low-tier devices.
+  effect on low-tier devices. **Do not** set `interactive: true` on a *card*
+  carrier: on the reference device it made the material stop rendering entirely.
 - **One backdrop for the whole shell, not one per tab.** `build()` is a `Stack`
   of `PageBackdrop()` + `Navigation`, and `HdsShell`/`PlainShell` contain no
   backdrop of their own. Per-tab backdrops each computed their own gradient and
@@ -620,6 +658,23 @@ an older device degrades instead of crashing. The HDS libraries live in the
   identical to the unfiltered list. `filterByTag` does **not** focus the field —
   focusing pops the keyboard over the results the user came to read. Note it
   cannot reuse `switchTab()`: that helper force-collapses `searchExpanded`.
+- **Tags are written from the 笔记卡片 long-press menu, through a sheet.** They
+  used to be reachable only by hand-editing the `tags:` line in the frontmatter,
+  which made 标签 a read-only view of a field no UI could write. 笔记卡片 ›
+  「标签…」 opens `Index.TagSheet()`: applied tags render as removable accent
+  chips, a `TextInput` + 添加 adds new ones, and 已有标签 lists the vault's tags so
+  a note reuses `工作` instead of inventing `work` beside it.
+  Two constraints:
+  - **The working copy is a `@Local` array, not the `Note`.** Mutating the note
+    mid-edit would repaint the grid behind the sheet on every keystroke, and a
+    cancelled sheet would already have changed the note. 完成 is the only writer.
+  - **`NoteStore.setTags()` must not route through `saveNote()`.** `saveNote()`
+    renames the file to match the body's H1 and re-derives the excerpt; tagging
+    changes no prose, so that would rename files behind the user's back and
+    invalidate every `ForEach` key. `setTags()` rewrites the frontmatter and bumps
+    `updatedAt` (so sync sees an edit and pushes it), nothing else.
+  - A `@Local` array is observed on **assignment**: `push` into it and nothing
+    repaints. Use `concat` / `filter` and reassign.
 - **Search expands in place; there is no always-visible search field.** The title
   row swaps `Text(tabTitle)` + magnifier for a rounded `SearchField()` when
   `searchExpanded` is set, and collapses back with the query cleared. A second
@@ -688,12 +743,43 @@ an older device degrades instead of crashing. The HDS libraries live in the
   **and again from `Index.aboutToAppear`** — the stored light/dark choice is
   otherwise lost, because the window's system bars are re-initialised when the
   stage loads content. `services/SettingsStore.ets` persists `themeMode` (`0`
-  follow system, `1` light, `2` dark), `backgroundStyle` (`0` solid, `1`
-  gradient, `2` gradient + glow), `accentMode` (`0` blue, `1` teal, `2` amber),
-  `editorFontSize` (14–22 px) and `editorLineHeight` (140–220, i.e. 1.40–2.20×),
-  plus `glassLevel` (see the immersion section).
+  follow system, `1` light, `2` dark), `accentMode` (`0` blue, `1` teal, `2` amber),
+  `editorFontSize` (14–22 px), `editorLineHeight` (140–220, i.e. 1.40–2.20×),
+  `cardRadius` (8–36 vp, default 26) and `glassLevel` (see the immersion section).
   `Index.PageBackdrop` is drawn **once** behind the whole shell, not per tab, so
   the background does not jump when switching tabs and the swipe has no seam.
+- **背景 is 光感 only, and it follows 强调色.** There is no 背景样式 setting any more:
+  the retired `backgroundStyle` preference (`0` solid / `1` gradient /
+  `2` gradient + glow) was removed with its 分段控件 row, because a solid fill
+  contradicts the 光感 look and the two "gradient" variants were the same shape
+  with an extra orbital glow. `Index.PageBackdrop` now has exactly one form —
+  an accent gradient (`Palette.AccentScheme.pageTop/pageMid/pageBottom`) plus four
+  `accentGlowColor()` orbs — so switching 强调色 repaints the whole background with
+  no separate control. `KEY_BACKGROUND` is deliberately left documented in
+  `SettingsStore.ets` but unread: an installed build still holds a value under it
+  and Preferences never garbage-collects, so the name is kept to stop someone
+  reintroducing a parallel field that disagrees with the palette.
+- **The bottom 页签栏 is a floating capsule, and its width comes from a *bucket*.**
+  `HdsBarWidthRangeOptions` chooses by **window** width: `smallWidth` when the tab
+  area is **< 440 vp**, `mediumWidth` for 440–600, `largeWidth` for > 840. This
+  device is exactly 440 vp, so it falls in the **medium** bucket — the old
+  `mediumWidth: 400` produced a 400 vp bar on a 440 vp screen (measured
+  60…1260 px of 1320), i.e. a full-width slab with 20 vp of air, which read as
+  「页签栏过宽」. Now 280/300/340, measured `[210,1980][1110,2148]` = 300 vp, so it
+  reads as a capsule. Reduce all three buckets together: leaving `large` wide makes
+  the tablet layout *relatively* wider than the phone one.
+- **The title-bar circles must not carry the material's shadow.** `applyShadow`
+  defaults to `true` **and takes priority over the `shadow` attribute**, so on the
+  44 vp search/新建 circles — which are clipped to a circle — the shadow survived
+  the clip as a crescent hugging the inside of the rim. That was the
+  「边缘光感异常」 report: a hard bright edge plus a grey halo, not depth. Setting
+  `applyShadow: false` on those two surfaces is the fix; a floating 44 vp control
+  on a soft backdrop needs no drop shadow, and the material's own rim is the edge.
+  Pixel evidence from the same frame: before, the gap between the two buttons was
+  `#E5EAF0` (shadow-darkened) against a `#EBF1F6` page; after, `#EFF4FA`.
+  `lightEffect` is also set to `accentColor()` — its documented default is
+  `Color.White`, and a white specular on a near-white backdrop is invisible, so a
+  press produced no feedback at all.
 - **Accent colours cannot come from `$r('app.color.accent')`.** ArkUI resolves
   resources at build time, so a runtime-selectable accent has to be passed as a
   hex string. `common/Palette.ets` (`AccentScheme`) owns the light/dark pair for

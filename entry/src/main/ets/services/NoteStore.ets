@@ -360,6 +360,35 @@ export class NoteStore {
     this.notes = [...this.notes];
   }
 
+  /**
+   * Replaces a note's tag list and rewrites its frontmatter.
+   *
+   * Deliberately *not* routed through `saveNote()`: that renames the file to
+   * match the body's H1, bumps `updatedAt` and re-derives the excerpt. Tagging
+   * a note changes no prose, so doing that here would rename files behind the
+   * user's back and invalidate every `ForEach` key for no reason. `updatedAt` is
+   * still bumped, because sync must see this as an edit and push it.
+   *
+   * Returns the normalised list actually written, so the caller can render the
+   * result without re-reading the file.
+   */
+  setTags(note: Note, tags: string[]): string[] {
+    const cleaned: string[] = [];
+    for (const raw of tags) {
+      const tag = raw.trim().replace(/^#+/, '').replace(/\s+/g, ' ').trim();
+      if (tag.length === 0 || cleaned.includes(tag)) {
+        continue;
+      }
+      cleaned.push(tag);
+    }
+    note.tags = cleaned;
+    note.updatedAt = systemDateTime.getTime();
+    this.writeNote(note);
+    this.notes = [...this.notes];
+    this.tags = this.collectTags(this.notes);
+    return cleaned;
+  }
+
   countTag(tag: string): number {
     let count = 0;
     for (const note of this.notes) {

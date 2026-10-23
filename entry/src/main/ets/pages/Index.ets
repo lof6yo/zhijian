@@ -7,6 +7,7 @@ import { SettingsStore } from '../services/SettingsStore';
 import { Note } from '../models/Note';
 import { NoteStore } from '../services/NoteStore';
 import { NoteCard } from '../components/NoteCard';
+import { MaterialLayer } from '../components/MaterialLayer';
 import { EditorPage } from './EditorPage';
 import { TrashPage } from './TrashPage';
 import { WebDavPage } from './WebDavPage';
@@ -14,7 +15,8 @@ import { NoteTransfer, TransferResult } from '../services/NoteTransfer';
 import { Credentials } from '../services/Credentials';
 import { SyncEngine } from '../services/SyncEngine';
 import { AccentScheme, Palette } from '../common/Palette';
-import { FONT_SIZE_MAX, FONT_SIZE_MIN, GEAR_ADAPTIVE, GEAR_HIGH, GEAR_LOW, GEAR_MEDIUM,
+import { FONT_SIZE_MAX, FONT_SIZE_MIN, CARD_RADIUS_MAX, CARD_RADIUS_MIN, CARD_RADIUS_DEFAULT,
+  GEAR_ADAPTIVE, GEAR_HIGH, GEAR_LOW, GEAR_MEDIUM,
   GLASS_LEVEL_DEFAULT, GLASS_LEVEL_MAX, GLASS_LEVEL_MIN,
   LINE_HEIGHT_MAX, LINE_HEIGHT_MIN } from '../services/SettingsStore';
 import {
@@ -57,8 +59,7 @@ const TAG: string = 'HMStart';
  * pair would need a precedence rule.
  */
 const SEG_THEME: number = 0;
-const SEG_BACKGROUND: number = 1;
-const SEG_GLASS: number = 2;
+const SEG_GLASS: number = 1;
 
 @Entry
 @ComponentV2
@@ -77,7 +78,6 @@ struct Index {
   @Local listVersion: number = 0;
   @Local notesSnapshot: Note[] = [];
   @Local themeMode: number = 0;
-  @Local backgroundStyle: number = 2;
   @Local accentMode: number = 0;
   @Local fontSize: number = 17;
   @Local lineHeight: number = 175;
@@ -87,6 +87,21 @@ struct Index {
    * whole UI changes depth together instead of each surface drifting.
    */
   @Local glassLevel: number = GLASS_LEVEL_DEFAULT;
+  /** Note-card corner radius in vp; mirrors `SettingsStore.cardRadius`. */
+  @Local cardRadius: number = CARD_RADIUS_DEFAULT;
+  /**
+   * Id of the note whose 标签 sheet is open, and the working copy of its tags.
+   *
+   * The tags live in a `@Local` array rather than being written straight into the
+   * `Note`: `Note` is `@ObservedV2`, so mutating it mid-edit would repaint the
+   * grid behind the sheet on every keystroke and — worse — a cancelled sheet
+   * would have already changed the note. The array is committed in one call to
+   * `NoteStore.setTags()` when the user confirms.
+   */
+  @Local tagEditNoteId: string = '';
+  @Local tagEditTags: string[] = [];
+  @Local tagDraft: string = '';
+  @Local tagSheetShown: boolean = false;
   @Local pathStack: NavPathStack = new NavPathStack();
   /**
    * Snapshot of `syncFinishedAt`, and of the state word the 设置 › WebDAV 同步
@@ -136,11 +151,11 @@ struct Index {
 
   aboutToAppear(): void {
     this.themeMode = SettingsStore.instance.themeMode;
-    this.backgroundStyle = SettingsStore.instance.backgroundStyle;
     this.accentMode = SettingsStore.instance.accentMode;
     this.fontSize = SettingsStore.instance.editorFontSize;
     this.lineHeight = SettingsStore.instance.editorLineHeight;
     this.glassLevel = SettingsStore.instance.glassLevel;
+    this.cardRadius = SettingsStore.instance.cardRadius;
     this.refreshDavState();
 
     this.hdsSupported = deviceInfo.sdkApiVersion >= HDS_MIN_API;
@@ -365,11 +380,6 @@ struct Index {
     }, 420);
   }
 
-  private setBackgroundStyle(style: number): void {
-    this.backgroundStyle = style;
-    SettingsStore.instance.setBackgroundStyle(style);
-  }
-
   private setAccentMode(mode: number): void {
     this.accentMode = mode;
     SettingsStore.instance.setAccentMode(mode);
@@ -404,6 +414,36 @@ struct Index {
 
   private accentGlowColor(): string {
     return this.scheme().glow(this.activeDark());
+  }
+
+  /**
+   * Translucent surface veil painted over the immersive material, so a card
+   * reads as a card instead of dissolving into the accent backdrop.
+   *
+   * Tuned by pixel-sampling the device. At 70 % the veil was still letting the
+   * material's own darkening through and the measured card came out *darker* than
+   * the page (card `#EDF5F6` vs backdrop `#F1F9F9`) — a glass slab sunk into the
+   * background rather than a surface sitting on it. 82 % puts the card roughly ten
+   * levels above the backdrop, which is what makes the grid read as separate
+   * cards, while still passing ~18 % of the material's refraction at the edges.
+   *
+   * The material itself follows the **system** light/dark setting, not the app's
+   * 外观 choice — the API has no "use app theme" switch — so these two are driven
+   * by `activeDark()` and a forced-dark app on a light-system device stays black.
+   */
+  private glassTint(): string {
+    return this.activeDark() ? '#CC1C1C1E' : '#D1FDFEFF';
+  }
+
+  /**
+   * Whether content-area surfaces may paint the immersive material.
+   *
+   * Requires *both* that the API exists (API 26 gate on `hdsSupported`) and that
+   * the device advertises `MaterialType.IMMERSIVE`. Both false → every surface
+   * falls back to its opaque fill, never to transparent.
+   */
+  private glassOn(): boolean {
+    return this.hdsSupported && this.immersiveSupported;
   }
 
   onPageShow(): void {
@@ -664,17 +704,34 @@ struct Index {
    *
    * The thickness ordering follows the official guidance: THIN for floating
    * buttons, REGULAR for content, THICK+ when depth is being emphasized.
+   *
+   * `applyShadow` is explicitly **off** for these two chrome surfaces, and that
+   * is the fix for the 「边缘光感异常」 report. The documented default is `true`,
+   * and the shadow is drawn from the *unclipped* node: on a 44 vp circle that is
+   * clipped with `clipShape(CircleShape)` / `borderRadius(22) + clip(true)`, the
+   * shadow survives the clip as a crescent hugging the inside of the rim, which
+   * reads as a dirty glowing edge rather than as depth. A floating 44 vp control
+   * on a soft backdrop does not need a drop shadow at all; the material's own
+   * rim highlight is the edge.
+   *
+   * `lightEffect` is what makes the press highlight 跟随强调色: the docs describe it
+   * as "自定义光感反馈的颜色" and default it to `Color.White`. A white specular on a
+   * near-white backdrop is exactly the second half of the "异常" complaint — there
+   * was no visible response to a press, just a static pale disc.
    */
   private immersiveMaterial(): uiMaterial.ImmersiveMaterial {
     const styles: uiMaterial.ImmersiveStyle[] = [
-      uiMaterial.ImmersiveStyle.REGULAR,   // 自适应 — 官方默认
+      uiMaterial.ImmersiveStyle.REGULAR,     // 自适应 — 官方默认
       uiMaterial.ImmersiveStyle.ULTRA_THICK, // 高
-      uiMaterial.ImmersiveStyle.REGULAR,   // 中
-      uiMaterial.ImmersiveStyle.THIN       // 低
+      uiMaterial.ImmersiveStyle.REGULAR,     // 中
+      uiMaterial.ImmersiveStyle.THIN         // 低
     ];
+    const light: uiMaterial.LightEffectOptions = { color: this.accentColor() };
     const options: uiMaterial.ImmersiveOptions = {
       style: styles[this.glassIndex()],
-      interactive: true
+      interactive: true,
+      applyShadow: false,
+      lightEffect: light
     };
     return new uiMaterial.ImmersiveMaterial(options);
   }
@@ -775,10 +832,27 @@ struct Index {
   // ------------------------------------------------------------- tab bar
 
   private floatingBarStyle(): HdsTabsFloatingStyle {
+    /*
+     * Compact capsule widths, deliberately well under the window width.
+     *
+     * `HdsBarWidthRangeOptions` picks a bucket from the *window* width, and the
+     * buckets are `smallWidth` (< 440 vp), `mediumWidth` (440–600 vp) and
+     * `largeWidth` (> 840 vp). This device is exactly 440 vp wide, so it lands in
+     * the **medium** bucket. The previous `mediumWidth: 400` therefore produced a
+     * 400 vp bar on a 440 vp screen — measured 60…1260 px of 1320, i.e. it read
+     * as a full-width slab with 20 vp of air on each side rather than as a
+     * floating capsule (the 「下方 tab 菜单过于宽」 report).
+     *
+     * 300 vp gives 100 vp per 页签 for three tabs — enough for a 22 vp glyph plus
+     * a 2-character label — and leaves 70 vp of backdrop on each side so the bar
+     * reads as floating. All three buckets are reduced together; leaving `large`
+     * at 460 would make the tablet layout *wider* than the phone one relative to
+     * its window, which is the opposite of what a floating capsule wants.
+     */
     const width: HdsBarWidthRangeOptions = {
-      smallWidth: 320,
-      mediumWidth: 400,
-      largeWidth: 460
+      smallWidth: 280,
+      mediumWidth: 300,
+      largeWidth: 340
     };
     // The mask is the gradient fade under the bar. Transparent because the
     // page backdrop is already a gradient + glow; an opaque plate is exactly
@@ -929,76 +1003,85 @@ struct Index {
 
   // ------------------------------------------------------------- backdrop
 
+  /**
+   * The single page backdrop. 光感 is the only style: an accent-tinted wash plus
+   * four accent-coloured glow orbs.
+   *
+   * The 纯色 and 渐变 options were removed by product decision — with only three
+   * accent hues and one shape language, three background styles produced nine
+   * subtly different canvases where nobody could tell which was "the design".
+   * One style that follows 强调色 gives the user a real choice (three clearly
+   * distinct moods) instead of a fake one.
+   *
+   * Every colour here comes from `Palette`, not from `$r('app.color.page_grad_*')`.
+   * That is load-bearing: ArkUI resolves resources once at build time, so a
+   * resource cannot follow a runtime accent switch — the same reason
+   * `accentColor()` is a hex string. The resource entries are kept only so the
+   * dark-mode table stays complete and older builds do not resolve undefined.
+   */
   @Builder
   PageBackdrop() {
     Stack({ alignContent: Alignment.TopStart }) {
-      if (this.backgroundStyle === 0) {
-        Column()
-          .width('100%')
-          .height('100%')
-          .backgroundColor($r('app.color.page_bg'))
-          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-      } else {
-        Column()
-          .width('100%')
-          .height('100%')
-          .linearGradient({
-            angle: 160,
-            colors: [
-              [$r('app.color.page_grad_top'), 0.0],
-              [$r('app.color.page_grad_mid'), 0.55],
-              [$r('app.color.page_grad_bottom'), 1.0]
-            ]
-          })
-          .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-      }
+      Column()
+        .width('100%')
+        .height('100%')
+        .linearGradient({
+          angle: 160,
+          colors: [
+            [this.scheme().pageTop(this.activeDark()), 0.0],
+            [this.scheme().pageMid(this.activeDark()), 0.55],
+            [this.scheme().pageBottom(this.activeDark()), 1.0]
+          ]
+        })
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
-      if (this.backgroundStyle === 2) {
-        Column()
-          .width(560)
-          .height(560)
-          .borderRadius(280)
-          .radialGradient({
-            center: ['50%', '50%'],
-            radius: 280,
-            colors: [[$r('app.color.glow_blue'), 0.0], ['#00000000', 1.0]]
-          })
-          .opacity(0.9)
-          .position({ x: -220, y: -200 })
-        Column()
-          .width(380)
-          .height(380)
-          .borderRadius(190)
-          .radialGradient({
-            center: ['50%', '50%'],
-            radius: 190,
-            colors: [[$r('app.color.glow_purple'), 0.0], ['#00000000', 1.0]]
-          })
-          .opacity(0.8)
-          .position({ x: 860, y: 180 })
-        Column()
-          .width(520)
-          .height(520)
-          .borderRadius(260)
-          .radialGradient({
-            center: ['50%', '50%'],
-            radius: 260,
-            colors: [[$r('app.color.glow_cyan'), 0.0], ['#00000000', 1.0]]
-          })
-          .opacity(0.8)
-          .position({ x: 360, y: 1680 })
-        Column()
-          .width(380)
-          .height(380)
-          .borderRadius(190)
-          .radialGradient({
-            center: ['50%', '50%'],
-            radius: 190,
-            colors: [[$r('app.color.glow_purple'), 0.0], ['#00000000', 1.0]]
-          })
-          .opacity(0.75)
-          .position({ x: 900, y: 1760 })
-      }
+      // The four orbs are the accent's own glow at four sizes. Previously three
+      // of them were fixed blue/purple/cyan, so a teal UI sat on a blue-plus-
+      // violet sky — the complaint that the backdrop ignored 强调色.
+      Column()
+        .width(560)
+        .height(560)
+        .borderRadius(280)
+        .radialGradient({
+          center: ['50%', '50%'],
+          radius: 280,
+          colors: [[this.accentGlowColor(), 0.0], ['#00000000', 1.0]]
+        })
+        .opacity(0.9)
+        .position({ x: -220, y: -200 })
+      Column()
+        .width(380)
+        .height(380)
+        .borderRadius(190)
+        .radialGradient({
+          center: ['50%', '50%'],
+          radius: 190,
+          colors: [[this.accentGlowColor(), 0.0], ['#00000000', 1.0]]
+        })
+        .opacity(0.55)
+        .position({ x: 860, y: 180 })
+      Column()
+        .width(520)
+        .height(520)
+        .borderRadius(260)
+        .radialGradient({
+          center: ['50%', '50%'],
+          radius: 260,
+          colors: [[this.accentGlowColor(), 0.0], ['#00000000', 1.0]]
+        })
+        .opacity(0.8)
+        .position({ x: 360, y: 1680 })
+      Column()
+        .width(380)
+        .height(380)
+        .borderRadius(190)
+        .radialGradient({
+          center: ['50%', '50%'],
+          radius: 190,
+          colors: [[this.accentGlowColor(), 0.0], ['#00000000', 1.0]]
+        })
+        .opacity(0.5)
+        .position({ x: 900, y: 1760 })
     }
     .width('100%')
     .height('100%')
@@ -1059,6 +1142,10 @@ struct Index {
                   updatedAt: note.updatedAt,
                   accentColor: this.accentColor(),
                   accentChipColor: this.accentChipColor(),
+                  cornerRadius: this.cardRadius,
+                  glassOn: this.glassOn(),
+                  glassGear: this.glassLevel,
+                  glassTint: this.glassTint(),
                   onOpen: (id: string) => {
                     const target = this.store.find(id);
                     if (target !== undefined) {
@@ -1085,6 +1172,12 @@ struct Index {
                       this.store.deleteNote(target);
                       this.refreshList();
                     }
+                  },
+                  onEditTags: (id: string) => {
+                    const target = this.store.find(id);
+                    if (target !== undefined) {
+                      this.openTagEditor(target);
+                    }
                   }
                 })
               }
@@ -1104,6 +1197,178 @@ struct Index {
     }
     .width('100%')
     .height('100%')
+    .bindSheet(this.tagSheetShown, this.TagSheet(), {
+      height: SheetSize.MEDIUM,
+      dragBar: true,
+      showClose: false,
+      backgroundColor: $r('app.color.page_bg'),
+      onDisappear: () => {
+        this.tagSheetShown = false;
+      }
+    })
+  }
+
+  // ---------------------------------------------------------------- tags
+
+  /**
+   * Opens the 标签 sheet for one note.
+   *
+   * Tags used to be reachable only by hand-editing the `tags:` line in the
+   * frontmatter — which meant the 标签 page was a read-only view of a field no
+   * UI could write. This is the write path.
+   *
+   * The working copy starts as a *clone* of the note's tags so cancelling the
+   * sheet leaves the note untouched; `commitTags()` is the only writer.
+   */
+  private openTagEditor(note: Note): void {
+    this.tagEditNoteId = note.id;
+    this.tagEditTags = note.tags.slice();
+    this.tagDraft = '';
+    this.tagSheetShown = true;
+  }
+
+  private addTag(tag: string): void {
+    const cleaned = tag.trim().replace(/^#+/, '').replace(/\s+/g, ' ').trim();
+    if (cleaned.length === 0) {
+      return;
+    }
+    if (!this.tagEditTags.includes(cleaned)) {
+      // Reassign, never `push`: a `@Local` array is only observed on assignment.
+      this.tagEditTags = this.tagEditTags.concat([cleaned]);
+    }
+    this.tagDraft = '';
+  }
+
+  private removeTag(tag: string): void {
+    this.tagEditTags = this.tagEditTags.filter((item: string) => item !== tag);
+  }
+
+  private commitTags(): void {
+    const target = this.store.find(this.tagEditNoteId);
+    if (target !== undefined) {
+      this.store.setTags(target, this.tagEditTags);
+      this.refreshList();
+    }
+    this.tagSheetShown = false;
+  }
+
+  @Builder
+  TagSheet() {
+    Column({ space: 14 }) {
+      Row() {
+        Text('标签')
+          .fontSize(20)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+        Blank()
+        Text('完成')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.accentColor())
+          .padding({ left: 12, right: 4, top: 6, bottom: 6 })
+          .onClick(() => {
+            this.commitTags();
+          })
+          .accessibilityText('保存标签')
+      }
+      .width('100%')
+
+      Text('标签写在笔记的 frontmatter 里，会随 WebDAV 同步到其他设备。')
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+
+      // Current tags. A `Flex` rather than a `Row` so a long list wraps instead
+      // of overflowing the sheet.
+      if (this.tagEditTags.length === 0) {
+        Text('还没有标签')
+          .fontSize(13)
+          .fontColor($r('app.color.text_secondary'))
+          .width('100%')
+      } else {
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(this.tagEditTags, (tag: string) => {
+            Row({ space: 4 }) {
+              Text(`# ${tag}`)
+                .fontSize(13)
+                .fontColor(this.onAccentColor())
+              SymbolGlyph($r('sys.symbol.xmark'))
+                .fontSize(11)
+                .fontColor([this.onAccentColor()])
+            }
+            .padding({ left: 10, right: 8, top: 5, bottom: 5 })
+            .borderRadius(14)
+            .backgroundColor(this.accentColor())
+            .margin({ right: 8, bottom: 8 })
+            .onClick(() => {
+              this.removeTag(tag);
+            })
+            .accessibilityText(`移除标签 ${tag}`)
+          }, (tag: string) => `edit-${tag}`)
+        }
+        .width('100%')
+      }
+
+      Row({ space: 8 }) {
+        TextInput({ text: this.tagDraft, placeholder: '新标签，回车添加' })
+          .layoutWeight(1)
+          .height(40)
+          .backgroundColor($r('app.color.card_bg'))
+          .borderRadius(12)
+          .padding({ left: 12, right: 12 })
+          .fontSize(14)
+          .fontColor($r('app.color.text_primary'))
+          .placeholderColor($r('app.color.text_secondary'))
+          .caretColor(this.accentColor())
+          .onChange((value: string) => {
+            this.tagDraft = value;
+          })
+          .onSubmit(() => {
+            this.addTag(this.tagDraft);
+          })
+        Button('添加')
+          .height(40)
+          .fontSize(14)
+          .backgroundColor(this.accentColor())
+          .fontColor(this.onAccentColor())
+          .borderRadius(12)
+          .onClick(() => {
+            this.addTag(this.tagDraft);
+          })
+      }
+      .width('100%')
+
+      // Existing tags from the whole vault, so tagging reuses a name instead of
+      // inventing `work` next to `工作`.
+      if (this.store.tags.length > 0) {
+        Text('已有标签')
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+          .width('100%')
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(this.store.tags, (tag: string) => {
+            Text(`# ${tag}`)
+              .fontSize(12)
+              .fontColor(this.tagEditTags.includes(tag) ? $r('app.color.text_secondary') : this.accentColor())
+              .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+              .borderRadius(13)
+              .backgroundColor(this.tagEditTags.includes(tag) ? $r('app.color.page_bg') : this.accentChipColor())
+              .margin({ right: 8, bottom: 8 })
+              .opacity(this.tagEditTags.includes(tag) ? 0.5 : 1)
+              .onClick(() => {
+                this.addTag(tag);
+              })
+          }, (tag: string) => `vault-${tag}`)
+        }
+        .width('100%')
+      }
+
+      Blank()
+    }
+    .width('100%')
+    .height('100%')
+    .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET, top: 12 })
+    .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
@@ -1126,17 +1391,39 @@ struct Index {
    * filter (全部/置顶/收藏) on the left, sort (最近修改/按标题/按创建) on the
    * right. `base` 0 = filter, 10 = sort; `FilterChip` treats `mode >= 10` as
    * sort, so any future group must use a multiple of 10 as its base.
+   *
+   * The surface is a `MaterialLayer` carrier when the device renders immersive
+   * material, and the hand-built `backgroundEffect` glass otherwise. It cannot be
+   * `.systemMaterial()` on this `Stack`: page content is outside the material's
+   * allowed scopes, so the call is a silent no-op — the reason this used a
+   * hand-built blur in the first place.
    */
   @Builder
   ChipGroup(base: number) {
     Stack({ alignContent: Alignment.Center }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .linearGradient({
-          angle: 180,
-          colors: [[$r('app.color.glass_hi'), 0.0], ['#00FFFFFF', this.glassSheenStop()]]
+      if (this.glassOn()) {
+        MaterialLayer({
+          radius: 17,
+          gear: this.glassLevel
         })
+        Column()
+          .width('100%')
+          .height('100%')
+          .borderRadius(17)
+          .backgroundColor(this.glassTint())
+      } else {
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundEffect(this.glassEffect())
+        Column()
+          .width('100%')
+          .height('100%')
+          .linearGradient({
+            angle: 180,
+            colors: [[$r('app.color.glass_hi'), 0.0], ['#00FFFFFF', this.glassSheenStop()]]
+          })
+      }
       Row({ space: 2 }) {
         if (base === 0) {
           this.FilterChip('全部', 0)
@@ -1156,8 +1443,6 @@ struct Index {
     .height(34)
     .borderRadius(17)
     .clip(true)
-    .backgroundEffect(this.glassEffect())
-    .border({ width: this.glassRimWidth(), color: $r('app.color.glass_border') })
   }
 
   /**
@@ -1389,30 +1674,6 @@ struct Index {
 
             Row() {
               Column({ space: 2 }) {
-                Text('背景样式')
-                  .fontSize(16)
-                  .fontColor($r('app.color.text_primary'))
-                Text('纯色 / 渐变 / 光感')
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
-              }
-              .alignItems(HorizontalAlign.Start)
-
-              Blank()
-
-              Row({ space: 2 }) {
-                this.SegmentButton('纯色', 0, SEG_BACKGROUND)
-                this.SegmentButton('渐变', 1, SEG_BACKGROUND)
-                this.SegmentButton('光感', 2, SEG_BACKGROUND)
-              }
-              .padding(3)
-              .borderRadius(14)
-              .backgroundColor($r('app.color.page_bg'))
-            }
-            .width('100%')
-
-            Row() {
-              Column({ space: 2 }) {
                 Text('沉浸光感挡位')
                   .fontSize(16)
                   .fontColor($r('app.color.text_primary'))
@@ -1522,6 +1783,35 @@ struct Index {
                 this.lineHeight = Math.round(value);
                 SettingsStore.instance.setEditorLineHeight(this.lineHeight);
               })
+
+            Row() {
+              Column({ space: 2 }) {
+                Text('卡片圆角')
+                  .fontSize(16)
+                  .fontColor($r('app.color.text_primary'))
+                Text(`${this.cardRadius} vp`)
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .alignItems(HorizontalAlign.Start)
+              Blank()
+            }
+            .width('100%')
+            Slider({
+              value: this.cardRadius,
+              min: CARD_RADIUS_MIN,
+              max: CARD_RADIUS_MAX,
+              step: 2,
+              style: SliderStyle.OutSet
+            })
+              .selectedColor(this.accentColor())
+              .blockColor(this.accentColor())
+              .trackColor($r('app.color.divider'))
+              .width('100%')
+              .onChange((value: number) => {
+                this.cardRadius = Math.round(value);
+                SettingsStore.instance.setCardRadius(this.cardRadius);
+              })
           }
           .width('100%')
           .padding(14)
@@ -1575,11 +1865,10 @@ struct Index {
   }
 
   /**
-   * One segment of a 分段控件 (theme mode / background style / glass gear).
-   * `kind` selects which setting the segment writes: `SEG_THEME`,
-   * `SEG_BACKGROUND` or `SEG_GLASS`. It is a numeric discriminant rather than a
-   * set of booleans because three mutually-exclusive rows would otherwise need
-   * three flags and a precedence rule.
+   * One segment of a 分段控件 (theme mode / glass gear).
+   * `kind` selects which setting the segment writes: `SEG_THEME` or `SEG_GLASS`.
+   * It is a numeric discriminant rather than a set of booleans because two
+   * mutually-exclusive rows would otherwise need two flags and a precedence rule.
    */
   @Builder
   SegmentButton(label: string, value: number, kind: number = SEG_THEME) {
@@ -1592,9 +1881,7 @@ struct Index {
       .backgroundColor(this.segmentSelected(value, kind) ? this.accentColor() : Color.Transparent)
       .animation({ duration: 160, curve: Curve.EaseOut })
       .onClick(() => {
-        if (kind === SEG_BACKGROUND) {
-          this.setBackgroundStyle(value);
-        } else if (kind === SEG_GLASS) {
+        if (kind === SEG_GLASS) {
           // Repaints every glass surface immediately; the effect tables read
           // `glassLevel` directly, so no rebuild is required.
           this.setGlassLevel(value);
@@ -1605,9 +1892,6 @@ struct Index {
   }
 
   private segmentSelected(value: number, kind: number): boolean {
-    if (kind === SEG_BACKGROUND) {
-      return this.backgroundStyle === value;
-    }
     if (kind === SEG_GLASS) {
       return this.glassLevel === value;
     }

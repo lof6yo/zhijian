@@ -27,3 +27,6 @@
 # editor-web build deps
 /editor-web/node_modules
 
+
+# exported HAPs
+/dist
