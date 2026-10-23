@@ -1258,8 +1258,8 @@ struct Index {
     const widthPx = display.getDefaultDisplaySync().width;
     const density = display.getDefaultDisplaySync().densityPixels;
     const widthVp = widthPx / density;
-    // 泳道宽 = (可用宽 - 左右内边距) / 2，再减去 6 vp 的缝隙的一半。
-    return (widthVp - this.SIDE_INSET * 2) / 2 - 6;
+    // 泳道宽 = (可用宽 - 左右内边距 - 缝) / 2
+    return (widthVp - this.SIDE_INSET * 2 - 12) / 2;
   }
 
   @Builder
@@ -1270,27 +1270,15 @@ struct Index {
       if (this.visibleNotes().length === 0) {
         this.EmptyState()
       } else {
-        // `Refresh` 提供下拉手势与「弹性」位移：平台在拉动时把子组件整体下移，
-        // 自定义内容的高度随拉动距离增长。手势与位移都由平台做，所以在手指
-        // 还按着的时候界面就已经跟手了——靠 `@Local` 驱动是做不到的（见
-        // `drawRing()` 的注释）。
-        // 环是浮层：画在列表**上面**，不占列表的位置。这样它的可见性只取决于
-        // 自己画没画，不依赖平台是否认下这次下拉。
-        Stack({ alignContent: Alignment.Top }) {
-          Refresh({ refreshing: $$this.syncing, builder: () => { this.PullHeader() } }) {
-          // 用 `List` + `lanes(2)` 而不是 `WaterFlow`。
-          //
-          // `WaterFlow` 没有 `edgeEffect`，平台不给它回弹；于是 `Refresh` 的下拉
-          // 手势与「把列表整体下移」的弹性位移在它身上都不发生（实测：环画出来了，
-          // 列表纹丝不动，环还被卡片盖住）。`List` 是平台原生下拉刷新的标准结构，
-          // 两者都能用。
-          //
-          // 代价：泳道是**按列填**的（左列 0,2,4…，右列 1,3,5…），而 `WaterFlow`
-          // 是按行填。排序仍按时间，两列各自从上往下。
-          List({ scroller: this.notesScroller, space: 12 }) {
-            ForEach(this.visibleNotes(), (note: Note, index: number) => {
-              ListItem() {
-                Column() {
+        WaterFlow({ scroller: this.notesScroller }) {
+          ForEach(this.visibleNotes(), (note: Note) => {
+            FlowItem() {
+              // A `FlowItem` measures its child against the flow container, not
+              // against the column slot, so a card whose content is wider than
+              // one column (long title + wrapping tag Flex) expanded to the full
+              // grid width and overlapped its neighbour. Pinning the cell to the
+              // computed column width removes that ambiguity.
+              Column() {
                   NoteCard({
                     noteId: note.id,
                     title: note.title,
@@ -1339,44 +1327,19 @@ struct Index {
                       }
                     }
                   })
-                }
-                .width(this.columnWidth())
-                // 两条泳道之间没有横向间隙，用外边距手搓出 12 vp 的缝。
-                // 用 margin 而不是 padding：margin 在卡片外面，不会把卡片的
-                // 内容宽度也一起缩掉（padding 会让长标题多折一行）。
-                .margin({ right: index % 2 === 0 ? 6 : 0, left: index % 2 === 0 ? 0 : 6 })
               }
-            }, (note: Note) => `${note.id}-${note.updatedAt}`)
-          }
-          .lanes(2)
-          .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
-          .width('100%')
-          .layoutWeight(1)
-          // Clears the floating capsule so the last row stays reachable.
-          .contentEndOffset(130)
-          }
-          .width('100%')
-          .layoutWeight(1)
-          .onRefreshing(() => {
-            this.startManualSync();
-          })
-          // 触摸跟踪挂在 **Refresh 自身**，不能挂在里面的列表上：
-          // 挂在子节点上会把触摸序列抢走，`Refresh` 收不到下拉手势，平台就不会
-          // 把列表整体下移——「弹性」的那一下也就没了。
-          .onTouch((event: TouchEvent) => {
-            this.handlePullTouch(event);
-          })
-
-          // 环作为浮层盖在列表上方。`hitTestBehavior(None)`：它只是指示器，
-          // 绝不能吃掉列表的触摸。
-          Column() {
-            this.PullHeader()
-          }
-          .width('100%')
-          .hitTestBehavior(HitTestMode.None)
+              .width(this.columnWidth())
+            }
+          }, (note: Note) => `${note.id}-${note.updatedAt}`)
         }
+        .columnsTemplate('1fr 1fr')
+        .columnsGap(12)
+        .rowsGap(12)
+        .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
         .width('100%')
         .layoutWeight(1)
+        // Clears the floating capsule so the last row stays reachable.
+        .contentEndOffset(130)
       }
     }
     .width('100%')
@@ -1390,215 +1353,6 @@ struct Index {
         this.tagSheetShown = false;
       }
     })
-  }
-
-  // ---------------------------------------------------------------- pull to sync
-
-  /**
-   * 下拉手柄的触发距离（vp）。拉过这个距离松手就同步。
-   */
-  private readonly PULL_TRIGGER_VP: number = 34;
-  /** 指示器最大高度（vp）。 */
-  private readonly PULL_HEADER_VP: number = 48;
-
-  @Local pullDistance: number = 0;
-  @Local pullTracking: boolean = false;
-  @Local syncing: boolean = false;
-  private pullStartY: number = 0;
-  private pullStartedAtTop: boolean = false;
-  /** 环形进度的画布上下文。命令式绘制，绕开渲染管线。 */
-  private ringCtx: CanvasRenderingContext2D =
-    new CanvasRenderingContext2D(new RenderingContextSettings(true));
-  private ringAngle: number = 0;
-  private ringTimer: number = -1;
-
-  /** 没配 WebDAV 就没有下拉同步这回事。 */
-  private syncAvailable(): boolean {
-    const settings = SettingsStore.instance;
-    return settings.davUrl.length > 0 && settings.davUser.length > 0;
-  }
-
-  /** 拉动进度 0–1。 */
-  private pullRatio(): number {
-    if (this.PULL_TRIGGER_VP <= 0) {
-      return 0;
-    }
-    return Math.min(1, this.pullDistance / this.PULL_TRIGGER_VP);
-  }
-
-  /**
-   * 下拉手势。
-   *
-   * `WaterFlow` 没有 `onScroll` 偏移回调（只有 `onReachEnd` / `onScrollIndex`），
-   * 所以拿不到「回弹了多少」，只能自己跟手指：在按下时记下起点，移动时累加
-   * 下移距离。手势起点必须在列表顶部，否则会把「往上滑」误当成下拉。
-   */
-  private handlePullTouch(event: TouchEvent): void {
-    if (!this.syncAvailable() || this.syncing) {
-      return;
-    }
-    if (event.touches.length === 0) {
-      return;
-    }
-    const touch: TouchObject = event.touches[0];
-    if (event.type === TouchType.Down) {
-      const offset = this.notesScroller.currentOffset();
-      this.pullStartedAtTop = offset.yOffset <= 1;
-      hilog.debug(0x0000, 'HMStartPull', 'down y=%{public}s atTop=%{public}s',
-        String(touch.screenY), String(this.pullStartedAtTop));
-      this.pullStartY = touch.screenY;
-      this.pullDistance = 0;
-      this.pullTracking = false;
-      return;
-    }
-    if (event.type === TouchType.Move) {
-      if (!this.pullStartedAtTop) {
-        return;
-      }
-      // `screenY` 已经是 **vp**，不能再除密度——除一次就把拉动量缩到 1/3，
-      // 手势永远够不到阈值（实测拉到 150 vp 也只算出 3.5 vp）。
-      const deltaVp: number = touch.screenY - this.pullStartY;
-      if (deltaVp > 0) {
-        this.pullTracking = true;
-        // 超过阈值之后继续拉也不再变高——否则会一路把列表推出屏幕。
-        this.pullDistance = Math.min(deltaVp, this.PULL_TRIGGER_VP * 1.4);
-        // 手势进行中 ArkUI 不重绘组件树，所以环必须**命令式**画出来。
-        this.drawRing(this.pullRatio(), false);
-        // 把内容整体下移，做出「列表被拉下来」的弹性。`WaterFlow` 没有
-        // `edgeEffect`，平台不给它回弹，所以位移得自己驱动：把滚动位置往
-        // 负方向挪。
-        const density: number = display.getDefaultDisplaySync().densityPixels;
-        try {
-          this.notesScroller.scrollTo({
-            xOffset: 0,
-            yOffset: -this.pullDistance * density,
-            animation: false
-          });
-        } catch (e) {
-          // 列表已在顶部时负偏移可能被忽略；环照常显示。
-        }
-      }
-      return;
-    }
-    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-      hilog.debug(0x0000, 'HMStartPull', 'pull up dist=%{public}d', this.pullDistance);
-      this.pullTracking = false;
-      this.pullDistance = 0;
-      this.drawRing(0, false);
-    }
-  }
-
-  /**
-   * 手动同步。
-   *
-   * 走 `AutoSync` 的同一条路径，只是跳过间隔与退避判断——用户明确要求了。
-   */
-  private startManualSync(): void {
-    if (this.syncing) {
-      return;
-    }
-    this.syncing = true;
-    this.startRingSpin();
-    AutoSync.instance.trigger(true).then((ok: boolean) => {
-      this.syncing = false;
-      this.stopRingSpin();
-      this.drawRing(0, false);
-      this.getUIContext().getPromptAction().showToast({ message: ok ? '同步完成' : '同步失败' });
-    });
-  }
-
-  @Builder
-  PullHeader() {
-    // 环**不放在 Refresh 的刷新区里**，而是作为浮层盖在列表上方。
-    //
-    // 刷新区的高度由平台按拉动距离给，可它同时也是「列表被推下来」的那块空间；
-    // 一旦平台没认下这次下拉（合成手势、或者列表不在顶部），刷新区高度就是 0，
-    // 里面的东西全被裁掉——环就凭空消失了。做成浮层后，环的可见性只取决于
-    // 它自己画没画，跟刷新区没关系。
-    Column({ space: 2 }) {
-      // 环外面套一个圆形底衬：它是浮在列表上方的，不垫底就压在卡片文字上，
-      // 看不出这是个指示器。
-      Stack({ alignContent: Alignment.Center }) {
-        Column()
-          .width(44)
-          .height(44)
-          .borderRadius(22)
-          .backgroundColor($r('app.color.card_bg'))
-          .shadow({ radius: 12, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 2 })
-        Canvas(this.ringCtx)
-          .width(30)
-          .height(30)
-          .onReady(() => {
-            this.drawRing(0, false);
-          })
-      }
-      .width(44)
-      .height(44)
-      Text(this.syncing ? '正在同步' : (this.pullRatio() >= 1 ? '松手同步' : '下拉同步'))
-        .fontSize(11)
-        .fontColor($r('app.color.text_secondary'))
-    }
-    .alignItems(HorizontalAlign.Center)
-    .justifyContent(FlexAlign.Center)
-    .padding({ top: 6, bottom: 6 })
-  }
-
-  /**
-   * 画环。
-   *
-   * **必须用命令式绘制，不能靠状态驱动。** ArkUI 在滚动/下拉手势进行中**不会重绘**
-   * 组件树：实测在手指还按着的时候把 `@Local` 改掉，界面纹丝不动，松手后才一次性
-   * 更新。所以「环随拉动进度填满」这件事没法靠 `@Local` + `ForEach` 做出来——
-   * 只能直接往 Canvas 上画，画完 `flush()`，绕开渲染管线。
-   *
-   * 轨道和弧共用同一个强调色，轨道靠 `globalAlpha` 变淡，省掉一个颜色资源。
-   */
-  private drawRing(ratio: number, spinning: boolean): void {
-    const ctx: CanvasRenderingContext2D = this.ringCtx;
-    const size: number = 28;
-    const c: number = size / 2;
-    const r: number = size / 2 - 2;
-    ctx.clearRect(0, 0, size, size);
-
-    ctx.globalAlpha = 0.18;
-    ctx.strokeStyle = this.accentColor();
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.arc(c, c, r, 0, 2 * Math.PI);
-    ctx.stroke();
-
-    ctx.globalAlpha = 1;
-    ctx.beginPath();
-    if (spinning) {
-      // 一段短弧绕圈转：表示「正在进行，没有进度」。
-      const start: number = (this.ringAngle - 90) * Math.PI / 180;
-      ctx.arc(c, c, r, start, start + Math.PI / 2);
-    } else {
-      // 顺时针填充，起点在 12 点方向。
-      const start: number = -Math.PI / 2;
-      ctx.arc(c, c, r, start, start + Math.max(0, Math.min(1, ratio)) * 2 * Math.PI);
-    }
-    ctx.stroke();
-    // 旧版 2D 上下文不需要显式 flush：画完即在下一帧重绘。
-  }
-
-  /** 同步中：让弧转起来。 */
-  private startRingSpin(): void {
-    if (this.ringTimer !== -1) {
-      return;
-    }
-    this.ringTimer = setInterval(() => {
-      this.ringAngle = (this.ringAngle + 12) % 360;
-      this.drawRing(0, true);
-    }, 16);
-  }
-
-  private stopRingSpin(): void {
-    if (this.ringTimer !== -1) {
-      clearInterval(this.ringTimer);
-      this.ringTimer = -1;
-    }
   }
 
   // ---------------------------------------------------------------- tags
