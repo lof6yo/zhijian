@@ -476,6 +476,16 @@ button.
   全部 / 置顶, where 置顶 keeps only the tags that appear on a pinned note —
   `NoteStore.countTagIn(tag, true)`, because a tag's total count does not tell
   you how many of its notes are pinned.
+  The chips use the **same** capsule treatment as the notes page's 筛选条/排序条
+  (`TagChipGroup` mirrors `ChipGroup`): same 34 vp shell, same 28 vp pills, same
+  material. Two pages showing the same control in two different styles is what
+  makes an app look assembled rather than designed. The tag cards themselves
+  carry the same `SIDE_INSET` as the notes grid — a full-bleed row reads as a
+  stretched banner, not a card.
+- **A `@Builder` call returns `void`, so you cannot chain `.onClick` onto it.**
+  Wrap the builder in a `Row` and put the handler on the wrapper.
+- **合并到同一张卡片里的行，各自要能点。** 「同步与备份」把 WebDAV 同步与
+  导入/导出合成一张卡片（中间一条分隔线），两行的点击区仍然分开。
 
 The reader re-parses in `onShown`, not `pushPath({ onPop })` — the latter only
 fires when `pop(result)` carries a payload. It skips the reload while a draft is

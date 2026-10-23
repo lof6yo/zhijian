@@ -1655,14 +1655,12 @@ struct Index {
           .width('100%')
           .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
       } else {
-        // 排序 + 筛选。标签一多，「按什么排」和「只看哪一类」就得能被控制，
-        // 否则列表只是一堆按字母排的名字。
+        // 排序 + 筛选。样式与笔记页的筛选条 / 排序条**完全一致**：同样的胶囊
+        // 外壳、同样的 34 vp 高、同样的 28 vp 药丸。同一类控件在两个页面上
+        // 长成两个样子，是最容易让人觉得「这个 app 是拼起来的」。
         Row({ space: 8 }) {
-          this.TagSortChip('名称', 0)
-          this.TagSortChip('数量', 1)
-          Blank()
-          this.TagFilterChip('全部', 0)
-          this.TagFilterChip('置顶', 1)
+          this.TagChipGroup(0)
+          this.TagChipGroup(1)
         }
         .width('100%')
         .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
@@ -1694,6 +1692,9 @@ struct Index {
         .width('100%')
         .layoutWeight(1)
         .contentEndOffset(120)
+        // 卡片不能贴着屏幕边：与笔记页的网格一样留出 SIDE_INSET，
+        // 否则标签行会满宽，视觉上像一张被拉扁的横幅。
+        .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
       }
     }
     .width('100%')
@@ -1704,47 +1705,101 @@ struct Index {
   }
 
   /**
-   * 排序项。点当前项翻转升降序，点另一项切换排序依据（并回到升序）。
+   * 标签页的胶囊组：0 = 排序，1 = 筛选。
    *
-   * 方向做进标签里（`名称 ↑`）而不是另给一个箭头按钮：两组排序 + 一个方向键
-   * 需要三处控件，挤在一行里点不准；而「当前项带箭头」既省位置也自带说明。
+   * 与笔记页的 `ChipGroup` 同一套外壳（材质 + 遮罩 + 34 vp + 圆角 17），
+   * 所以两个页面的筛选条长得一模一样。
    */
   @Builder
-  TagSortChip(label: string, key: number) {
-    Text(this.tagSortKey === key ? `${label} ${this.tagSortDesc ? '↓' : '↑'}` : label)
-      .fontSize(12)
-      .fontWeight(this.tagSortKey === key ? FontWeight.Medium : FontWeight.Normal)
-      .fontColor(this.tagSortKey === key ? this.accentColor() : $r('app.color.text_secondary'))
-      .height(28)
-      .padding({ left: 12, right: 12 })
-      .borderRadius(14)
-      .backgroundColor(this.tagSortKey === key ? this.accentChipColor() : Color.Transparent)
-      .onClick(() => {
-        if (this.tagSortKey === key) {
-          this.tagSortDesc = !this.tagSortDesc;
+  TagChipGroup(kind: number) {
+    Stack({ alignContent: Alignment.Center }) {
+      if (this.glassOn()) {
+        MaterialLayer({
+          radius: 17,
+          gear: this.glassLevel
+        })
+        Column()
+          .width('100%')
+          .height('100%')
+          .borderRadius(17)
+          .backgroundColor(this.glassTint())
+      } else {
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundEffect(this.glassEffect())
+        Column()
+          .width('100%')
+          .height('100%')
+          .linearGradient({
+            angle: 180,
+            colors: [[$r('app.color.glass_hi'), 0.0], ['#00FFFFFF', this.glassSheenStop()]]
+          })
+      }
+      Row({ space: 2 }) {
+        if (kind === 0) {
+          this.TagChip(this.tagSortKey === 0 ? `名称 ${this.tagSortDesc ? '↓' : '↑'}` : '名称', 0, 0)
+          this.TagChip(this.tagSortKey === 1 ? `数量 ${this.tagSortDesc ? '↓' : '↑'}` : '数量', 0, 1)
         } else {
-          this.tagSortKey = key;
-          this.tagSortDesc = false;
+          this.TagChip('全部', 1, 0)
+          this.TagChip('置顶', 1, 1)
         }
-      })
-      .accessibilityText(`按${label}排序`)
+      }
+      .width('100%')
+      .height('100%')
+      .padding(3)
+    }
+    .layoutWeight(1)
+    .height(34)
+    .borderRadius(17)
+    .clip(true)
   }
 
-  /** 筛选项：全部 / 置顶（只看出现在置顶笔记里的标签）。 */
+  /**
+   * 标签页的药丸。外观与笔记页的 `FilterChip` 一致：28 vp 高、圆角 14、
+   * 选中是强调色浅底 + 强调色文字（不是实心色块——玻璃胶囊里的实心色块很重）。
+   *
+   * 排序项的方向做进标签里（`名称 ↑`）：点当前项翻转升降序，点另一项切换
+   * 排序依据。方向另配一个箭头键的话，一行里要放三组控件，挤在一起点不准。
+   */
   @Builder
-  TagFilterChip(label: string, mode: number) {
+  TagChip(label: string, group: number, index: number) {
     Text(label)
       .fontSize(12)
-      .fontWeight(this.tagFilter === mode ? FontWeight.Medium : FontWeight.Normal)
-      .fontColor(this.tagFilter === mode ? this.accentColor() : $r('app.color.text_secondary'))
+      .fontWeight(this.tagChipSelected(group, index) ? FontWeight.Medium : FontWeight.Normal)
+      .fontColor(this.tagChipSelected(group, index) ? this.accentColor() : $r('app.color.text_secondary'))
+      .textAlign(TextAlign.Center)
+      .layoutWeight(1)
       .height(28)
-      .padding({ left: 12, right: 12 })
       .borderRadius(14)
-      .backgroundColor(this.tagFilter === mode ? this.accentChipColor() : Color.Transparent)
+      .backgroundColor(this.tagChipSelected(group, index) ? this.accentChipColor() : Color.Transparent)
+      .maxLines(1)
+      .textOverflow({ overflow: TextOverflow.Ellipsis })
+      .animation({ duration: 160, curve: Curve.EaseOut })
       .onClick(() => {
-        this.tagFilter = mode;
+        this.onTagChipTap(group, index);
       })
       .accessibilityText(label)
+  }
+
+  private tagChipSelected(group: number, index: number): boolean {
+    if (group === 0) {
+      return this.tagSortKey === index;
+    }
+    return this.tagFilter === index;
+  }
+
+  private onTagChipTap(group: number, index: number): void {
+    if (group === 1) {
+      this.tagFilter = index;
+      return;
+    }
+    if (this.tagSortKey === index) {
+      this.tagSortDesc = !this.tagSortDesc;
+      return;
+    }
+    this.tagSortKey = index;
+    this.tagSortDesc = false;
   }
 
   /**
@@ -2025,26 +2080,36 @@ struct Index {
         }
 
         ListItem() {
-          this.WebDavRow()
+          // 同步与备份是一个主题，两项合成**一张卡片**——与其它分组一致，
+          // 免得页面上出现两张互不相干的单行卡片。
+          Column({ space: 12 }) {
+            // `@Builder` 的调用返回 void，不能直接链 `.onClick`——所以外面再包一层
+            // Row 来承接点击。行本身负责外观，包装只负责命中。
+            Row() {
+              this.WebDavRow(false)
+            }
+              .width('100%')
+              .onClick(() => {
+                this.openWebDav();
+              })
+            Divider()
+              .color($r('app.color.divider'))
+              .opacity(0.6)
+            Row() {
+              this.SettingRow('导入 / 导出', 'Markdown + ZIP', '', false)
+            }
+              .width('100%')
+              .onClick(() => {
+                this.showTransferSheet();
+              })
+          }
+          .width('100%')
+          .padding(14)
+          .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+          .backgroundColor(Color.Transparent)
+          .borderRadius(this.cardRadius)
+          .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
         }
-        .onClick(() => {
-          this.openWebDav();
-        })
-        .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
-        .backgroundColor(Color.Transparent)
-        .borderRadius(this.cardRadius)
-        .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
-
-        ListItem() {
-          this.SettingRow('导入 / 导出', 'Markdown + ZIP', '')
-        }
-        .onClick(() => {
-          this.showTransferSheet();
-        })
-        .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
-        .backgroundColor(Color.Transparent)
-        .borderRadius(this.cardRadius)
-        .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
 
         ListItem() {
           this.SectionLabel('回收站')
@@ -2182,7 +2247,7 @@ struct Index {
   }
 
   @Builder
-  SettingRow(title: string, value: string, subtitle: string) {
+  SettingRow(title: string, value: string, subtitle: string, padded: boolean = true) {
     Row() {
       Column({ space: 2 }) {
         Text(title)
@@ -2207,7 +2272,7 @@ struct Index {
         .margin({ left: 4 })
     }
     .width('100%')
-    .padding(14)
+    .padding(padded ? 14 : 0)
   }
 
   /**
@@ -2222,7 +2287,7 @@ struct Index {
    * parameter-less builder is what makes it re-render.
    */
   @Builder
-  WebDavRow() {
+  WebDavRow(padded: boolean = true) {
     Row() {
       Column({ space: 2 }) {
         Text('WebDAV 同步')
@@ -2247,7 +2312,7 @@ struct Index {
         .margin({ left: 4 })
     }
     .width('100%')
-    .padding(14)
+    .padding(padded ? 14 : 0)
   }
 
   /** Recomputes the 设置 › WebDAV 同步 row from the settings singleton. */
