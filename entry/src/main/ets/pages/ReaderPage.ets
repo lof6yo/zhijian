@@ -2,6 +2,7 @@ import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { MdBlock, MdParseResult, MdSrcRange } from '../markdown/MdTypes';
 import { MdParser } from '../markdown/MdParser';
 import { EditableDocument } from '../markdown/EditableDocument';
+import { WholeDocEditor } from '../markdown/WholeDocEditor';
 import { Note } from '../models/Note';
 import { NoteStore } from '../services/NoteStore';
 import { SettingsStore } from '../services/SettingsStore';
@@ -69,6 +70,20 @@ export struct ReaderPage {
   @Local previewBlocks: MdBlock[] = [];
   @Local previewTick: number = 0;
   /**
+   * 整篇输入（记事本式）。默认打开笔记后在点一下正文时进入。
+   */
+  @Local wholeEditing: boolean = false;
+  /** 整篇输入的初始原文；只在打开时赋值一次，避免与输入互相覆盖。 */
+  @Local wholeSource: string = '';
+  /** 整篇输入的当前草稿。 */
+  @Local wholeDraft: string = '';
+  /** 打开整篇输入时的光标落点。 */
+  @Local wholeCaret: number = 0;
+  /** 设置 › 分块编辑（默认关）。关 → 整篇输入。 */
+  @Local simpleEditing: boolean = true;
+  /** 设置 › 格式按钮条（默认关）。 */
+  @Local showFormatBar: boolean = false;
+  /**
    * 渲染纪元：正文每变一次 +1。
    *
    * `MdBlock.id` 是解析序号，勾选待办、改措辞都不会改变它，而 `ForEach` 的 key
@@ -111,6 +126,8 @@ export struct ReaderPage {
     this.noteId = id;
     this.bodySize = SettingsStore.instance.editorFontSize;
     this.lineHeight = SettingsStore.instance.editorLineHeight;
+    this.simpleEditing = SettingsStore.instance.simpleEditing;
+    this.showFormatBar = SettingsStore.instance.formatBar;
     this.dark = this.activeDark();
     const note = NoteStore.instance.find(id);
     if (note === undefined) {
@@ -123,15 +140,21 @@ export struct ReaderPage {
     this.blocks = result.blocks;
     this.ready = true;
 
-    // 「打开就能记」：空白笔记（只有骨架标题，或干脆没有内容）一进来就把
-    // 光标放进第一块，不用先点一下。已有内容的笔记不这么做——那会在用户只是
-    // 想读一眼的时候弹出键盘。`autoOpened` 保证只在首次进入时触发。
+    // 「打开就能记」：空白笔记一进来就把光标放好。已有内容的笔记不这么做——
+    // 那会在用户只想看一眼前提下弹出键盘。`autoOpened` 保证只在首次进入时触发。
     if (!this.autoOpened) {
       this.autoOpened = true;
-      if (this.blocks.length === 0) {
-        this.startAppend();
-      } else if (this.blocks.length === 1 && this.blocks[0].kind === 0 && this.blocks[0].plain.trim() === '无标题') {
-        this.openResolved(0);
+      const blank: boolean = this.blocks.length === 0
+        || (this.blocks.length === 1 && this.blocks[0].kind === 0 && this.blocks[0].plain.trim() === '无标题');
+      if (blank) {
+        // 默认（整篇输入）直接在整篇输入框里落光标；分块模式才落进第一块。
+        if (this.simpleEditing) {
+          this.enterWholeEditingAt(0);
+        } else if (this.blocks.length === 0) {
+          this.startAppend();
+        } else {
+          this.openResolved(0);
+        }
       }
     }
   }
@@ -154,6 +177,42 @@ export struct ReaderPage {
     NoteStore.instance.saveNote(this.note, body);
     this.reparse(body);
     this.onChanged();
+  }
+
+  // ------------------------------------------------------------- 整篇输入
+
+  /** 某一块首字符在正文里的偏移，用作「点哪儿光标落哪儿」。 */
+  private caretAtBlock(index: number): number {
+    if (index < 0 || index >= this.blocks.length) {
+      return this.note.body.length;
+    }
+    const lines: string[] = this.bodyLines();
+    const target: number = this.blocks[index].srcLine;
+    let offset = 0;
+    for (let i = 0; i < target && i < lines.length; i++) {
+      offset += lines[i].length + 1;
+    }
+    return Math.min(offset, this.note.body.length);
+  }
+
+  private enterWholeEditingAt(index: number): void {
+    this.commitPending();
+    this.wholeCaret = this.caretAtBlock(index);
+    this.wholeSource = this.note.body;
+    this.wholeDraft = this.note.body;
+    this.wholeEditing = true;
+  }
+
+  private commitWhole(): void {
+    const next: string = this.wholeDraft;
+    const changed: boolean = next !== this.wholeSource;
+    this.wholeEditing = false;
+    // 清空初始原文，下次打开时 `@Monitor('source')` 才会重新播种并落光标。
+    this.wholeSource = '';
+    if (changed) {
+      this.touched = true;
+      this.persist(next);
+    }
   }
 
   // ------------------------------------------------------------- 就地编辑
@@ -230,6 +289,10 @@ export struct ReaderPage {
   }
 
   private commitPending(): void {
+    if (this.wholeEditing) {
+      this.commitWhole();
+      return;
+    }
     if (this.appending) {
       this.commitAppend();
       return;
@@ -389,6 +452,21 @@ export struct ReaderPage {
             .layoutWeight(1)
             .width('100%')
             .justifyContent(FlexAlign.Center)
+          } else if (this.wholeEditing) {
+            // 记事本式的整篇输入。没有块、没有预览面板，只有一张输入框。
+            WholeDocEditor({
+              source: this.wholeSource,
+              initialCaret: this.wholeCaret,
+              bodySize: this.bodySize,
+              showFormatBar: this.showFormatBar,
+              accentColor: this.accentColor,
+              onChange: (text: string) => {
+                this.wholeDraft = text;
+                if (text !== this.wholeSource) {
+                  this.touched = true;
+                }
+              }
+            })
           } else {
             Scroll() {
               Column() {
@@ -397,6 +475,8 @@ export struct ReaderPage {
                   editingIndex: this.editingIndex,
                   editingSource: this.editingSource,
                   appending: this.appending,
+                  simpleMode: this.simpleEditing,
+                  showFormatBar: this.showFormatBar,
                   previewBlocks: this.previewBlocks,
                   previewTick: this.previewTick,
                   epoch: this.epoch,
@@ -405,7 +485,11 @@ export struct ReaderPage {
                   dark: this.dark,
                   accentColor: this.accentColor,
                   onBlockTap: (index: number) => {
-                    this.openBlock(index);
+                    if (this.simpleEditing) {
+                      this.enterWholeEditingAt(index);
+                    } else {
+                      this.openBlock(index);
+                    }
                   },
                   onDraftChange: (value: string) => {
                     this.onDraftChange(value);
@@ -420,7 +504,12 @@ export struct ReaderPage {
                     this.toggleTask(block);
                   },
                   onAddBlock: () => {
-                    this.startAppend();
+                    if (this.simpleEditing) {
+                      // 整篇输入：光标落文末即可，不做块级追加。
+                      this.enterWholeEditingAt(this.blocks.length);
+                    } else {
+                      this.startAppend();
+                    }
                   }
                 })
               }
@@ -472,7 +561,7 @@ export struct ReaderPage {
    * 之类的页面返回，磁盘上的内容可能变了。有草稿就保留，不打断用户输入。
    */
   private loadContinuation(): void {
-    if (this.editingIndex >= 0 || this.appending) {
+    if (this.wholeEditing || this.editingIndex >= 0 || this.appending) {
       return;
     }
     this.load(this.noteId);
@@ -499,6 +588,20 @@ export struct ReaderPage {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
+
+      // 整篇输入时，完成只能放在页头：整篇输入框占满正文区，里面没有第二行
+      // 可以放按钮的地方。
+      if (this.wholeEditing) {
+        Text('完成')
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.accentColor)
+          .padding({ left: 12, right: 8, top: 8, bottom: 8 })
+          .onClick(() => {
+            this.commitWhole();
+          })
+          .accessibilityText('完成编辑')
+      }
     }
     .width('100%')
     .height(56)

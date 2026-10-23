@@ -39,6 +39,15 @@ export struct EditableDocument {
   @Param editingSource: string = '';
   /** 追加新段落中：编辑框挂在文末。 */
   @Param appending: boolean = false;
+  /**
+   * 简单模式：**不**就地展开块编辑器。
+   *
+   * 被点中的块只上报一次点击，由宿主打开整篇输入框（并让光标落到这一块）。
+   * 默认就是这条路——用户要的是记事本式的输入，而不是先理解「块」是什么。
+   */
+  @Param simpleMode: boolean = false;
+  /** 格式按钮条（设置 › 格式按钮条）。 */
+  @Param showFormatBar: boolean = false;
   /** 草稿的解析结果，供编辑态下方预览。 */
   @Param previewBlocks: MdBlock[] = [];
   @Param previewTick: number = 0;
@@ -66,7 +75,7 @@ export struct EditableDocument {
   build() {
     Column({ space: 2 }) {
       ForEach(this.blocks, (block: MdBlock, index: number) => {
-        if (index === this.editingIndex && !this.appending) {
+        if (!this.simpleMode && index === this.editingIndex && !this.appending) {
           LiveBlockEditor({
             block: block,
             index: index,
@@ -77,6 +86,7 @@ export struct EditableDocument {
             lineHeight: this.lineHeight,
             dark: this.dark,
             accentColor: this.accentColor,
+            showFormatBar: this.showFormatBar,
             onDraftChange: (value: string) => {
               this.onDraftChange(value);
             },
@@ -117,7 +127,7 @@ export struct EditableDocument {
         }
       }, (block: MdBlock, index: number) => `${block.id}-${this.epoch}-${index === this.editingIndex && !this.appending ? 'e' : 'r'}`)
 
-      if (this.appending) {
+      if (this.appending && !this.simpleMode) {
         LiveBlockEditor({
           block: this.blocks.length > 0 ? this.blocks[this.blocks.length - 1] : this.blocks[0],
           index: this.blocks.length,
@@ -129,6 +139,7 @@ export struct EditableDocument {
           lineHeight: this.lineHeight,
           dark: this.dark,
           accentColor: this.accentColor,
+          showFormatBar: this.showFormatBar,
           onDraftChange: (value: string) => {
             this.onDraftChange(value);
           },
@@ -139,7 +150,7 @@ export struct EditableDocument {
             this.onDelete();
           }
         })
-      } else if (this.editingIndex < 0) {
+      } else if (!this.simpleMode && this.editingIndex < 0) {
         // 文末的追加入口。没有它，「在末尾再写一段」就得去改最后一块——
         // 那不是一个「打开就能记」的应用该让人琢磨的事。
         Row({ space: 6 }) {

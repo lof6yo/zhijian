@@ -27,11 +27,20 @@ const KEY_SYNC_BASE = 'syncBase';
 const KEY_SYNC_SCOPE = 'syncBaseScope';
 const KEY_SYNC_AT = 'syncFinishedAt';
 const KEY_CARD_RADIUS = 'cardRadius';
+const KEY_SIMPLE_EDIT = 'simpleEditing';
+const KEY_FORMAT_BAR = 'formatBar';
 
 export const FONT_SIZE_MIN = 14;
 export const FONT_SIZE_MAX = 22;
-export const LINE_HEIGHT_MIN = 140;
-export const LINE_HEIGHT_MAX = 220;
+/**
+ * 行距百分比（100 = 单倍）。
+ *
+ * 原来的 140–220 两头都过头：220% 已经是「双倍行距」，正文会松到断行感消失，
+ * 而 140% 以下才是紧凑排版真正需要的区间。110–180 把可用行程留给真正会调整的
+ * 那一段，滑块的每一下都落在有意义的范围里。默认 160 接近书籍正文。
+ */
+export const LINE_HEIGHT_MIN = 110;
+export const LINE_HEIGHT_MAX = 180;
 
 /**
  * Note-card corner radius, in vp.
@@ -90,7 +99,7 @@ export class SettingsStore {
   /** Editor body font size in px (web side uses px, not vp). */
   editorFontSize: number = 17;
   /** Editor line height as a percentage of the font size, e.g. 175 = 1.75. */
-  editorLineHeight: number = 175;
+  editorLineHeight: number = 160;
   /** Immersive glass strength gear, 0 = restrained … 2 = deepest. */
   glassLevel: number = GLASS_LEVEL_DEFAULT;
   /** WebDAV base URL, normalised with a trailing slash. Not a secret. */
@@ -136,6 +145,17 @@ export class SettingsStore {
    * not a global shape token.
    */
   cardRadius: number = CARD_RADIUS_DEFAULT;
+  /**
+   * 简单编辑体验（默认开）。
+   *
+   * 打开时笔记就是一张**整篇的输入框**：点哪儿都能写，没有分块、没有块级
+   * 工具栏、没有预览面板——像记事本。分块编辑（点哪块只改哪块，带实时预览）
+   * 是可选的高级模式，因为它对不熟 Markdown 的人多了一层「现在我在改什么」的
+   * 认知负担。
+   */
+  simpleEditing: boolean = true;
+  /** 格式按钮条（默认关）。关掉时输入框就是纯文本，没有按钮干扰。 */
+  formatBar: boolean = false;
 
   private prefs: preferences.Preferences | null = null;
   private initialized: boolean = false;
@@ -164,6 +184,8 @@ export class SettingsStore {
       this.syncFinishedAt = this.readNumber(KEY_SYNC_AT, this.syncFinishedAt);
       this.cardRadius = this.clamp(this.readNumber(KEY_CARD_RADIUS, this.cardRadius),
         CARD_RADIUS_MIN, CARD_RADIUS_MAX);
+      this.simpleEditing = this.readBool(KEY_SIMPLE_EDIT, this.simpleEditing);
+      this.formatBar = this.readBool(KEY_FORMAT_BAR, this.formatBar);
       this.initialized = true;
     } catch (error) {
       hilog.error(DOMAIN, 'SettingsStore', 'init failed: %{public}s', JSON.stringify(error));
@@ -198,6 +220,16 @@ export class SettingsStore {
   setCardRadius(radius: number): void {
     this.cardRadius = this.clamp(Math.round(radius), CARD_RADIUS_MIN, CARD_RADIUS_MAX);
     this.writeNumber(KEY_CARD_RADIUS, this.cardRadius);
+  }
+
+  setSimpleEditing(on: boolean): void {
+    this.simpleEditing = on;
+    this.writeBool(KEY_SIMPLE_EDIT, on);
+  }
+
+  setFormatBar(on: boolean): void {
+    this.formatBar = on;
+    this.writeBool(KEY_FORMAT_BAR, on);
   }
 
   setDavUrl(url: string): void {
@@ -257,6 +289,28 @@ export class SettingsStore {
     }
     const value = this.prefs.getSync(key, fallback);
     return typeof value === 'number' ? value : fallback;
+  }
+
+  private readBool(key: string, fallback: boolean): boolean {
+    if (this.prefs === null) {
+      return fallback;
+    }
+    const value = this.prefs.getSync(key, fallback);
+    return typeof value === 'boolean' ? value : fallback;
+  }
+
+  private writeBool(key: string, value: boolean): void {
+    if (this.prefs === null) {
+      return;
+    }
+    try {
+      this.prefs.putSync(key, value);
+      this.prefs.flush().catch((error: BusinessError) => {
+        hilog.error(DOMAIN, 'SettingsStore', 'flush failed: %{public}s', JSON.stringify(error));
+      });
+    } catch (error) {
+      hilog.error(DOMAIN, 'SettingsStore', 'write failed: %{public}s', JSON.stringify(error));
+    }
   }
 
   private clamp(value: number, min: number, max: number): number {

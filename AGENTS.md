@@ -383,27 +383,37 @@ truth; the Web bridge calls `native.save(markdown)` and the native side writes
 `.md` files. `EditorPage` debounces 500 ms and flushes on back/background.
 The editor pops with `{ saved: true }`.
 
-### Reading vs editing: one page, no mode switch, block-level WYSIWYG
+### Reading vs editing: one page, no mode switch
 
 `ReaderPage` is both the reader and the editor. **There is no 阅读/编辑 toggle.**
-Opening a note gives a rendered article in which every block is live: tap a block
-and *that block* expands into its Markdown source with a live preview underneath;
-完成 splices it back by line range. That is the whole interaction.
+A note opens rendered; tapping the body starts editing in place. That is the whole
+interaction.
+
+Two editing experiences, both reachable from the same tap (设置 › 编辑体验):
+
+- **简单 (default).** Tapping anywhere opens **one full-screen Markdown field**
+  holding the whole note (`WholeDocEditor`) — a notepad. No blocks, no preview
+  panel, no per-block chrome; 完成 returns to the rendered view. The caret lands at
+  the block that was tapped, so "点哪儿写哪儿" still holds. This is the default
+  because a user who just wants to jot something down should not first have to
+  learn what a block is.
+- **分块.** Tapping a block edits *that block*: source on top, its rendered result
+  below (`LiveBlockEditor`). Worth it for long documents and for tables, code and
+  formulas, where seeing that one block render is the point.
+
+**格式按钮条 is off by default** (设置 › 格式按钮条). It is the closed loop for people
+who do not know Markdown — `标题 / 粗体 / 斜体 / 列表 / 待办 / 引用 / 表格 / 代码`
+turn structure into something tappable instead of documented — but a row of buttons
+is also interference when you only want to fix a word. `MarkdownEdits` holds the
+pure text transforms so both editors produce byte-identical results for the same
+button.
 
 - **Why no mode.** "打开就能记" is the point of a notes app. A 编辑 gate makes the
   user declare intent before changing one character, and read-only browsing is not a
-  state that deserves entering. This is the Typora model and the reference
-  implementation's 实时预览 mode.
-- **Why block-source editing, not a rich-text caret model.** Markdown's source *is*
-  the specification — `##`, `-`, `**` are what the user types. Hiding them means the
-  user cannot predict what the next keystroke does. Showing the symbols next to
-  their effect gives a complete feedback loop with no second document model.
-- **The format bar is not decoration — it is the closed loop.** A user who does not
-  know Markdown can only produce plain paragraphs from a bare text box. `标题 /
-  粗体 / 斜体 / 列表 / 待办 / 引用 / 表格 / 代码` turn those structures into
-  something tappable, so the feature is reachable instead of documented. Line
-  actions toggle a prefix (longest prefix first, or `- [ ] ` gets eaten by `- `);
-  inline actions wrap the selection or insert a marker pair at the caret.
+  state that deserves entering. This is the Typora model.
+- **Why source, not a rich-text caret model.** Markdown's source *is* the
+  specification — `##`, `-`, `**` are what the user types. Hiding them means the
+  user cannot predict what the next keystroke does.
 - **The block's line range comes from `MdParser.srcRangeOf(blocks, i, totalLines)`.**
   `totalLines` is **required for the last block**: it has no "next block" to borrow
   an end from, so without it a multi-line final block is truncated to its first line
@@ -835,8 +845,11 @@ an older device degrades instead of crashing. The HDS libraries live in the
   otherwise lost, because the window's system bars are re-initialised when the
   stage loads content. `services/SettingsStore.ets` persists `themeMode` (`0`
   follow system, `1` light, `2` dark), `accentMode` (`0` blue, `1` teal, `2` amber),
-  `editorFontSize` (14–22 px), `editorLineHeight` (140–220, i.e. 1.40–2.20×),
-  `cardRadius` (8–36 vp, default 26) and `glassLevel` (see the immersion section).
+  `editorFontSize` (14–22 px), `editorLineHeight` (**110–180**, i.e. 1.10–1.80×;
+  140–220 was too wide at both ends — 2.20 is double-spacing and the useful tight
+  range sits below 1.40), `cardRadius` (8–36 vp, default 26), `simpleEditing`
+  (default `true`) and `formatBar` (default `false`), plus `glassLevel` (see the
+  immersion section).
   `Index.PageBackdrop` is drawn **once** behind the whole shell, not per tab, so
   the background does not jump when switching tabs and the swipe has no seam.
 - **背景 is 光感 only, and it follows 强调色.** There is no 背景样式 setting any more:

@@ -61,6 +61,8 @@ const TAG: string = 'HMStart';
  */
 const SEG_THEME: number = 0;
 const SEG_GLASS: number = 1;
+/** 编辑体验：0 = 简单（整篇输入），1 = 分块。 */
+const SEG_EDIT: number = 2;
 
 @Entry
 @ComponentV2
@@ -88,6 +90,10 @@ struct Index {
    * whole UI changes depth together instead of each surface drifting.
    */
   @Local glassLevel: number = GLASS_LEVEL_DEFAULT;
+  /** 编辑体验：true = 简单（整篇输入），false = 分块。默认简单。 */
+  @Local simpleEditing: boolean = true;
+  /** 格式按钮条，默认关。 */
+  @Local showFormatBar: boolean = false;
   /** Note-card corner radius in vp; mirrors `SettingsStore.cardRadius`. */
   @Local cardRadius: number = CARD_RADIUS_DEFAULT;
   /**
@@ -156,6 +162,8 @@ struct Index {
     this.fontSize = SettingsStore.instance.editorFontSize;
     this.lineHeight = SettingsStore.instance.editorLineHeight;
     this.glassLevel = SettingsStore.instance.glassLevel;
+    this.simpleEditing = SettingsStore.instance.simpleEditing;
+    this.showFormatBar = SettingsStore.instance.formatBar;
     this.cardRadius = SettingsStore.instance.cardRadius;
     this.refreshDavState();
 
@@ -395,6 +403,16 @@ struct Index {
   private setGlassLevel(level: number): void {
     this.glassLevel = level;
     SettingsStore.instance.setGlassLevel(level);
+  }
+
+  private setSimpleEditing(on: boolean): void {
+    this.simpleEditing = on;
+    SettingsStore.instance.setSimpleEditing(on);
+  }
+
+  private setFormatBar(on: boolean): void {
+    this.showFormatBar = on;
+    SettingsStore.instance.setFormatBar(on);
   }
 
   private scheme(): AccentScheme {
@@ -1758,6 +1776,59 @@ struct Index {
           Column({ space: 6 }) {
             Row() {
               Column({ space: 2 }) {
+                Text('编辑体验')
+                  .fontSize(16)
+                  .fontColor($r('app.color.text_primary'))
+                Text(this.simpleEditing ? '整篇输入，像记事本' : '点哪一块改哪一块')
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .alignItems(HorizontalAlign.Start)
+
+              Blank()
+
+              Row({ space: 2 }) {
+                this.SegmentButton('简单', 0, SEG_EDIT)
+                this.SegmentButton('分块', 1, SEG_EDIT)
+              }
+              .padding(3)
+              .borderRadius(14)
+              .backgroundColor($r('app.color.page_bg'))
+            }
+            .width('100%')
+          }
+          .width('100%')
+          .padding({ top: 4, bottom: 4 })
+        }
+
+        ListItem() {
+          Row() {
+            Column({ space: 2 }) {
+              Text('格式按钮条')
+                .fontSize(16)
+                .fontColor($r('app.color.text_primary'))
+              Text('粗体、列表、待办这些按钮')
+                .fontSize(12)
+                .fontColor($r('app.color.text_secondary'))
+            }
+            .alignItems(HorizontalAlign.Start)
+
+            Blank()
+
+            Toggle({ type: ToggleType.Switch, isOn: this.showFormatBar })
+              .selectedColor(this.accentColor())
+              .onChange((on: boolean) => {
+                this.setFormatBar(on);
+              })
+          }
+          .width('100%')
+          .padding({ top: 10, bottom: 10 })
+        }
+
+        ListItem() {
+          Column({ space: 6 }) {
+            Row() {
+              Column({ space: 2 }) {
                 Text('编辑器字号')
                   .fontSize(16)
                   .fontColor($r('app.color.text_primary'))
@@ -1915,6 +1986,9 @@ struct Index {
           // Repaints every glass surface immediately; the effect tables read
           // `glassLevel` directly, so no rebuild is required.
           this.setGlassLevel(value);
+        } else if (kind === SEG_EDIT) {
+          // 0 = 简单（整篇输入），1 = 分块。
+          this.setSimpleEditing(value === 0);
         } else {
           this.setThemeMode(value);
         }
@@ -1924,6 +1998,9 @@ struct Index {
   private segmentSelected(value: number, kind: number): boolean {
     if (kind === SEG_GLASS) {
       return this.glassLevel === value;
+    }
+    if (kind === SEG_EDIT) {
+      return (value === 0) === this.simpleEditing;
     }
     return this.themeMode === value;
   }
