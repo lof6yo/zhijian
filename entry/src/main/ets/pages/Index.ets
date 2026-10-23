@@ -7,6 +7,7 @@ import { SettingsStore } from '../services/SettingsStore';
 import { Note } from '../models/Note';
 import { NoteStore } from '../services/NoteStore';
 import { NoteCard } from '../components/NoteCard';
+import { CardSurface } from '../components/CardSurface';
 import { MaterialLayer } from '../components/MaterialLayer';
 import { EditorPage } from './EditorPage';
 import { TrashPage } from './TrashPage';
@@ -64,6 +65,12 @@ const SEG_GLASS: number = 1;
 /** 编辑体验：0 = 简单（整篇输入），1 = 分块。 */
 const SEG_EDIT: number = 2;
 
+/**
+ * `.background(builder)` 的参数必须是**显式类型**的对象：ArkTS 拒绝内联对象
+ * 字面量（`arkts-no-untyped-obj-literals`），而解析失败会连锁污染其后所有属性。
+ */
+const CARD_BG_OPTIONS: BackgroundOptions = { align: Alignment.Center };
+
 @Entry
 @ComponentV2
 struct Index {
@@ -94,6 +101,12 @@ struct Index {
   @Local simpleEditing: boolean = false;
   /** 格式按钮条，默认关。 */
   @Local showFormatBar: boolean = false;
+  /** 标签页排序依据：0 = 名称，1 = 笔记数量。 */
+  @Local tagSortKey: number = 0;
+  /** 标签页排序方向：false = 升序，true = 降序。 */
+  @Local tagSortDesc: boolean = false;
+  /** 标签页筛选：0 = 全部，1 = 只看置顶笔记里的标签。 */
+  @Local tagFilter: number = 0;
   /** Note-card corner radius in vp; mirrors `SettingsStore.cardRadius`. */
   @Local cardRadius: number = CARD_RADIUS_DEFAULT;
   /**
@@ -1642,8 +1655,20 @@ struct Index {
           .width('100%')
           .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
       } else {
+        // 排序 + 筛选。标签一多，「按什么排」和「只看哪一类」就得能被控制，
+        // 否则列表只是一堆按字母排的名字。
+        Row({ space: 8 }) {
+          this.TagSortChip('名称', 0)
+          this.TagSortChip('数量', 1)
+          Blank()
+          this.TagFilterChip('全部', 0)
+          this.TagFilterChip('置顶', 1)
+        }
+        .width('100%')
+        .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
+
         List({ space: 8, scroller: this.tagsScroller }) {
-          ForEach(this.store.tags, (tag: string) => {
+          ForEach(this.visibleTags(), (tag: string) => {
             ListItem() {
               Row() {
                 Text(`# ${tag}`)
@@ -1656,13 +1681,14 @@ struct Index {
               }
               .width('100%')
               .padding(14)
-              .borderRadius(16)
-              .backgroundColor($r('app.color.glass_bg'))
               .onClick(() => {
                 this.filterByTag(tag);
               })
             }
-            .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
+            .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+            .backgroundColor(Color.Transparent)
+            .borderRadius(this.cardRadius)
+            .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
           }, (tag: string) => tag)
         }
         .width('100%')
@@ -1675,6 +1701,76 @@ struct Index {
     // No local heading: the HDS title bar owns the page title (大标题) on every
     // tab, so each tab only reserves that band.
     .padding({ top: this.TITLE_BAR_CLEARANCE })
+  }
+
+  /**
+   * 排序项。点当前项翻转升降序，点另一项切换排序依据（并回到升序）。
+   *
+   * 方向做进标签里（`名称 ↑`）而不是另给一个箭头按钮：两组排序 + 一个方向键
+   * 需要三处控件，挤在一行里点不准；而「当前项带箭头」既省位置也自带说明。
+   */
+  @Builder
+  TagSortChip(label: string, key: number) {
+    Text(this.tagSortKey === key ? `${label} ${this.tagSortDesc ? '↓' : '↑'}` : label)
+      .fontSize(12)
+      .fontWeight(this.tagSortKey === key ? FontWeight.Medium : FontWeight.Normal)
+      .fontColor(this.tagSortKey === key ? this.accentColor() : $r('app.color.text_secondary'))
+      .height(28)
+      .padding({ left: 12, right: 12 })
+      .borderRadius(14)
+      .backgroundColor(this.tagSortKey === key ? this.accentChipColor() : Color.Transparent)
+      .onClick(() => {
+        if (this.tagSortKey === key) {
+          this.tagSortDesc = !this.tagSortDesc;
+        } else {
+          this.tagSortKey = key;
+          this.tagSortDesc = false;
+        }
+      })
+      .accessibilityText(`按${label}排序`)
+  }
+
+  /** 筛选项：全部 / 置顶（只看出现在置顶笔记里的标签）。 */
+  @Builder
+  TagFilterChip(label: string, mode: number) {
+    Text(label)
+      .fontSize(12)
+      .fontWeight(this.tagFilter === mode ? FontWeight.Medium : FontWeight.Normal)
+      .fontColor(this.tagFilter === mode ? this.accentColor() : $r('app.color.text_secondary'))
+      .height(28)
+      .padding({ left: 12, right: 12 })
+      .borderRadius(14)
+      .backgroundColor(this.tagFilter === mode ? this.accentChipColor() : Color.Transparent)
+      .onClick(() => {
+        this.tagFilter = mode;
+      })
+      .accessibilityText(label)
+  }
+
+  /**
+   * 当前要显示的标签：先按筛选过滤，再按排序整理。
+   *
+   * 「按名称」用 `localeCompare`，与 `NoteStore.collectTags()` 的默认排序一致，
+   * 所以切到按名称升序时顺序不会突然变一次。
+   */
+  private visibleTags(): string[] {
+    const all: string[] = this.store.tags;
+    const kept: string[] = [];
+    for (const tag of all) {
+      if (this.tagFilter === 1 && this.store.countTagIn(tag, true) === 0) {
+        continue;
+      }
+      kept.push(tag);
+    }
+    if (this.tagSortKey === 1) {
+      kept.sort((a: string, b: string): number => this.store.countTag(a) - this.store.countTag(b));
+    } else {
+      kept.sort((a: string, b: string): number => a.localeCompare(b));
+    }
+    if (this.tagSortDesc) {
+      kept.reverse();
+    }
+    return kept;
   }
 
   // -------------------------------------------------------------- settings
@@ -1758,11 +1854,43 @@ struct Index {
               }
             }
             .width('100%')
+
+            // 卡片圆角属于**外观**：它决定卡片长什么样，不是写作参数。放在这里
+            // 也因为设置页的分组卡片自己就用这个值画圆角。
+            Row({ space: 10 }) {
+              Text('卡片圆角')
+                .fontSize(14)
+                .fontColor($r('app.color.text_primary'))
+                .width(58)
+              Slider({
+                value: this.cardRadius,
+                min: CARD_RADIUS_MIN,
+                max: CARD_RADIUS_MAX,
+                step: 2,
+                style: SliderStyle.OutSet
+              })
+                .layoutWeight(1)
+                .selectedColor(this.accentColor())
+                .blockColor(this.accentColor())
+                .trackColor($r('app.color.divider'))
+                .onChange((value: number) => {
+                  this.cardRadius = Math.round(value);
+                  SettingsStore.instance.setCardRadius(this.cardRadius);
+                })
+              Text(`${this.cardRadius} vp`)
+                .fontSize(12)
+                .fontColor($r('app.color.text_secondary'))
+                .width(48)
+                .textAlign(TextAlign.End)
+            }
+            .width('100%')
           }
           .width('100%')
           .padding(14)
-          .backgroundColor($r('app.color.glass_bg'))
-          .borderRadius(20)
+          .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+          .backgroundColor(Color.Transparent)
+          .borderRadius(this.cardRadius)
+          .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
         }
 
         ListItem() {
@@ -1818,103 +1946,78 @@ struct Index {
             }
             .width('100%')
 
-            Row() {
-              Column({ space: 2 }) {
-                Text('编辑器字号')
-                  .fontSize(16)
-                  .fontColor($r('app.color.text_primary'))
-                Text(`${this.fontSize} px`)
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
-              }
-              .alignItems(HorizontalAlign.Start)
-              Blank()
+            // 字号与行距压成**一行一条**：标签、���块、数值并排。
+            //
+            // 原来每项是两行（标题 + 数值）再跟一条滑块，三项就吃掉一屏多，
+            // 设置页大半被滑块占满。滑块本身够宽，标签和数值都可以让位给它。
+            Row({ space: 10 }) {
+              Text('字号')
+                .fontSize(14)
+                .fontColor($r('app.color.text_primary'))
+                .width(40)
+              Slider({
+                value: this.fontSize,
+                min: FONT_SIZE_MIN,
+                max: FONT_SIZE_MAX,
+                step: 1,
+                style: SliderStyle.OutSet
+              })
+                .layoutWeight(1)
+                .selectedColor(this.accentColor())
+                .blockColor(this.accentColor())
+                .trackColor($r('app.color.divider'))
+                .onChange((value: number) => {
+                  this.fontSize = Math.round(value);
+                  SettingsStore.instance.setEditorFontSize(this.fontSize);
+                })
+              Text(`${this.fontSize} px`)
+                .fontSize(12)
+                .fontColor($r('app.color.text_secondary'))
+                .width(48)
+                .textAlign(TextAlign.End)
             }
             .width('100%')
-            Slider({
-              value: this.fontSize,
-              min: FONT_SIZE_MIN,
-              max: FONT_SIZE_MAX,
-              step: 1,
-              style: SliderStyle.OutSet
-            })
-              .selectedColor(this.accentColor())
-              .blockColor(this.accentColor())
-              .trackColor($r('app.color.divider'))
-              .width('100%')
-              .onChange((value: number) => {
-                this.fontSize = Math.round(value);
-                SettingsStore.instance.setEditorFontSize(this.fontSize);
-              })
 
-            Row() {
-              Column({ space: 2 }) {
-                Text('行距')
-                  .fontSize(16)
-                  .fontColor($r('app.color.text_primary'))
-                Text(`${(this.lineHeight / 100).toFixed(2)} 倍`)
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
-              }
-              .alignItems(HorizontalAlign.Start)
-              Blank()
+            Row({ space: 10 }) {
+              Text('行距')
+                .fontSize(14)
+                .fontColor($r('app.color.text_primary'))
+                .width(40)
+              Slider({
+                // 必须喂给滑块**范围之内**的值。
+                //
+                // 只靠 `SettingsStore` 在读取时钳制是不够的：一旦存储里的旧值落在
+                // 新范围之外（把范围改成 0.75–1.50 之后，原来的 1.55 就在外面），
+                // 滑块会把它自己的解读写回 `onChange`，于是用户没碰过的设置被
+                // 静默改掉——实测行距从 1.55 变成了 1.10。
+                value: this.clampLineHeight(this.lineHeight),
+                min: LINE_HEIGHT_MIN,
+                max: LINE_HEIGHT_MAX,
+                step: 5,
+                style: SliderStyle.OutSet
+              })
+                .layoutWeight(1)
+                .selectedColor(this.accentColor())
+                .blockColor(this.accentColor())
+                .trackColor($r('app.color.divider'))
+                .onChange((value: number) => {
+                  this.lineHeight = Math.round(value);
+                  SettingsStore.instance.setEditorLineHeight(this.lineHeight);
+                })
+              Text(`${(this.lineHeight / 100).toFixed(2)} 倍`)
+                .fontSize(12)
+                .fontColor($r('app.color.text_secondary'))
+                .width(48)
+                .textAlign(TextAlign.End)
             }
             .width('100%')
-            Slider({
-              // 必须喂给滑块**范围之内**的值。
-              //
-              // 只靠 `SettingsStore` 在读取时钳制是不够的：一旦存储里的旧值落在
-              // 新范围之外（把范围改成 0.75–1.50 之后，原来的 1.55 就在外面），
-              // 滑块会把它自己的解读写回 `onChange`，于是用户没碰过的设置被
-              // 静默改掉——实测行距从 1.55 变成了 1.10。
-              value: this.clampLineHeight(this.lineHeight),
-              min: LINE_HEIGHT_MIN,
-              max: LINE_HEIGHT_MAX,
-              step: 5,
-              style: SliderStyle.OutSet
-            })
-              .selectedColor(this.accentColor())
-              .blockColor(this.accentColor())
-              .trackColor($r('app.color.divider'))
-              .width('100%')
-              .onChange((value: number) => {
-                this.lineHeight = Math.round(value);
-                SettingsStore.instance.setEditorLineHeight(this.lineHeight);
-              })
-
-            Row() {
-              Column({ space: 2 }) {
-                Text('卡片圆角')
-                  .fontSize(16)
-                  .fontColor($r('app.color.text_primary'))
-                Text(`${this.cardRadius} vp`)
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
-              }
-              .alignItems(HorizontalAlign.Start)
-              Blank()
-            }
-            .width('100%')
-            Slider({
-              value: this.cardRadius,
-              min: CARD_RADIUS_MIN,
-              max: CARD_RADIUS_MAX,
-              step: 2,
-              style: SliderStyle.OutSet
-            })
-              .selectedColor(this.accentColor())
-              .blockColor(this.accentColor())
-              .trackColor($r('app.color.divider'))
-              .width('100%')
-              .onChange((value: number) => {
-                this.cardRadius = Math.round(value);
-                SettingsStore.instance.setCardRadius(this.cardRadius);
-              })
           }
           .width('100%')
           .padding(14)
-          .backgroundColor($r('app.color.glass_bg'))
-          .borderRadius(20)
+          .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+          .backgroundColor(Color.Transparent)
+          .borderRadius(this.cardRadius)
+          .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
         }
 
         ListItem() {
@@ -1927,6 +2030,10 @@ struct Index {
         .onClick(() => {
           this.openWebDav();
         })
+        .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+        .backgroundColor(Color.Transparent)
+        .borderRadius(this.cardRadius)
+        .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
 
         ListItem() {
           this.SettingRow('导入 / 导出', 'Markdown + ZIP', '')
@@ -1934,6 +2041,10 @@ struct Index {
         .onClick(() => {
           this.showTransferSheet();
         })
+        .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+        .backgroundColor(Color.Transparent)
+        .borderRadius(this.cardRadius)
+        .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
 
         ListItem() {
           this.SectionLabel('回收站')
@@ -1945,6 +2056,10 @@ struct Index {
         .onClick(() => {
           this.pathStack.pushPath({ name: 'trash' });
         })
+        .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+        .backgroundColor(Color.Transparent)
+        .borderRadius(this.cardRadius)
+        .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
 
         ListItem() {
           this.SectionLabel('关于')
@@ -1953,6 +2068,10 @@ struct Index {
         ListItem() {
           this.SettingRow('关于 纸见', 'API 26 · 本地优先', '')
         }
+        .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+        .backgroundColor(Color.Transparent)
+        .borderRadius(this.cardRadius)
+        .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
       }
       .width('100%')
       .layoutWeight(1)
@@ -2045,6 +2164,23 @@ struct Index {
       .padding({ left: 4, top: 6, bottom: 0 })
   }
 
+  /**
+   * 设置页的分组卡片表面。
+   *
+   * 与笔记卡片是**同一种东西**：同一个 `CardSurface`、同一个卡片圆角设置、同一层
+   * 沉浸光感与同一道落在背景上的阴影。设置页原来用的是一块平涂的半透明底色加
+   * 写死的 20 vp 圆角，看起来像另一个应用里的控件。
+   */
+  @Builder
+  SettingsCardSurface() {
+    CardSurface({
+      radius: this.cardRadius,
+      glassOn: this.glassOn(),
+      glassGear: this.glassLevel,
+      glassTint: this.glassTint()
+    })
+  }
+
   @Builder
   SettingRow(title: string, value: string, subtitle: string) {
     Row() {
@@ -2072,8 +2208,6 @@ struct Index {
     }
     .width('100%')
     .padding(14)
-    .backgroundColor($r('app.color.glass_bg'))
-    .borderRadius(20)
   }
 
   /**
@@ -2114,8 +2248,6 @@ struct Index {
     }
     .width('100%')
     .padding(14)
-    .backgroundColor($r('app.color.glass_bg'))
-    .borderRadius(20)
   }
 
   /** Recomputes the 设置 › WebDAV 同步 row from the settings singleton. */

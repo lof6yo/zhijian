@@ -1,5 +1,5 @@
 import { systemDateTime } from '@kit.BasicServicesKit';
-import { MaterialLayer } from './MaterialLayer';
+import { CardSurface } from './CardSurface';
 
 /**
  * `.background()` takes a typed options object: ArkTS rejects an inline object
@@ -152,8 +152,6 @@ export struct NoteCard {
     // Transparent only when the carrier is actually painting. An opaque fallback
     // here would be correct-looking but would also cover the material.
     .backgroundColor(this.glassOn ? Color.Transparent : $r('sys.color.ohos_id_color_card_bg'))
-    // Do **not** clip: the shadow is painted outside the node's bounds, so
-    // `clip(true)` would cut it off and leave a hard edge.
     .borderRadius(this.cornerRadius)
     .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
     // Press feedback uses the platform interaction effect instead of
@@ -170,28 +168,19 @@ export struct NoteCard {
   }
 
   /**
-   * Background layer: the material carrier under a translucent surface veil.
+   * Background layer: the shared card surface (沉浸光感 + 半透明遮罩).
    *
-   * Emits nothing when the device cannot render immersive material — the
-   * component's own opaque `backgroundColor` is then the whole surface.
+   * Settings 分组卡片用的是同一个 `CardSurface`——两处的圆角、材质强度与遮罩
+   * 浓度必须一致，否则设置页看起来像另一个应用里的控件。
    */
   @Builder
   CardSurface() {
-    if (this.glassOn) {
-      Stack({ alignContent: Alignment.TopStart }) {
-        MaterialLayer({
-          radius: this.cornerRadius,
-          gear: this.glassGear
-        })
-        Column()
-          .width('100%')
-          .height('100%')
-          .borderRadius(this.cornerRadius)
-          .backgroundColor(this.glassTint)
-      }
-      .width('100%')
-      .height('100%')
-    }
+    CardSurface({
+      radius: this.cornerRadius,
+      glassOn: this.glassOn,
+      glassGear: this.glassGear,
+      glassTint: this.glassOn ? this.glassTint : ''
+    })
   }
 
   @Builder

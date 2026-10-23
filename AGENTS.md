@@ -459,6 +459,23 @@ button.
 - **设置 is grouped by purpose**, in this order: 外观 / 阅读与编辑 / 同步与备份 /
   回收站 / 关于. Each group is a `SectionLabel` plus its cards; keep a new row inside
   the group it belongs to rather than appending it to the end of the list.
+- **卡片圆角 belongs to 外观, not to 阅读与编辑.** It decides what a card *looks
+  like*, and the settings page's own group cards are drawn with it.
+- **设置 group cards are the same kind of card as a 笔记卡片.** They share
+  `components/CardSurface.ets` (沉浸光感 + 半透明遮罩), the same 卡片圆角 value and
+  the same shadow on the backdrop. The settings page used to paint a flat
+  translucent fill with a hard-coded 20 vp radius, which read as another app's
+  controls. `NoteCard` and the settings rows must keep using one implementation —
+  two copies of the surface would drift.
+- **Slider settings are one row each** — label, slider, value side by side. They
+  used to be two lines (title + value) plus a full-width slider below, and three
+  of them ate most of the settings page.
+- **标签页 has sorting and filtering.** Sort by 名称 / 笔记数量, each with an
+  ascending/descending toggle shown as an arrow on the active chip (tapping the
+  active chip flips the direction, tapping the other switches the key); filter by
+  全部 / 置顶, where 置顶 keeps only the tags that appear on a pinned note —
+  `NoteStore.countTagIn(tag, true)`, because a tag's total count does not tell
+  you how many of its notes are pinned.
 
 The reader re-parses in `onShown`, not `pushPath({ onPop })` — the latter only
 fires when `pop(result)` carries a payload. It skips the reload while a draft is

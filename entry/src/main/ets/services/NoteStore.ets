@@ -399,6 +399,27 @@ export class NoteStore {
     return count;
   }
 
+  /**
+   * Counts the notes carrying `tag`, optionally only the pinned ones.
+   *
+   * The 置顶 filter on the 标签 page needs "how many **pinned** notes use this
+   * tag", which is not derivable from the total: a tag can be on ten notes, two
+   * of them pinned. Doing it here rather than in the page keeps the store as the
+   * single source of truth for note state.
+   */
+  countTagIn(tag: string, pinnedOnly: boolean): number {
+    let count = 0;
+    for (const note of this.notes) {
+      if (pinnedOnly && !note.pinned) {
+        continue;
+      }
+      if (note.tags.includes(tag)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
   private createSample(): void {
     const note = this.createNote();
     const body = `# 欢迎使用 纸见
