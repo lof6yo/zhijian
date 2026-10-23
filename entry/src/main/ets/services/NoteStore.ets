@@ -400,12 +400,77 @@ export class NoteStore {
   }
 
   /**
+   * Renames a tag across every note that carries it.
+   *
+   * The tag lives in each note's frontmatter, so a rename is a write to every
+   * affected file. Returns how many notes changed.
+   *
+   * `updatedAt` is bumped: the file content really did change, and sync must
+   * push it — otherwise the rename would stay on this device until the next
+   * unrelated edit.
+   */
+  renameTag(oldTag: string, newTag: string): number {
+    const name = newTag.trim().replace(/^#+/, '').replace(/\s+/g, ' ').trim();
+    if (name.length === 0 || name === oldTag) {
+      return 0;
+    }
+    let changed = 0;
+    for (const note of this.notes) {
+      if (!note.tags.includes(oldTag)) {
+        continue;
+      }
+      const next: string[] = [];
+      for (const tag of note.tags) {
+        if (tag === oldTag) {
+          if (!next.includes(name)) {
+            next.push(name);
+          }
+        } else {
+          next.push(tag);
+        }
+      }
+      note.tags = next;
+      note.updatedAt = systemDateTime.getTime();
+      this.writeNote(note);
+      changed++;
+    }
+    if (changed > 0) {
+      this.notes = [...this.notes];
+      this.tags = this.collectTags(this.notes);
+    }
+    return changed;
+  }
+
+  /**
+   * Removes a tag from every note that carries it.
+   *
+   * **The notes themselves are untouched** — only the `tags:` line is rewritten.
+   * Deleting a tag must never cost the reader a note, so there is no recycle bin
+   * involvement here and no confirmation that implies notes are affected.
+   */
+  removeTag(tag: string): number {
+    let changed = 0;
+    for (const note of this.notes) {
+      if (!note.tags.includes(tag)) {
+        continue;
+      }
+      note.tags = note.tags.filter((item: string) => item !== tag);
+      note.updatedAt = systemDateTime.getTime();
+      this.writeNote(note);
+      changed++;
+    }
+    if (changed > 0) {
+      this.notes = [...this.notes];
+      this.tags = this.collectTags(this.notes);
+    }
+    return changed;
+  }
+
+  /**
    * Counts the notes carrying `tag`, optionally only the pinned ones.
    *
-   * The 置顶 filter on the 标签 page needs "how many **pinned** notes use this
-   * tag", which is not derivable from the total: a tag can be on ten notes, two
-   * of them pinned. Doing it here rather than in the page keeps the store as the
-   * single source of truth for note state.
+   * 「置顶」在标签页有两种含义，这里说的是**笔记**被置顶：某个标签可以出现在十篇
+   * 笔记上，其中两篇是置顶的——总数答不出这个，所以分开数。
    */
   countTagIn(tag: string, pinnedOnly: boolean): number {
     let count = 0;

@@ -4,6 +4,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
 import { SettingsStore } from '../services/SettingsStore';
+import { TagStore } from '../services/TagStore';
 import { WindowService } from '../common/WindowService';
 
 const DOMAIN = 0x0000;
@@ -13,6 +14,7 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     SettingsStore.instance.init(this.context);
+    TagStore.instance.init(this.context);
     this.applyStoredTheme();
     // Warm the ArkWeb engine during ability creation so the first editor open
     // does not pay the full WebView cold-start cost on top of the 2.7 MB bundle.

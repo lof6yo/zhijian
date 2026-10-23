@@ -486,6 +486,25 @@ button.
   Wrap the builder in a `Row` and put the handler on the wrapper.
 - **合并到同一张卡片里的行，各自要能点。** 「同步与备份」把 WebDAV 同步与
   导入/导出合成一张卡片（中间一条分隔线），两行的点击区仍然分开。
+- **标签页有搜索、新建与长按菜单。** 标题栏两个按钮与笔记页同款（搜索 / 新建）。
+  长按标签卡片弹出 **置顶 / 修改 / 删除**。删除只把标签从笔记里去掉，**笔记本身
+  不动**，所以确认框里必须写明「这些笔记不会被删除」。
+- **「置顶」只应有一个含义。** 筛选里的「置顶」与长按菜单里的「置顶」是同一件事
+  ——被置顶的标签。之前筛选那一档被实现成「只含有置顶笔记的标签」，同一个词两处
+  含义不同，是最容易让人绕晕的地方。
+- **标签有一部分状态不在 frontmatter 里。** 「有哪些标签」能从笔记推出来，但
+  **置顶**（标签自己的属性）和**刚创建、还没有笔记使用的标签**都推不出来，
+  所以另存一份标签名录与置顶集合（`services/TagStore.ets`，换行分隔的纯文本）。
+  标签的增删改仍然作用在笔记的 frontmatter 上（`NoteStore.renameTag` /
+  `NoteStore.removeTag`）。
+- **界面状态不要靠跨单例的观察。** 普通单例的字段改了不会触发重绘；把单例改成
+  `@ObservedV2` + `@Trace` 之后，实测**跨单例读 `@Trace` 的观察链依然不触发
+  刷新**（长按置顶后存储写对了、界面毫无反应）。可靠做法是本工程一直在用的
+  `@Local` 快照：把单例里的值拷进 `@Local`，改完显式刷新快照。
+  `Index.tagsSnapshot` / `Index.tagPinned` 就是这么做的——新建标签、改名、删除
+  之后都必须调 `refreshList()`，否则列表不更新。
+- **搜索词是跨页签共享的**（标题栏只有一套搜索框），作用在当前页签上；切页签时
+  清空，免得把笔记页的搜索词带到标签页。
 
 The reader re-parses in `onShown`, not `pushPath({ onPop })` — the latter only
 fires when `pop(result)` carries a payload. It skips the reload while a draft is

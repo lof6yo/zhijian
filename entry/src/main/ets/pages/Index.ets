@@ -6,6 +6,7 @@ import { WindowService } from '../common/WindowService';
 import { SettingsStore } from '../services/SettingsStore';
 import { Note } from '../models/Note';
 import { NoteStore } from '../services/NoteStore';
+import { TagStore } from '../services/TagStore';
 import { NoteCard } from '../components/NoteCard';
 import { CardSurface } from '../components/CardSurface';
 import { MaterialLayer } from '../components/MaterialLayer';
@@ -87,6 +88,21 @@ struct Index {
   @Local sortMode: number = 0;
   @Local listVersion: number = 0;
   @Local notesSnapshot: Note[] = [];
+  /**
+   * 标签名单的快照。
+   *
+   * 与 `notesSnapshot` 同理：`this.store.tags` 是普通单例的字段，改了不会触发重绘，
+   * 所以标签增删改之后必须显式刷新这份快照。
+   */
+  @Local tagsSnapshot: string[] = [];
+  /**
+   * 置顶标签的快照。
+   *
+   * 同样出于「普通单例的字段改了不会触发重绘」：跨单例读 `@Trace` 的观察链在这
+   * 个工程里不可靠（实测长按置顶后存储写对了、界面毫无反应）。所以状态先落到
+   * 快照上，渲染只读快照。
+   */
+  @Local tagPinned: string[] = [];
   @Local themeMode: number = 0;
   @Local accentMode: number = 0;
   @Local fontSize: number = 17;
@@ -105,8 +121,16 @@ struct Index {
   @Local tagSortKey: number = 0;
   /** 标签页排序方向：false = 升序，true = 降序。 */
   @Local tagSortDesc: boolean = false;
-  /** 标签页筛选：0 = 全部，1 = 只看置顶笔记里的标签。 */
+  /** 标签页筛选：0 = 全部，1 = 只看置顶的标签。 */
   @Local tagFilter: number = 0;
+  /** 新建 / 修改标签名的输入面板是否打开。 */
+  @Local tagNameShown: boolean = false;
+  /** 0 = 新建，1 = 修改。 */
+  @Local tagNameMode: number = 0;
+  /** 修改时的原标签名。 */
+  @Local tagNameTarget: string = '';
+  /** 输入框里的标签名。 */
+  @Local tagNameInput: string = '';
   /** Note-card corner radius in vp; mirrors `SettingsStore.cardRadius`. */
   @Local cardRadius: number = CARD_RADIUS_DEFAULT;
   /**
@@ -284,6 +308,9 @@ struct Index {
 
   private refreshList(): void {
     this.notesSnapshot = [...this.store.notes];
+    // 标签名单同样要一份快照：`this.store.tags` 是普通单例的字段，改了不会重绘。
+    this.tagsSnapshot = TagStore.instance.knownTags(this.store.tags);
+    this.tagPinned = [...TagStore.instance.pinned];
     this.listVersion++;
   }
 
@@ -568,6 +595,9 @@ struct Index {
     // The title row is shared by all tabs; leaving search expanded while the
     // notes list is off-screen would hide the title of the new tab.
     this.searchExpanded = false;
+    // 搜索词是共享的，作用在当前页签上。切页签时清掉，免得把笔记页的搜索词
+    // 带到标签页、把标签页的搜索词带到笔记页。
+    this.query = '';
     this.hdsTabs.changeIndex(index);
   }
 
@@ -661,27 +691,36 @@ struct Index {
           .layoutWeight(1)
       }
 
-      // Search and new-note are notes-tab actions; the other tabs show the
-      // bare title row.
-      if (this.selectedTab === 0 && !this.searchExpanded) {
+      // 搜索与新建是**每个页自己的**动作：笔记页是搜索笔记 / 新建笔记，标签页是
+      // 搜索标签 / 新建标签。按钮外形与笔记页完全一致（同一个 CircleAction）。
+      if (!this.searchExpanded) {
         this.CircleAction($r('sys.symbol.magnifyingglass'), () => {
-          this.searchExpanded = true;
-          setTimeout(() => {
-            this.getUIContext().getFocusController().requestFocus(SEARCH_INPUT_ID);
-          }, 80);
-        }, '搜索')
+          this.openSearch();
+        }, this.selectedTab === 1 ? '搜索标签' : '搜索')
       }
 
       if (this.selectedTab === 0) {
         this.CircleAction($r('sys.symbol.plus'), () => {
           this.newNote();
         }, '新建笔记')
+      } else {
+        this.CircleAction($r('sys.symbol.plus'), () => {
+          this.openTagNameEditor(false, '');
+        }, '新建标签')
       }
     }
     .width('100%')
     .height(56)
     .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
     .alignItems(VerticalAlign.Center)
+  }
+
+  /** 展开标题栏里的搜索框。搜索词是共享的，作用在当前页签上。 */
+  private openSearch(): void {
+    this.searchExpanded = true;
+    setTimeout(() => {
+      this.getUIContext().getFocusController().requestFocus(SEARCH_INPUT_ID);
+    }, 80);
   }
 
   /**
@@ -1669,6 +1708,17 @@ struct Index {
           ForEach(this.visibleTags(), (tag: string) => {
             ListItem() {
               Row() {
+                // 置顶的标签带一个小标记：它排在最前面，但光看顺序不知道
+                // 「为什么这个在前面」。
+                if (this.tagPinned.includes(tag)) {
+                  Text('置顶')
+                    .fontSize(10)
+                    .fontColor(this.accentColor())
+                    .backgroundColor(this.accentChipColor())
+                    .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                    .borderRadius(6)
+                    .margin({ right: 6 })
+                }
                 Text(`# ${tag}`)
                   .fontSize(16)
                   .fontColor($r('app.color.text_primary'))
@@ -1681,6 +1731,9 @@ struct Index {
               .padding(14)
               .onClick(() => {
                 this.filterByTag(tag);
+              })
+              .bindContextMenu(this.TagMenu(tag), ResponseType.LongPress, {
+                preview: MenuPreviewMode.NONE
               })
             }
             .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
@@ -1702,6 +1755,166 @@ struct Index {
     // No local heading: the HDS title bar owns the page title (大标题) on every
     // tab, so each tab only reserves that band.
     .padding({ top: this.TITLE_BAR_CLEARANCE })
+    .bindSheet(this.tagNameShown, this.TagNameSheet(), {
+      height: SheetSize.MEDIUM,
+      dragBar: true,
+      showClose: false,
+      backgroundColor: $r('app.color.page_bg'),
+      onDisappear: () => {
+        this.tagNameShown = false;
+      }
+    })
+  }
+
+  /**
+   * 长按标签卡片弹出的菜单。
+   *
+   * 三件事：**置顶**（这个标签排到最前）、**修改**（改名，作用在所有用到它的
+   * 笔记上）、**删除**（把标签从所有笔记里去掉）。
+   *
+   * 删除**不删笔记**——笔记还在，只是没有这个标签了。所以确认框里要说清楚，
+   * 否则「删除」两个字会让人以为内容要没了。
+   */
+  @Builder
+  TagMenu(tag: string) {
+    Menu() {
+      MenuItem({ content: this.tagPinned.includes(tag) ? '取消置顶' : '置顶' })
+        .contentFontColor($r('app.color.text_primary'))
+        .onClick(() => {
+          TagStore.instance.setPinned(tag, !this.tagPinned.includes(tag));
+          // 置顶状态落在单例里，界面读的是快照，所以必须显式刷新。
+          this.refreshList();
+        })
+      MenuItem({ content: '修改' })
+        .contentFontColor($r('app.color.text_primary'))
+        .onClick(() => {
+          this.openTagNameEditor(true, tag);
+        })
+      MenuItem({ content: '删除' })
+        .contentFontColor($r('app.color.danger'))
+        .onClick(() => {
+          this.confirmRemoveTag(tag);
+        })
+    }
+  }
+
+  /** 删除标签：只从笔记里去掉这个标签，笔记本身不动。 */
+  private confirmRemoveTag(tag: string): void {
+    const count = this.store.countTag(tag);
+    this.getUIContext().showAlertDialog({
+      title: '删除标签',
+      message: count > 0
+        ? `「${tag}」会从 ${count} 篇笔记里去掉。这些笔记不会被删除。`
+        : `「${tag}」会被删除。`,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '删除',
+        fontColor: $r('app.color.danger'),
+        action: () => {
+          this.store.removeTag(tag);
+          TagStore.instance.removeTag(tag);
+          this.refreshList();
+          this.getUIContext().getPromptAction().showToast({ message: '标签已删除' });
+        }
+      }
+    });
+  }
+
+  /**
+   * 新建 / 修改标签名的输入面板。
+   *
+   * 新建出来的标签暂时没有笔记用它，它会出现在标签页里，等用户在笔记的「标签…」
+   * 里选中它。名字是普通文本，**不**自动加 `#`——标签在 frontmatter 里本来就不带
+   * `#`，显示时才加。
+   */
+  private openTagNameEditor(isRename: boolean, tag: string): void {
+    this.tagNameMode = isRename ? 1 : 0;
+    this.tagNameTarget = tag;
+    this.tagNameInput = tag;
+    this.tagNameShown = true;
+  }
+
+  private commitTagName(): void {
+    const name = this.tagNameInput.trim().replace(/^#+/, '').replace(/\s+/g, ' ').trim();
+    if (name.length === 0) {
+      this.tagNameShown = false;
+      return;
+    }
+    if (this.tagNameMode === 1) {
+      const old = this.tagNameTarget;
+      if (name === old) {
+        this.tagNameShown = false;
+        return;
+      }
+      const changed = this.store.renameTag(old, name);
+      TagStore.instance.renameTag(old, name);
+      this.refreshList();
+      this.tagNameShown = false;
+      this.getUIContext().getPromptAction()
+        .showToast({ message: changed > 0 ? `已改名，影响 ${changed} 篇笔记` : '已改名' });
+      return;
+    }
+    if (TagStore.instance.addTag(name)) {
+      this.tagNameShown = false;
+      // 新标签只存在于标签名录里，笔记的标签列表没变，所以必须显式刷新快照。
+      this.refreshList();
+      this.getUIContext().getPromptAction().showToast({ message: '标签已创建，可在笔记的「标签…」里使用' });
+      return;
+    }
+    this.getUIContext().getPromptAction().showToast({ message: '这个标签已经有了' });
+  }
+
+  @Builder
+  TagNameSheet() {
+    Column({ space: 12 }) {
+      Row() {
+        Text(this.tagNameMode === 1 ? '修改标签' : '新建标签')
+          .fontSize(20)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+        Blank()
+        Text('完成')
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.accentColor())
+          .padding({ left: 12, right: 4, top: 6, bottom: 6 })
+          .onClick(() => {
+            this.commitTagName();
+          })
+      }
+      .width('100%')
+
+      TextInput({ text: this.tagNameInput, placeholder: '标签名' })
+        .width('100%')
+        .height(44)
+        .fontSize(15)
+        .backgroundColor($r('app.color.card_bg'))
+        .borderRadius(12)
+        .padding({ left: 12, right: 12 })
+        .fontColor($r('app.color.text_primary'))
+        .placeholderColor($r('app.color.text_secondary'))
+        .caretColor(this.accentColor())
+        .onChange((value: string) => {
+          this.tagNameInput = value;
+        })
+        .onSubmit(() => {
+          this.commitTagName();
+        })
+
+      Text(this.tagNameMode === 1
+        ? '改名会同时作用在所有用到这个标签的笔记上。'
+        : '创建后可以在笔记的长按菜单「标签…」里选用它。')
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+    }
+    .width('100%')
+    .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET, top: 16, bottom: 24 })
+    .alignItems(HorizontalAlign.Start)
   }
 
   /**
@@ -1803,29 +2016,51 @@ struct Index {
   }
 
   /**
-   * 当前要显示的标签：先按筛选过滤，再按排序整理。
+   * 当前要显示的标签：置顶的在前，其余按排序整理，最后按搜索词过滤。
    *
    * 「按名称」用 `localeCompare`，与 `NoteStore.collectTags()` 的默认排序一致，
    * 所以切到按名称升序时顺序不会突然变一次。
+   *
+   * 置顶**覆盖**排序：置顶的标签永远在最前面，其余标签之间才按排序走。
    */
   private visibleTags(): string[] {
-    const all: string[] = this.store.tags;
-    const kept: string[] = [];
-    for (const tag of all) {
-      if (this.tagFilter === 1 && this.store.countTagIn(tag, true) === 0) {
-        continue;
+    const all: string[] = this.tagsSnapshot;
+    const pinned: string[] = [];
+    for (const tag of this.tagPinned) {
+      if (all.includes(tag)) {
+        pinned.push(tag);
       }
-      kept.push(tag);
     }
+    const rest: string[] = [];
+    for (const tag of all) {
+      if (!pinned.includes(tag)) {
+        rest.push(tag);
+      }
+    }
+    this.sortTags(rest);
+    let result: string[] = pinned.concat(rest);
+    // 筛选的「置顶」与长按菜单的「置顶」是**同一个概念**：被置顶的标签。
+    // 之前这一档被实现成「只含有置顶笔记的标签」，与菜单里的置顶不是一回事——
+    // 同一个词在两处含义不同，是最容易让人绕晕的地方。
+    if (this.tagFilter === 1) {
+      result = result.filter((tag: string) => this.tagPinned.includes(tag));
+    }
+    const keyword: string = this.query.trim().toLowerCase();
+    if (keyword.length > 0) {
+      result = result.filter((tag: string) => tag.toLowerCase().includes(keyword));
+    }
+    return result;
+  }
+
+  private sortTags(tags: string[]): void {
     if (this.tagSortKey === 1) {
-      kept.sort((a: string, b: string): number => this.store.countTag(a) - this.store.countTag(b));
+      tags.sort((a: string, b: string): number => this.store.countTag(a) - this.store.countTag(b));
     } else {
-      kept.sort((a: string, b: string): number => a.localeCompare(b));
+      tags.sort((a: string, b: string): number => a.localeCompare(b));
     }
     if (this.tagSortDesc) {
-      kept.reverse();
+      tags.reverse();
     }
-    return kept;
   }
 
   // -------------------------------------------------------------- settings
