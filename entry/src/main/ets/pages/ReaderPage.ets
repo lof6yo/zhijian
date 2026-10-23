@@ -140,14 +140,14 @@ export struct ReaderPage {
     this.blocks = result.blocks;
     this.ready = true;
 
-    // 「打开就能记」：空白笔记一进来就把光标放好。已有内容的笔记不这么做——
-    // 那会在用户只想看一眼前提下弹出键盘。`autoOpened` 保证只在首次进入时触发。
+    // 「打开就能记」只针对**刚新建**的那一篇（`createdHere`）。
+    //
+    // 之前这条规则也作用于「内容为空/只剩骨架标题」的已有笔记，结果列表里一堆
+    // 无标题笔记，点进去必然落在编辑框里——把阅读页变成了编辑器，笔记一打开就
+    // 「可改」，看不到它本来的样子。已有笔记一律以渲染态打开。
     if (!this.autoOpened) {
       this.autoOpened = true;
-      const blank: boolean = this.blocks.length === 0
-        || (this.blocks.length === 1 && this.blocks[0].kind === 0 && this.blocks[0].plain.trim() === '无标题');
-      if (blank) {
-        // 默认（整篇输入）直接在整篇输入框里落光标；分块模式才落进第一块。
+      if (this.createdHere) {
         if (this.simpleEditing) {
           this.enterWholeEditingAt(0);
         } else if (this.blocks.length === 0) {

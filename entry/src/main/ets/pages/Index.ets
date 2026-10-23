@@ -1684,25 +1684,8 @@ struct Index {
     Column({ space: 12 }) {
       List({ space: 8, scroller: this.settingsScroller }) {
         ListItem() {
-          this.WebDavRow()
+          this.SectionLabel('外观')
         }
-        .onClick(() => {
-          this.openWebDav();
-        })
-
-        ListItem() {
-          this.SettingRow('导入 / 导出', 'Markdown + ZIP', '')
-        }
-        .onClick(() => {
-          this.showTransferSheet();
-        })
-
-        ListItem() {
-          this.SettingRow('回收站', '删除的笔记保留 30 天', '')
-        }
-        .onClick(() => {
-          this.pathStack.pushPath({ name: 'trash' });
-        })
 
         ListItem() {
           Column({ space: 12 }) {
@@ -1783,10 +1766,13 @@ struct Index {
         }
 
         ListItem() {
+          this.SectionLabel('阅读与编辑')
+        }
+
+        ListItem() {
           // 编辑这一组放在**同一个卡片**里：编辑体验 / 格式按钮条 / 字号 / 行距 /
-          // 圆角都是「写东西时的样子」，拆成三张单行卡片会让它们看起来像三个
-          // 互不相干的开关，而实际上它们互相影响（例如格式按钮条只在编辑界面里
-          // 有意义）。
+          // 圆角都是「写东西时的样子」，拆成单行卡片会让它们看起来像互不相干的
+          // 开关，而实际上它们互相影响（格式按钮条只在编辑界面里有意义）。
           Column({ space: 12 }) {
             Row() {
               Column({ space: 2 }) {
@@ -1932,6 +1918,39 @@ struct Index {
         }
 
         ListItem() {
+          this.SectionLabel('同步与备份')
+        }
+
+        ListItem() {
+          this.WebDavRow()
+        }
+        .onClick(() => {
+          this.openWebDav();
+        })
+
+        ListItem() {
+          this.SettingRow('导入 / 导出', 'Markdown + ZIP', '')
+        }
+        .onClick(() => {
+          this.showTransferSheet();
+        })
+
+        ListItem() {
+          this.SectionLabel('回收站')
+        }
+
+        ListItem() {
+          this.SettingRow('回收站', '删除的笔记保留 30 天', '')
+        }
+        .onClick(() => {
+          this.pathStack.pushPath({ name: 'trash' });
+        })
+
+        ListItem() {
+          this.SectionLabel('关于')
+        }
+
+        ListItem() {
           this.SettingRow('关于 纸见', 'API 26 · 本地优先', '')
         }
       }
@@ -2014,6 +2033,16 @@ struct Index {
       return (value === 0) === this.simpleEditing;
     }
     return this.themeMode === value;
+  }
+
+  @Builder
+  SectionLabel(title: string) {
+    Text(title)
+      .fontSize(12)
+      .fontWeight(FontWeight.Medium)
+      .fontColor($r('app.color.text_secondary'))
+      .width('100%')
+      .padding({ left: 4, top: 6, bottom: 0 })
   }
 
   @Builder

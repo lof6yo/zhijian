@@ -451,6 +451,14 @@ button.
   a new note should start being written immediately. Leaving a just-created note
   untouched purges it, so a mis-tap does not leave a 无标题 husk. `EditorPage` is
   still registered for anything that wants the old full-screen surface.
+- **Only a note created from `+` may auto-enter editing.** The rule briefly also
+  fired for any note whose body was blank or still just `# 无标题`, which meant a
+  list full of untitled notes opened straight into an editor — the reader stopped
+  being a reader. Existing notes now always open rendered; the keyboard only appears
+  when the user taps the body.
+- **设置 is grouped by purpose**, in this order: 外观 / 阅读与编辑 / 同步与备份 /
+  回收站 / 关于. Each group is a `SectionLabel` plus its cards; keep a new row inside
+  the group it belongs to rather than appending it to the end of the list.
 
 The reader re-parses in `onShown`, not `pushPath({ onPop })` — the latter only
 fires when `pop(result)` carries a payload. It skips the reload while a draft is
