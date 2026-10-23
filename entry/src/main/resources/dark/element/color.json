@@ -103,6 +103,138 @@
     {
       "name": "page_grad_bottom",
       "value": "#101114"
+    },
+    {
+      "name": "md_code_bg",
+      "value": "#1C1C1E"
+    },
+    {
+      "name": "md_code_surface",
+      "value": "#2C2C2E"
+    },
+    {
+      "name": "md_code_plain",
+      "value": "#F2F2F7"
+    },
+    {
+      "name": "md_code_keyword",
+      "value": "#C58AF9"
+    },
+    {
+      "name": "md_code_string",
+      "value": "#6DD39E"
+    },
+    {
+      "name": "md_code_number",
+      "value": "#FFB86B"
+    },
+    {
+      "name": "md_code_comment",
+      "value": "#9A9AA2"
+    },
+    {
+      "name": "md_code_func",
+      "value": "#7EA7FF"
+    },
+    {
+      "name": "md_code_type",
+      "value": "#5FD3D3"
+    },
+    {
+      "name": "md_code_punct",
+      "value": "#9A9AA2"
+    },
+    {
+      "name": "md_code_tag",
+      "value": "#FF6B6B"
+    },
+    {
+      "name": "md_code_attr",
+      "value": "#FFB86B"
+    },
+    {
+      "name": "md_code_meta",
+      "value": "#8E8E93"
+    },
+    {
+      "name": "md_table_header_bg",
+      "value": "#1E2A44"
+    },
+    {
+      "name": "md_mark_bg",
+      "value": "#4D4638"
+    },
+    {
+      "name": "md_callout_note_bg",
+      "value": "#1A2A44"
+    },
+    {
+      "name": "md_callout_note_border",
+      "value": "#335A99"
+    },
+    {
+      "name": "md_callout_note_text",
+      "value": "#7EA7FF"
+    },
+    {
+      "name": "md_callout_tip_bg",
+      "value": "#14302F"
+    },
+    {
+      "name": "md_callout_tip_border",
+      "value": "#2A6654"
+    },
+    {
+      "name": "md_callout_tip_text",
+      "value": "#5DD39E"
+    },
+    {
+      "name": "md_callout_important_bg",
+      "value": "#251A44"
+    },
+    {
+      "name": "md_callout_important_border",
+      "value": "#4D3A80"
+    },
+    {
+      "name": "md_callout_important_text",
+      "value": "#B084FF"
+    },
+    {
+      "name": "md_callout_warning_bg",
+      "value": "#30231A"
+    },
+    {
+      "name": "md_callout_warning_border",
+      "value": "#6B4A26"
+    },
+    {
+      "name": "md_callout_warning_text",
+      "value": "#FFB86B"
+    },
+    {
+      "name": "md_callout_caution_bg",
+      "value": "#301A1A"
+    },
+    {
+      "name": "md_callout_caution_border",
+      "value": "#6B2C2C"
+    },
+    {
+      "name": "md_callout_caution_text",
+      "value": "#FF6B6B"
+    },
+    {
+      "name": "md_math_border",
+      "value": "#48484A"
+    },
+    {
+      "name": "md_math_bg",
+      "value": "#1C1C1E"
+    },
+    {
+      "name": "md_math_text",
+      "value": "#9A9AA2"
     }
   ]
 }

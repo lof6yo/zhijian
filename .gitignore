@@ -30,3 +30,5 @@
 
 # exported HAPs
 /dist
+# scratch output of tools/md-parse-check.js (generated .mts copies)
+/tools/.tmp

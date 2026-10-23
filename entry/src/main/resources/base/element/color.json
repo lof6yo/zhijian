@@ -103,6 +103,138 @@
     {
       "name": "page_grad_bottom",
       "value": "#E8EEFF"
+    },
+    {
+      "name": "md_code_bg",
+      "value": "#F2F4F6"
+    },
+    {
+      "name": "md_code_surface",
+      "value": "#E8EBF0"
+    },
+    {
+      "name": "md_code_plain",
+      "value": "#1A1A1C"
+    },
+    {
+      "name": "md_code_keyword",
+      "value": "#A020F0"
+    },
+    {
+      "name": "md_code_string",
+      "value": "#0A7A0A"
+    },
+    {
+      "name": "md_code_number",
+      "value": "#D9700A"
+    },
+    {
+      "name": "md_code_comment",
+      "value": "#6B6B70"
+    },
+    {
+      "name": "md_code_func",
+      "value": "#0A59F7"
+    },
+    {
+      "name": "md_code_type",
+      "value": "#0E8F8F"
+    },
+    {
+      "name": "md_code_punct",
+      "value": "#6B6B70"
+    },
+    {
+      "name": "md_code_tag",
+      "value": "#D92C2C"
+    },
+    {
+      "name": "md_code_attr",
+      "value": "#D9700A"
+    },
+    {
+      "name": "md_code_meta",
+      "value": "#8A8A8F"
+    },
+    {
+      "name": "md_table_header_bg",
+      "value": "#E8EEFF"
+    },
+    {
+      "name": "md_mark_bg",
+      "value": "#FFF9C4"
+    },
+    {
+      "name": "md_callout_note_bg",
+      "value": "#E8F0FE"
+    },
+    {
+      "name": "md_callout_note_border",
+      "value": "#B8D4FF"
+    },
+    {
+      "name": "md_callout_note_text",
+      "value": "#0A59F7"
+    },
+    {
+      "name": "md_callout_tip_bg",
+      "value": "#E6F7F0"
+    },
+    {
+      "name": "md_callout_tip_border",
+      "value": "#B3E6D1"
+    },
+    {
+      "name": "md_callout_tip_text",
+      "value": "#008F5D"
+    },
+    {
+      "name": "md_callout_important_bg",
+      "value": "#F0E8FF"
+    },
+    {
+      "name": "md_callout_important_border",
+      "value": "#D9C2FF"
+    },
+    {
+      "name": "md_callout_important_text",
+      "value": "#7B42F6"
+    },
+    {
+      "name": "md_callout_warning_bg",
+      "value": "#FFF4E6"
+    },
+    {
+      "name": "md_callout_warning_border",
+      "value": "#FFD9A8"
+    },
+    {
+      "name": "md_callout_warning_text",
+      "value": "#D9700A"
+    },
+    {
+      "name": "md_callout_caution_bg",
+      "value": "#FFEBEB"
+    },
+    {
+      "name": "md_callout_caution_border",
+      "value": "#FFB8B8"
+    },
+    {
+      "name": "md_callout_caution_text",
+      "value": "#D92C2C"
+    },
+    {
+      "name": "md_math_border",
+      "value": "#C7C7CC"
+    },
+    {
+      "name": "md_math_bg",
+      "value": "#F7F7F9"
+    },
+    {
+      "name": "md_math_text",
+      "value": "#6B6B70"
     }
   ]
 }

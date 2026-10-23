@@ -214,6 +214,8 @@ entry/src/main/ets/
 ├── pages/               # Index (HDS shell: 3 tabs, title bar actions),
 │                        # EditorPage / TrashPage / WebDavPage (NavDestination)
 ├── components/          # NoteCard, MaterialLayer (沉浸光感 Toggle carrier)
+├── markdown/            # 自研 Markdown 引擎：MdTypes (AST) / MdParser /
+│                        # CodeHighlight / MdView (原生 ArkUI 渲染)
 ├── models/              # Note (V2 @ObservedV2/@Trace)
 ├── services/            # NoteStore (files), Frontmatter (YAML),
 │                        # WebDav (RCP client), SyncEngine (three-way merge),
@@ -379,7 +381,72 @@ The editor is **ArkWeb + Milkdown/Crepe**; the native shell owns file storage,
 navigation, search, tags and settings. All notes are flat in `notes/`. Markdown text is the source of
 truth; the Web bridge calls `native.save(markdown)` and the native side writes
 `.md` files. `EditorPage` debounces 500 ms and flushes on back/background.
-The editor pops with `{ saved: true }`. **Do not use `pushPath({ onPop })` to
+The editor pops with `{ saved: true }`.
+
+### Reading vs editing: one page, block-level WYSIWYG
+
+`ReaderPage` is both the reader and the editor. Its 顶栏 toggles 阅读 / 编辑; in
+edit mode tapping a block expands **that block** into its Markdown source with a
+live preview underneath (`LiveBlockEditor`), and 完成 splices the source back by
+line range. Do not split this into a separate editor page.
+
+- **Why block-source editing, not a rich-text caret model.** Markdown's source *is*
+  the specification — `##`, `-`, `**` are what the user types. Hiding them means the
+  user cannot predict what the next keystroke does. Showing the symbols next to
+  their effect gives a complete feedback loop with no second document model, no
+  cross-block selection, no custom undo stack.
+- **The block's line range comes from `MdParser.srcRangeOf(blocks, i, totalLines)`.**
+  `totalLines` is **required for the last block**: it has no "next block" to borrow
+  an end from, so without it a multi-line final block is truncated to its first line
+  and recommitting splits it in two. Replacement always consumes the blank lines
+  between blocks and puts one back, otherwise editing a block welds it to its
+  neighbour.
+- **A tap on body text is consumed by the `Span`.** Every inline `Span` carries
+  `onClick` (links must be tappable), and a child click does not reach the parent
+  container. `.hitTestBehavior(HitTestMode.None)` on a custom component does **not**
+  fix it. The only reliable route is a flag: `MdBlockView.tapToEdit` → every
+  `MdInlineText` branches inside its own `onClick` and calls `onBlockTap` instead of
+  `onLink`. The wrapper's own `onClick` stays as the catcher for areas with no spans
+  (code blocks, tables, dividers).
+- **Never overlay a `height('100%')` click-catcher on a content-sized block.** A
+  percentage height inside a content-driven stack resolves against the *available*
+  height, so each block inflates to a screenful and pushes the rest out of the
+  viewport (observed: only two blocks visible). Same trap as the material carrier —
+  see the `.background(builder)` entry above.
+- The old ArkWeb `EditorPage` still exists and is still what **新建笔记** opens: a
+  brand-new empty note is better served by a full-screen editor than by tapping into
+  a single block. Do not delete it.
+
+The reader re-parses in `onShown`, not `pushPath({ onPop })` — the latter only
+fires when `pop(result)` carries a payload.
+
+### The Markdown engine (`markdown/`) is self-written
+
+Contract and full rule list: **`docs/markdown-engine.md`**. Read it before
+touching the parser or the renderer. Summary of the decisions that are easy to
+undo by accident:
+
+- **Flat AST, not a tree.** ArkUI custom components cannot reference themselves
+  recursively, so block nesting is carried by two *orthogonal* fields — `indent`
+  (list nesting) and `quoteDepth` (quote nesting) — and inline styling is carried
+  by inherited boolean flags on flat `MdInline` spans, not by nesting.
+- **Inline rich text must be `Text() { ForEach(...) { Span(...) } }`.** A nested
+  `Text` inside the `ForEach` resets the parent component tracking on this
+  compiler and the style inheritance breaks. This looks like a style choice and
+  is not.
+- **ArkWeb is allowed for math and diagrams only.** KaTeX (MIT), Mermaid (MIT)
+  and ECharts (Apache-2.0) are vendored offline under `rawfile/render/` and
+  loaded by the Web block; body text, headings, lists, tables and code are
+  native. **Do not vendor PlantUML** — upstream is GPL, which is incompatible
+  with this project's licensing.
+- **Inline images do not become `Span`s.** Only a stand-alone `![]()` paragraph
+  renders a real image; an image mixed into a line degrades to its alt text,
+  because an image inside a `Span` breaks the per-character coordinate system
+  that text selection and annotations are built on.
+- **Every cursor loop must guarantee progress.** A parser or tokeniser loop that
+  can stall is a hard app hang, not a wrong render.
+
+**Do not use `pushPath({ onPop })` to
 refresh the list.** Its documented contract is that the callback fires only when
 `pop(result)` is given a result; a plain Back press or `pop()` (as `TrashPage`
 does) never fires it, which silently left the Notes list showing stale data.
@@ -768,16 +835,26 @@ an older device degrades instead of crashing. The HDS libraries live in the
   「页签栏过宽」. Now 280/300/340, measured `[210,1980][1110,2148]` = 300 vp, so it
   reads as a capsule. Reduce all three buckets together: leaving `large` wide makes
   the tablet layout *relatively* wider than the phone one.
-- **The title-bar circles must not carry the material's shadow.** `applyShadow`
-  defaults to `true` **and takes priority over the `shadow` attribute**, so on the
-  44 vp search/新建 circles — which are clipped to a circle — the shadow survived
-  the clip as a crescent hugging the inside of the rim. That was the
-  「边缘光感异常」 report: a hard bright edge plus a grey halo, not depth. Setting
-  `applyShadow: false` on those two surfaces is the fix; a floating 44 vp control
-  on a soft backdrop needs no drop shadow, and the material's own rim is the edge.
-  Pixel evidence from the same frame: before, the gap between the two buttons was
-  `#E5EAF0` (shadow-darkened) against a `#EBF1F6` page; after, `#EFF4FA`.
-  `lightEffect` is also set to `accentColor()` — its documented default is
+- **The title-bar circles' outline must come from `borderRadius`, not `clipShape`.**
+  A 44 vp node with `borderRadius(22)` *is* a circle, and it is the shape the
+  material rasterises. `clipShape(CircleShape)` only clips the node's drawing — the
+  material still paints its own default rounded rectangle underneath, so the circle
+  cuts its corners away and leaves the rectangle's four straight edges visible as
+  bright arcs at 12/3/6/9 o'clock. That is the 「边缘光感异常」 report: obviously
+  broken in dark mode, where the arcs are white slivers on a dark disc, and easy to
+  miss in light mode. Measured at 5× zoom before/after: four disconnected arcs →
+  one continuous hairline rim.
+  The same rule retires `.clip(true)` on the search capsule: clipping the rim to an
+  inner rounded rect while the material paints on the node's bounds produces the
+  same artefact. Nothing in that capsule needs clipping — its children sit inside
+  the padding.
+- **`applyShadow: false` is still right, but it was not the cause above.** The
+  documented default is `true` and it overrides the `shadow` attribute, so a small
+  clipped control picks up a crescent of shadow inside its rim. Fixing it removed a
+  grey halo (gap between the two buttons measured `#E5EAF0` → `#EFF4FA` against an
+  `#EBF1F6` page) but left the arcs, which is why the shape fix was needed
+  separately. Keep both.
+  `lightEffect` is set to `accentColor()` — its documented default is
   `Color.White`, and a white specular on a near-white backdrop is invisible, so a
   press produced no feedback at all.
 - **Accent colours cannot come from `$r('app.color.accent')`.** ArkUI resolves

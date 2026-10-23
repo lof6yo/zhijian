@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>katex</title>
+<link rel="stylesheet" href="vendor/katex.min.css">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    -webkit-text-size-adjust: 100%;
+  }
+  /* Horizontal overflow is allowed on purpose: a very wide formula must stay
+     reachable by scrolling the Web view sideways. Nothing scrolls vertically —
+     the native node sizes itself from the reported height. */
+  html {
+    overflow-x: auto;
+    overflow-y: hidden;
+    height: auto;
+  }
+  body {
+    overflow: visible;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  #root {
+    width: 100%;
+    display: flow-root;      /* contain child margins in the measured box */
+    font-size: 17px;         /* replaced from payload.fontPx */
+    line-height: 1.45;
+    padding: 2px 0;
+    overflow-wrap: normal;
+  }
+  /* The harness supplies its own vertical rhythm; KaTeX's 1em display margin
+     would otherwise be measured as empty space inside the card. */
+  #root .katex-display {
+    margin: 0;
+  }
+  #root .katex-error {
+    color: #D64545;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+/* -------------------------------------------------------------------------
+ * Offline KaTeX render harness (no network, no innerHTML of payload).
+ *
+ * Contract with ArkTS:
+ *   window.__onRender(heightCssPx:int, ok:boolean, errText:string)  <- ArkTS
+ *   window.render(payloadJson:string)                               -> page
+ *
+ * payload = { code, dark, fontPx, bg, textColor, accent }
+ * ---------------------------------------------------------------------- */
+(function () {
+  'use strict';
+
+  var RETRY_MS = 100;
+  var RETRY_MAX = 50;              /* ~5 s for a bridge that attaches late */
+  var RENDER_TIMEOUT_MS = 15000;
+
+  var pendingPayload = null;
+  var libReady = false;
+  var hasRendered = false;
+  var lastSig = '';
+  var watchdog = 0;
+
+  /* --- bridge delivery -------------------------------------------------- */
+
+  function deliver(h, ok, err) {
+    try {
+      if (typeof window.__onRender === 'function') {
+        window.__onRender(h, ok, err || '');
+        return true;
+      }
+    } catch (e) {
+      /* the bridge threw: treat it as undelivered and retry */
+    }
+    return false;
+  }
+
+  function deliverWithRetry(h, ok, err) {
+    var tries = 0;
+    function attempt() {
+      if (deliver(h, ok, err)) {
+        return;
+      }
+      tries += 1;
+      if (tries < RETRY_MAX) {
+        setTimeout(attempt, RETRY_MS);
+      }
+    }
+    attempt();
+  }
+
+  function report(h, ok, err) {
+    var height = ok ? Math.max(0, Math.round(h || 0)) : 0;
+    var text = err ? String(err) : '';
+    if (watchdog) {
+      clearTimeout(watchdog);
+      watchdog = 0;
+    }
+    lastSig = height + '|' + (ok ? '1' : '0');
+    deliverWithRetry(height, !!ok, text);
+  }
+
+  function armWatchdog() {
+    if (watchdog) {
+      clearTimeout(watchdog);
+    }
+    watchdog = setTimeout(function () {
+      watchdog = 0;
+      report(0, false, 'render timed out after ' + RENDER_TIMEOUT_MS + ' ms');
+    }, RENDER_TIMEOUT_MS);
+  }
+
+  /* --- measurement ----------------------------------------------------- */
+
+  /* Scroll extent of the content box in CSS px. #root is auto-height, so its
+     own box *is* the content height; documentElement can never report less
+     than the viewport height and therefore cannot drive a shrink. */
+  function measure() {
+    try {
+      var root = document.getElementById('root');
+      if (root) {
+        var rect = root.getBoundingClientRect();
+        var h = Math.max(rect.height || 0, root.scrollHeight || 0);
+        return (isFinite(h) && h > 0) ? Math.ceil(h) : 0;
+      }
+      return Math.ceil(document.documentElement.scrollHeight || 0);
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  function reportFromResize() {
+    if (!hasRendered) {
+      return;
+    }
+    var h = measure();
+    if ((h + '|1') === lastSig) {
+      return;
+    }
+    report(h, true, '');
+  }
+
+  function watchResize() {
+    try {
+      if (typeof ResizeObserver !== 'function') {
+        return;
+      }
+      var root = document.getElementById('root');
+      if (!root) {
+        return;
+      }
+      var scheduled = 0;
+      var ro = new ResizeObserver(function () {
+        if (scheduled) {
+          return;
+        }
+        scheduled = window.requestAnimationFrame(function () {
+          scheduled = 0;
+          reportFromResize();
+        });
+      });
+      ro.observe(root);
+    } catch (e) {
+      /* reporting still works without a resize observer */
+    }
+  }
+
+  /* --- payload --------------------------------------------------------- */
+
+  function parsePayload(json) {
+    if (typeof json === 'string') {
+      if (json.length === 0) {
+        throw new Error('empty payload');
+      }
+      return JSON.parse(json);
+    }
+    if (json && typeof json === 'object') {
+      return json;              /* tolerate an object handoff */
+    }
+    throw new Error('payload is not a JSON string');
+  }
+
+  function cssColor(v, fallback) {
+    if (typeof v === 'string') {
+      if (v === 'transparent' || /^#[0-9a-fA-F]{3,8}$/.test(v)) {
+        return v;
+      }
+    }
+    return fallback;
+  }
+
+  function themeOf(p) {
+    var dark = p.dark === true;
+    var fontPx = (typeof p.fontPx === 'number' && isFinite(p.fontPx) && p.fontPx > 0)
+      ? p.fontPx : 17;
+    return {
+      dark: dark,
+      fontPx: fontPx,
+      bg: cssColor(p.bg, dark ? '#1C1C1E' : '#FFFFFF'),
+      textColor: cssColor(p.textColor, dark ? '#E6E6E6' : '#1A1A1A'),
+      accent: cssColor(p.accent, dark ? '#6EA8FF' : '#0A59F7')
+    };
+  }
+
+  /* KaTeX metrics change once the woff2 files finish loading, so the height
+     measured immediately after render() is provisional. Re-measure. */
+  function afterFonts() {
+    try {
+      if (document.fonts && document.fonts.ready &&
+          typeof document.fonts.ready.then === 'function') {
+        document.fonts.ready.then(reportFromResize, reportFromResize);
+      }
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  /* --- render ---------------------------------------------------------- */
+
+  function renderPayload(json) {
+    var p, t, root, target;
+
+    try {
+      p = parsePayload(json);
+    } catch (e) {
+      report(0, false, 'payload: ' + (e && e.message ? e.message : String(e)));
+      return;
+    }
+
+    t = themeOf(p);
+
+    if (typeof p.code !== 'string') {
+      report(0, false, 'payload: "code" must be a string');
+      return;
+    }
+    if (typeof katex === 'undefined' || !katex || typeof katex.render !== 'function') {
+      report(0, false, 'katex is not available (vendor/katex.min.js)');
+      return;
+    }
+
+    root = document.getElementById('root');
+    if (!root) {
+      report(0, false, 'no #root element');
+      return;
+    }
+
+    root.textContent = '';
+    root.style.fontSize = t.fontPx + 'px';
+    root.style.color = t.textColor;
+
+    target = document.createElement('div');
+    target.className = 'math';
+    root.appendChild(target);
+
+    try {
+      katex.render(p.code, target, {
+        displayMode: true,
+        throwOnError: false,
+        output: 'html',
+        strict: 'ignore'
+      });
+    } catch (e) {
+      report(0, false, 'katex: ' + (e && e.message ? e.message : String(e)));
+      return;
+    }
+
+    hasRendered = true;
+    report(measure(), true, '');
+    afterFonts();
+  }
+
+  /* --- entry points ---------------------------------------------------- */
+
+  window.render = function (json) {
+    pendingPayload = json;
+    armWatchdog();
+    if (!libReady) {
+      return;                  /* replayed by window.__libReady() */
+    }
+    renderPayload(pendingPayload);
+  };
+
+  window.__libReady = function () {
+    libReady = true;
+    if (pendingPayload !== null) {
+      renderPayload(pendingPayload);
+    }
+  };
+
+  window.__libFail = function (what) {
+    libReady = true;
+    report(0, false, String(what) + ' failed to load');
+  };
+
+  watchResize();
+})();
+</script>
+<script src="vendor/katex.min.js"
+        onload="window.__libReady()"
+        onerror="window.__libFail('vendor/katex.min.js')"></script>
+</body>
+</html>

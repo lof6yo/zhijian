@@ -1,5 +1,5 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
-import { display, LengthMetrics, uiMaterial, CircleShape } from '@kit.ArkUI';
+import { display, LengthMetrics, uiMaterial } from '@kit.ArkUI';
 import { deviceInfo, BusinessError, systemDateTime } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { WindowService } from '../common/WindowService';
@@ -10,6 +10,7 @@ import { NoteCard } from '../components/NoteCard';
 import { MaterialLayer } from '../components/MaterialLayer';
 import { EditorPage } from './EditorPage';
 import { TrashPage } from './TrashPage';
+import { ReaderPage } from './ReaderPage';
 import { WebDavPage } from './WebDavPage';
 import { NoteTransfer, TransferResult } from '../services/NoteTransfer';
 import { Credentials } from '../services/Credentials';
@@ -457,7 +458,15 @@ struct Index {
 
   @Builder
   pageMap(name: string) {
-    if (name === 'editor') {
+    if (name === 'reader') {
+      ReaderPage({
+        pathStack: this.pathStack,
+        accentColor: this.accentColor(),
+        onChanged: () => {
+          this.refreshList();
+        }
+      })
+    } else if (name === 'editor') {
       EditorPage({
         pathStack: this.pathStack,
         onChanged: () => {
@@ -477,9 +486,17 @@ struct Index {
     }
   }
 
+  /**
+   * 卡片点击 → 阅读页，而不是编辑器。
+   *
+   * 编辑器和阅读页是两个页面是刻意的：阅读是原生 ArkUI 渲染（滚动、字号、
+   * 文本选择都归系统管），编辑是 ArkWeb 的所见即所得。把两者合成一个 WebView，
+   * 等于让整篇长文都经过 DOM 布局，滚动会卡，系统字号也不生效。
+   * 阅读页顶栏的「编辑」再进编辑器。
+   */
   private openNote(note: Note): void {
     this.pathStack.pushPath({
-      name: 'editor',
+      name: 'reader',
       param: note.id
     });
   }
@@ -646,8 +663,9 @@ struct Index {
    *  - do **not** set `border`. `borderWidth` is reset to no border by the same
    *    rule, and `applyShadow` (default true) overrides the `shadow` attribute.
    *
-   * The circle comes from `clipShape(CircleShape)` rather than `borderRadius`,
-   * matching the official sample; that is the outline the material is clipped to.
+   * The circle comes from `borderRadius(22)` on a 44×44 node — **not** from
+   * `clipShape(CircleShape)`. See the attribute for why that distinction is the
+   * whole fix for the ragged rim.
    *
    * Below API 26, or on a device without immersive material, this degrades to the
    * hand-built glass stack — the button never disappears.
@@ -662,7 +680,18 @@ struct Index {
       }
       .width(44)
       .height(44)
-      .clipShape(new CircleShape({ width: 44, height: 44 }))
+      // The material's **own** shape must be the circle.
+      //
+      // This used `clipShape(CircleShape)`, which clips the node's *drawing* but
+      // does not tell the material layer what shape to paint. The material then
+      // paints its default rounded rectangle and the circle cuts its corners
+      // away, leaving the rectangle's four straight edges visible as bright arcs
+      // at 12/3/6/9 o'clock — the 「边缘光感异常」 report. It is obvious in dark
+      // mode, where those arcs are white slivers on a dark disc.
+      //
+      // `borderRadius(22)` on a 44×44 node *is* a circle, and it is the shape the
+      // material rasterises, so the rim follows the disc exactly.
+      .borderRadius(22)
       .backgroundColor(Color.Transparent)
       .systemMaterial(this.immersiveMaterial())
       .onClick(onTap)
@@ -1507,7 +1536,10 @@ struct Index {
     .layoutWeight(1)
     .height(44)
     .borderRadius(22)
-    .clip(true)
+    // No `clip(true)`: it clips the material's rim to an inner rounded rect while
+    // the material itself paints on the node's bounds, which is the same
+    // four-arcs artefact the circular buttons had with `clipShape`. Nothing here
+    // needs clipping — the children sit inside the 14/6 vp padding.
     .backgroundColor(Color.Transparent)
     .systemMaterial(this.immersiveSupported ? this.immersiveMaterial() : uiMaterial.Material.empty)
     .border(this.immersiveSupported
