@@ -39,8 +39,8 @@ export const FONT_SIZE_MAX = 22;
  * 而 140% 以下才是紧凑排版真正需要的区间。110–180 把可用行程留给真正会调整的
  * 那一段，滑块的每一下都落在有意义的范围里。默认 160 接近书籍正文。
  */
-export const LINE_HEIGHT_MIN = 110;
-export const LINE_HEIGHT_MAX = 180;
+export const LINE_HEIGHT_MIN = 75;
+export const LINE_HEIGHT_MAX = 150;
 
 /**
  * Note-card corner radius, in vp.
@@ -99,7 +99,7 @@ export class SettingsStore {
   /** Editor body font size in px (web side uses px, not vp). */
   editorFontSize: number = 17;
   /** Editor line height as a percentage of the font size, e.g. 175 = 1.75. */
-  editorLineHeight: number = 160;
+  editorLineHeight: number = 120;
   /** Immersive glass strength gear, 0 = restrained … 2 = deepest. */
   glassLevel: number = GLASS_LEVEL_DEFAULT;
   /** WebDAV base URL, normalised with a trailing slash. Not a secret. */
@@ -153,7 +153,7 @@ export class SettingsStore {
    * 是可选的高级模式，因为它对不熟 Markdown 的人多了一层「现在我在改什么」的
    * 认知负担。
    */
-  simpleEditing: boolean = true;
+  simpleEditing: boolean = false;
   /** 格式按钮条（默认关）。关掉时输入框就是纯文本，没有按钮干扰。 */
   formatBar: boolean = false;
 

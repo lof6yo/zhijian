@@ -91,7 +91,7 @@ struct Index {
    */
   @Local glassLevel: number = GLASS_LEVEL_DEFAULT;
   /** 编辑体验：true = 简单（整篇输入），false = 分块。默认简单。 */
-  @Local simpleEditing: boolean = true;
+  @Local simpleEditing: boolean = false;
   /** 格式按钮条，默认关。 */
   @Local showFormatBar: boolean = false;
   /** Note-card corner radius in vp; mirrors `SettingsStore.cardRadius`. */
@@ -413,6 +413,16 @@ struct Index {
   private setFormatBar(on: boolean): void {
     this.showFormatBar = on;
     SettingsStore.instance.setFormatBar(on);
+  }
+
+  private clampLineHeight(value: number): number {
+    if (value < LINE_HEIGHT_MIN) {
+      return LINE_HEIGHT_MIN;
+    }
+    if (value > LINE_HEIGHT_MAX) {
+      return LINE_HEIGHT_MAX;
+    }
+    return value;
   }
 
   private scheme(): AccentScheme {
@@ -1773,7 +1783,11 @@ struct Index {
         }
 
         ListItem() {
-          Column({ space: 6 }) {
+          // 编辑这一组放在**同一个卡片**里：编辑体验 / 格式按钮条 / 字号 / 行距 /
+          // 圆角都是「写东西时的样子」，拆成三张单行卡片会让它们看起来像三个
+          // 互不相干的开关，而实际上它们互相影响（例如格式按钮条只在编辑界面里
+          // 有意义）。
+          Column({ space: 12 }) {
             Row() {
               Column({ space: 2 }) {
                 Text('编辑体验')
@@ -1796,37 +1810,28 @@ struct Index {
               .backgroundColor($r('app.color.page_bg'))
             }
             .width('100%')
-          }
-          .width('100%')
-          .padding({ top: 4, bottom: 4 })
-        }
 
-        ListItem() {
-          Row() {
-            Column({ space: 2 }) {
-              Text('格式按钮条')
-                .fontSize(16)
-                .fontColor($r('app.color.text_primary'))
-              Text('粗体、列表、待办这些按钮')
-                .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
+            Row() {
+              Column({ space: 2 }) {
+                Text('格式按钮条')
+                  .fontSize(16)
+                  .fontColor($r('app.color.text_primary'))
+                Text('粗体、列表、待办这些按钮')
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .alignItems(HorizontalAlign.Start)
+
+              Blank()
+
+              Toggle({ type: ToggleType.Switch, isOn: this.showFormatBar })
+                .selectedColor(this.accentColor())
+                .onChange((on: boolean) => {
+                  this.setFormatBar(on);
+                })
             }
-            .alignItems(HorizontalAlign.Start)
+            .width('100%')
 
-            Blank()
-
-            Toggle({ type: ToggleType.Switch, isOn: this.showFormatBar })
-              .selectedColor(this.accentColor())
-              .onChange((on: boolean) => {
-                this.setFormatBar(on);
-              })
-          }
-          .width('100%')
-          .padding({ top: 10, bottom: 10 })
-        }
-
-        ListItem() {
-          Column({ space: 6 }) {
             Row() {
               Column({ space: 2 }) {
                 Text('编辑器字号')
@@ -1870,7 +1875,13 @@ struct Index {
             }
             .width('100%')
             Slider({
-              value: this.lineHeight,
+              // 必须喂给滑块**范围之内**的值。
+              //
+              // 只靠 `SettingsStore` 在读取时钳制是不够的：一旦存储里的旧值落在
+              // 新范围之外（把范围改成 0.75–1.50 之后，原来的 1.55 就在外面），
+              // 滑块会把它自己的解读写回 `onChange`，于是用户没碰过的设置被
+              // 静默改掉——实测行距从 1.55 变成了 1.10。
+              value: this.clampLineHeight(this.lineHeight),
               min: LINE_HEIGHT_MIN,
               max: LINE_HEIGHT_MAX,
               step: 5,

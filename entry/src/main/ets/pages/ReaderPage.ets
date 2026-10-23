@@ -80,7 +80,7 @@ export struct ReaderPage {
   /** 打开整篇输入时的光标落点。 */
   @Local wholeCaret: number = 0;
   /** 设置 › 分块编辑（默认关）。关 → 整篇输入。 */
-  @Local simpleEditing: boolean = true;
+  @Local simpleEditing: boolean = false;
   /** 设置 › 格式按钮条（默认关）。 */
   @Local showFormatBar: boolean = false;
   /**
@@ -385,7 +385,10 @@ export struct ReaderPage {
       this.clearEditing();
       return;
     }
-    const next: string[] = lines.slice(0, range.start).concat(lines.slice(range.end));
+    // 区间吞掉的是「这一块 + 它后面的空行」，所以删完要补一个空行回来：
+    // 否则前一块和后一块会直接贴在一起，段落会被并进上一段、列表项会被吞掉。
+    // 多一个空行无害，少一个空行会改结构。
+    const next: string[] = lines.slice(0, range.start).concat([''], lines.slice(range.end));
     this.clearEditing();
     this.persist(next.join('\n'));
   }
@@ -458,6 +461,7 @@ export struct ReaderPage {
               source: this.wholeSource,
               initialCaret: this.wholeCaret,
               bodySize: this.bodySize,
+              lineHeight: this.lineHeight,
               showFormatBar: this.showFormatBar,
               accentColor: this.accentColor,
               onChange: (text: string) => {

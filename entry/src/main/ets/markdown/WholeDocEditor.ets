@@ -29,6 +29,7 @@ export struct WholeDocEditor {
   /** 打开时光标落点（字符偏移）。 */
   @Param initialCaret: number = 0;
   @Param bodySize: number = 17;
+  @Param lineHeight: number = 120;
   @Param showFormatBar: boolean = false;
   @Param accentColor: string = '#0A59F7';
 
@@ -113,13 +114,18 @@ export struct WholeDocEditor {
         .id('whole-doc-editor')
         .width('100%')
         .layoutWeight(1)
-        .fontSize(this.bodySize * 0.95)
-        .fontFamily('monospace')
+        // 与正文**同一套排版**：同样的左右留白、同样的字体、同样的字号与行距。
+        //
+        // 之前这里是等宽字体 + 零内边距，点一下整页的字就「跳」过去换了一种气质，
+        // 读起来像进了另一个应用。源码本来就不需要等宽——需要的是「这还是同一
+        // 篇文章，只是符号露出来了」。
+        .fontSize(this.bodySize)
+        .lineHeight(this.bodySize * (this.lineHeight / 100))
         .fontColor($r('app.color.text_primary'))
         .placeholderColor($r('app.color.text_secondary'))
         .backgroundColor($r('app.color.page_bg'))
         .borderRadius(0)
-        .padding({ left: 0, right: 0, top: 4, bottom: 4 })
+        .padding({ left: 0, right: 0, top: 0, bottom: 0 })
         .onTextSelectionChange((start: number, end: number) => {
           this.selStart = start;
           this.selEnd = end;
@@ -131,7 +137,8 @@ export struct WholeDocEditor {
     }
     .width('100%')
     .layoutWeight(1)
-    .padding({ top: 4, bottom: 8 })
+    // 左右 20 vp 与渲染视图的 Scroll 内边距一致，切换时文字不会横向跳动。
+    .padding({ left: 20, right: 20, top: 4, bottom: 8 })
     .alignItems(HorizontalAlign.Start)
   }
 }
