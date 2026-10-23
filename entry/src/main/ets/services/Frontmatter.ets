@@ -96,6 +96,9 @@ export class FrontmatterCodec {
     text = text.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ');
     text = text.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
     text = text.replace(/^#{1,6}\s+/gm, '');
+    // 任务列表的方括号必须先于列表符号剥掉：`^[-*+]\s+` 只吃 `- `，
+    // 留下 `[x] ` 会原样出现在卡片摘要里（实测「无标题 周会 [x] 今天…」）。
+    text = text.replace(/^[-*+]\s+\[[ xX]\]\s+/gm, ' ');
     text = text.replace(/^[-*+]\s+/gm, '');
     text = text.replace(/^\d+\.\s+/gm, '');
     text = text.replace(/^>\s?/gm, '');

@@ -383,42 +383,66 @@ truth; the Web bridge calls `native.save(markdown)` and the native side writes
 `.md` files. `EditorPage` debounces 500 ms and flushes on back/background.
 The editor pops with `{ saved: true }`.
 
-### Reading vs editing: one page, block-level WYSIWYG
+### Reading vs editing: one page, no mode switch, block-level WYSIWYG
 
-`ReaderPage` is both the reader and the editor. Its 顶栏 toggles 阅读 / 编辑; in
-edit mode tapping a block expands **that block** into its Markdown source with a
-live preview underneath (`LiveBlockEditor`), and 完成 splices the source back by
-line range. Do not split this into a separate editor page.
+`ReaderPage` is both the reader and the editor. **There is no 阅读/编辑 toggle.**
+Opening a note gives a rendered article in which every block is live: tap a block
+and *that block* expands into its Markdown source with a live preview underneath;
+完成 splices it back by line range. That is the whole interaction.
 
+- **Why no mode.** "打开就能记" is the point of a notes app. A 编辑 gate makes the
+  user declare intent before changing one character, and read-only browsing is not a
+  state that deserves entering. This is the Typora model and the reference
+  implementation's 实时预览 mode.
 - **Why block-source editing, not a rich-text caret model.** Markdown's source *is*
   the specification — `##`, `-`, `**` are what the user types. Hiding them means the
   user cannot predict what the next keystroke does. Showing the symbols next to
-  their effect gives a complete feedback loop with no second document model, no
-  cross-block selection, no custom undo stack.
+  their effect gives a complete feedback loop with no second document model.
+- **The format bar is not decoration — it is the closed loop.** A user who does not
+  know Markdown can only produce plain paragraphs from a bare text box. `标题 /
+  粗体 / 斜体 / 列表 / 待办 / 引用 / 表格 / 代码` turn those structures into
+  something tappable, so the feature is reachable instead of documented. Line
+  actions toggle a prefix (longest prefix first, or `- [ ] ` gets eaten by `- `);
+  inline actions wrap the selection or insert a marker pair at the caret.
 - **The block's line range comes from `MdParser.srcRangeOf(blocks, i, totalLines)`.**
   `totalLines` is **required for the last block**: it has no "next block" to borrow
   an end from, so without it a multi-line final block is truncated to its first line
   and recommitting splits it in two. Replacement always consumes the blank lines
-  between blocks and puts one back, otherwise editing a block welds it to its
-  neighbour.
+  between blocks and puts one back.
 - **A tap on body text is consumed by the `Span`.** Every inline `Span` carries
   `onClick` (links must be tappable), and a child click does not reach the parent
   container. `.hitTestBehavior(HitTestMode.None)` on a custom component does **not**
   fix it. The only reliable route is a flag: `MdBlockView.tapToEdit` → every
   `MdInlineText` branches inside its own `onClick` and calls `onBlockTap` instead of
-  `onLink`. The wrapper's own `onClick` stays as the catcher for areas with no spans
-  (code blocks, tables, dividers).
+  `onLink`. The wrapper's own `onClick` catches areas with no spans (code, tables,
+  dividers).
 - **Never overlay a `height('100%')` click-catcher on a content-sized block.** A
   percentage height inside a content-driven stack resolves against the *available*
   height, so each block inflates to a screenful and pushes the rest out of the
-  viewport (observed: only two blocks visible). Same trap as the material carrier —
-  see the `.background(builder)` entry above.
-- The old ArkWeb `EditorPage` still exists and is still what **新建笔记** opens: a
-  brand-new empty note is better served by a full-screen editor than by tapping into
-  a single block. Do not delete it.
+  viewport. Same trap as the material carrier — see `.background(builder)` above.
+- **`ForEach` keys must include a render epoch.** `MdBlock.id` is the parse index, so
+  checking a task or changing a word leaves it unchanged; an unchanged key means the
+  framework reuses the old node and the screen keeps the previous content (measured:
+  the file already said `- [x]` while the circle still rendered empty). Every
+  mutation of the body bumps `ReaderPage.epoch` and folds it into the key.
+- **`LiveBlockEditor` re-seeds its draft through `@Monitor('initialSource')`, not
+  `aboutToAppear`.** Switching from "editing block N" to "append at the end" reuses
+  the same component instance (same structural position), so `aboutToAppear` never
+  runs again and the box would still hold the previous block's source.
+- **"动过没有" is `value !== initialSource`, not "onChange fired".** Mounting the
+  text box fires `onChange` once with the seeded text; treating that as an edit
+  defeated the discard rule and left an empty 无标题 in the list.
+- **Deleting a block asks first.** It only edits the body, so it is not recoverable
+  from 回收站 — a one-tap irreversible delete of a whole paragraph is the easiest way
+  to lose real content on this page.
+- **`+` opens this same page** (`ReaderParam.created: true`), not the ArkWeb editor:
+  a new note should start being written immediately. Leaving a just-created note
+  untouched purges it, so a mis-tap does not leave a 无标题 husk. `EditorPage` is
+  still registered for anything that wants the old full-screen surface.
 
 The reader re-parses in `onShown`, not `pushPath({ onPop })` — the latter only
-fires when `pop(result)` carries a payload.
+fires when `pop(result)` carries a payload. It skips the reload while a draft is
+open, so returning to the page cannot clobber what the user is typing.
 
 ### The Markdown engine (`markdown/`) is self-written
 

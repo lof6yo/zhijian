@@ -10,7 +10,7 @@ import { NoteCard } from '../components/NoteCard';
 import { MaterialLayer } from '../components/MaterialLayer';
 import { EditorPage } from './EditorPage';
 import { TrashPage } from './TrashPage';
-import { ReaderPage } from './ReaderPage';
+import { ReaderPage, ReaderParam } from './ReaderPage';
 import { WebDavPage } from './WebDavPage';
 import { NoteTransfer, TransferResult } from '../services/NoteTransfer';
 import { Credentials } from '../services/Credentials';
@@ -487,37 +487,35 @@ struct Index {
   }
 
   /**
-   * 卡片点击 → 阅读页，而不是编辑器。
-   *
-   * 编辑器和阅读页是两个页面是刻意的：阅读是原生 ArkUI 渲染（滚动、字号、
-   * 文本选择都归系统管），编辑是 ArkWeb 的所见即所得。把两者合成一个 WebView，
-   * 等于让整篇长文都经过 DOM 布局，滚动会卡，系统字号也不生效。
-   * 阅读页顶栏的「编辑」再进编辑器。
+   * 卡片点击 → 笔记页。笔记页本身就是编辑器（点哪块改哪块），
+   * 所以这里不再有「先进只读页、再点编辑」的第二道门。
    */
   private openNote(note: Note): void {
+    const param: ReaderParam = { id: note.id, created: false };
     this.pathStack.pushPath({
       name: 'reader',
-      param: note.id
+      param: param
     });
   }
 
   /**
-   * Creates a note and opens it.
+   * 新建笔记并直接进入。
    *
-   * A mis-tap here would otherwise leave a stray 无标题 file behind, because
-   * `createNote()` writes to disk immediately. The editor therefore receives
-   * `createdAt` and, on return, discards the note if it was never touched —
-   * see `EditorPage.discardIfUntouched()`. Creating eagerly (rather than
-   * deferring the write until the first keystroke) is deliberate: the note must
-   * exist for `EditorPage` to load it, and a note that *was* edited must survive
-   * even if the user leaves within five seconds.
+   * 进的是**笔记页**，不是另一个编辑器：`+` 之后应当立刻能写，而不是先把用户
+   * 送到一套不同的界面再让他重新学一遍「怎么改」。新建的笔记正文只有骨架标题，
+   * 笔记页据此把光标直接放进标题块，键盘随即弹出。
+   *
+   * `createNote()` 仍然立刻落盘——笔记页要按 id 读取它。误触的代价由笔记页承担：
+   * 从 `created: true` 进来、一个字都没写就离开时，它会把空笔记收掉
+   * （`ReaderPage.goBack`），所以不会在列表里留下「无标题」。
    */
   private newNote(): void {
     const note: Note = this.store.createNote();
     this.refreshList();
+    const param: ReaderParam = { id: note.id, created: true };
     this.pathStack.pushPath({
-      name: 'editor',
-      param: note.id
+      name: 'reader',
+      param: param
     });
   }
 

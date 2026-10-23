@@ -1,39 +1,48 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
-import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { MdBlock, MdParseResult, MdSrcRange } from '../markdown/MdTypes';
 import { MdParser } from '../markdown/MdParser';
-import { MdDocumentView } from '../markdown/MdView';
 import { EditableDocument } from '../markdown/EditableDocument';
 import { Note } from '../models/Note';
 import { NoteStore } from '../services/NoteStore';
 import { SettingsStore } from '../services/SettingsStore';
 
 /**
- * 阅读 / 实时预览编辑页 —— 原生 Markdown 渲染 + 就地块编辑。
+ * 打开笔记页的参数。
  *
- * ## 为什么阅读和编辑在同一页，而不再是两个页面
+ * `created` 由列表的「+」置为 true：从新建进来、一个字都没写就离开时，
+ * 这一页负责把空笔记收掉，避免误触留下「无标题」。
+ */
+export interface ReaderParam {
+  id: string;
+  created: boolean;
+}
+
+/** 会话内只提示一次「点按段落就能改」。 */
+let HINT_SHOWN: boolean = false;
+
+/**
+ * 笔记页 —— 打开就是可写的文章，没有「只读 / 编辑」模式。
  *
- * Markdown 的源码是规范的一部分：用户写 `##`、`-`、`**`，这些符号一旦被藏进
- * 一个富文本编辑器的内部模型，用户就无法预测下一次输入会发生什么。所以「真正
- * 的所见即所得」不是把符号藏起来，而是**让符号和它的效果出现在同一个地方**：
- * 点哪一块，那一块就地展开成源码，下面立刻是它渲染出来的样子。
+ * ## 为什么没有模式开关
  *
- * 这带来一条明确的边界：本页只做**块级**就地编辑。不做跨块选区、不做自建光标
- * 模型——那是另一个编辑器的工程量，而且会把「所见即所得」变成「所见非所得」。
+ * 笔记应用的初衷是「打开就能记」。多一道「点编辑」的门，等于每改一个字都要先
+ * 声明意图；而「只读浏览」本来就不该是一种需要进入的状态——正文一直可点，
+ * 点哪一块就改哪一块，其余保持渲染，看上去就是一篇排好版的文章。
+ *
+ * 页面上只有一件事可变：**哪一块正在被编辑**。这正是 Typora 那类工具的模型，
+ * 也是参考实现的「实时预览」模式。
  *
  * ## 写回只经过 `srcRangeOf`
  *
- * 每一块在原文里的行区间由解析器给出（块在原文里连续且有序，用「下一块的起始行」
- * 推断结束行）。替换区间时**连同块之间的空行一起带走**，再补一个空行，这样
- * 「改一块」不会把相邻块粘到一起。末块没有「下一块」可借位，所以要显式传总行数，
- * 否则多行的末块只会被截到首行。
+ * 每块在原文里的行区间由解析器给出（块在原文里连续有序，用「下一块的起始行」
+ * 推断结束行；末块没有下一块，所以显式传总行数）。替换区间时连同块之间的空行
+ * 一起带走，再补一个回来，否则「改一块」会把相邻块粘到一起。
  *
  * ## 布局
  *
  * 两层 `Stack`：底层只负责上色的 `Column` 拥有 `expandSafeArea`，内容层绝不
- * 扩展——否则页头会钻到状态栏底下。`NavDestination` 的内容本来就起于状态栏下沿，
- * 所以页头是一条没有顶部内边距的 56 vp 行。
+ * 扩展——否则页头会钻到状态栏底下。`NavDestination` 的内容本来就起于状态栏
+ * 下沿，所以页头是一条没有顶部内边距的 56 vp 行。
  */
 @ComponentV2
 export struct ReaderPage {
@@ -50,17 +59,33 @@ export struct ReaderPage {
   @Local dark: boolean = false;
   @Local ready: boolean = false;
 
-  /** 实时预览编辑模式。 */
-  @Local editing: boolean = false;
-  /** 正在编辑的块下标；-1 表示没有块处于编辑态。 */
+  /** 正在编辑的块下标；-1 表示没有。 */
   @Local editingIndex: number = -1;
   /** 该块的源码草稿。 */
   @Local editingSource: string = '';
+  /** 正在文末追加新段落。 */
+  @Local appending: boolean = false;
   /** 草稿的解析结果，供编辑态下方预览。 */
   @Local previewBlocks: MdBlock[] = [];
   @Local previewTick: number = 0;
+  /**
+   * 渲染纪元：正文每变一次 +1。
+   *
+   * `MdBlock.id` 是解析序号，勾选待办、改措辞都不会改变它，而 `ForEach` 的 key
+   * 不变时框架会复用旧节点——文件已经写成 `- [x]`，屏幕上的圆圈却还是空的。
+   * 所以内容的任何变化都要让 key 跟着变。
+   */
+  @Local epoch: number = 0;
 
   private noteId: string = '';
+  /** 首次进入时是否已经尝试过自动落光标。 */
+  private autoOpened: boolean = false;
+  /** 这篇笔记是不是刚刚从列表「+」新建的（用来判断要不要丢弃空笔记）。 */
+  private createdHere: boolean = false;
+  /** 本次进入后用户是否真的改过东西。 */
+  private touched: boolean = false;
+  /** 当前编辑块的原始源码，用来判断草稿是否真的偏离了原文。 */
+  private initialSourceOfEditing: string = '';
 
   private systemIsDark(): boolean {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -78,7 +103,6 @@ export struct ReaderPage {
     return this.systemIsDark();
   }
 
-  /** 正文按行切开。写回、取块区间都基于它。 */
   private bodyLines(): string[] {
     return this.note.body.split('\n');
   }
@@ -98,14 +122,26 @@ export struct ReaderPage {
     const result: MdParseResult = MdParser.parse(note.body);
     this.blocks = result.blocks;
     this.ready = true;
+
+    // 「打开就能记」：空白笔记（只有骨架标题，或干脆没有内容）一进来就把
+    // 光标放进第一块，不用先点一下。已有内容的笔记不这么做——那会在用户只是
+    // 想读一眼的时候弹出键盘。`autoOpened` 保证只在首次进入时触发。
+    if (!this.autoOpened) {
+      this.autoOpened = true;
+      if (this.blocks.length === 0) {
+        this.startAppend();
+      } else if (this.blocks.length === 1 && this.blocks[0].kind === 0 && this.blocks[0].plain.trim() === '无标题') {
+        this.openResolved(0);
+      }
+    }
   }
 
-  /** 重新解析全文并刷新块列表。 */
   private reparse(body: string): void {
     this.note.body = body;
     const result: MdParseResult = MdParser.parse(body);
     this.blocks = result.blocks;
     this.title = this.note.title;
+    this.epoch = this.epoch + 1;
   }
 
   /**
@@ -120,103 +156,184 @@ export struct ReaderPage {
     this.onChanged();
   }
 
-  // ------------------------------------------------------------- 块编辑
-
-  private enterEditMode(): void {
-    this.editing = true;
-    this.editingIndex = -1;
-  }
-
-  /** 退出编辑模式；未提交的块先提交，避免草稿丢失。 */
-  private exitEditMode(): void {
-    if (this.editingIndex >= 0) {
-      this.commitBlock();
-    }
-    this.editing = false;
-    this.editingIndex = -1;
-  }
+  // ------------------------------------------------------------- 就地编辑
 
   /**
-   * 点中一块 → 就地展开源码。
+   * 点中一块 → 就地展开它的源码。
    *
-   * 预览立刻用「该块当前源码」解析一次，而不是留空：一进来就该看到它现在的样子，
-   * 否则用户会以为这块没内容。
+   * 切换块之前必须先提交当前块，否则草稿会丢。提交会重解析全文，所以点击时
+   * 记下的下标可能已经偏移；这里用「原目标块的行号」在新结果里重新定位，
+   * 找不到才退回原下标。
    */
   private openBlock(index: number): void {
-    if (!this.editing) {
+    if (this.editingIndex === index && !this.appending) {
       return;
     }
+    const targetLine: number = index >= 0 && index < this.blocks.length ? this.blocks[index].srcLine : -1;
+    this.commitPending();
+
+    let resolved = index;
+    if (targetLine >= 0) {
+      for (let i = 0; i < this.blocks.length; i++) {
+        if (this.blocks[i].srcLine === targetLine) {
+          resolved = i;
+          break;
+        }
+      }
+    }
+    if (resolved < 0 || resolved >= this.blocks.length) {
+      return;
+    }
+    this.openResolved(resolved);
+  }
+
+  private openResolved(index: number): void {
     const lines: string[] = this.bodyLines();
     const range: MdSrcRange = MdParser.srcRangeOf(this.blocks, index, lines.length);
     if (range.end <= range.start) {
       return;
     }
     const source: string = lines.slice(range.start, range.end).join('\n').replace(/\n+$/, '');
+    this.appending = false;
     this.editingIndex = index;
     this.editingSource = source;
+    this.initialSourceOfEditing = source;
     this.previewBlocks = MdParser.parse(source).blocks;
+    this.previewTick = this.previewTick + 1;
+  }
+
+  /** 文末追加一段。 */
+  private startAppend(): void {
+    this.commitPending();
+    this.editingIndex = -1;
+    this.appending = true;
+    this.editingSource = '';
+    this.initialSourceOfEditing = '';
+    this.previewBlocks = [];
     this.previewTick = this.previewTick + 1;
   }
 
   private onDraftChange(value: string): void {
     this.editingSource = value;
-    // 每次按键都重解析草稿。草稿是**单块**，量级只有几行，代价可忽略；
-    // 不这样做的话预览就不是「实时」，而是「回车之后」。
+    // 只有内容**真的偏离原文**才算动过。
+    //
+    // 不能一见 onChange 就置真：输入框挂载时把初始文本写进去也会触发一次
+    // onChange，于是刚点「+」什么都没写就被当成编辑过，离开时那个空的
+    // 「无标题」就留在了列表里（实测）。
+    if (value !== this.initialSourceOfEditing) {
+      this.touched = true;
+    }
+    // 草稿是**单块**，量级只有几行，每键重解析的代价可忽略；不这样做，
+    // 预览就变成「回车之后」而不是「实时」。
     this.previewBlocks = MdParser.parse(value).blocks;
     this.previewTick = this.previewTick + 1;
+  }
+
+  private commitPending(): void {
+    if (this.appending) {
+      this.commitAppend();
+      return;
+    }
+    if (this.editingIndex >= 0) {
+      this.commitBlock();
+    }
+  }
+
+  private clearEditing(): void {
+    this.editingIndex = -1;
+    this.appending = false;
+    this.editingSource = '';
+    this.previewBlocks = [];
   }
 
   /** 把草稿写回原文的该块行区间。 */
   private commitBlock(): void {
     const index = this.editingIndex;
     if (index < 0 || index >= this.blocks.length) {
-      this.editingIndex = -1;
+      this.clearEditing();
       return;
     }
     const lines: string[] = this.bodyLines();
     const range: MdSrcRange = MdParser.srcRangeOf(this.blocks, index, lines.length);
     if (range.end <= range.start) {
-      this.editingIndex = -1;
+      this.clearEditing();
       return;
     }
     const draft = this.editingSource.replace(/\n+$/, '');
     const replacement: string[] = draft.length === 0 ? [] : draft.split('\n');
-    // 区间已经吞掉了块之间的空行，所以补一个回来，保证与下一块分离。
+    // 区间已经吞掉了块之间的空行，补一个回来，保证与下一块分离。
     replacement.push('');
     const next: string[] = lines.slice(0, range.start).concat(replacement, lines.slice(range.end));
-    this.editingIndex = -1;
-    this.editingSource = '';
-    this.previewBlocks = [];
+    this.clearEditing();
     this.persist(next.join('\n'));
   }
 
-  /** 删除该块（连同它的空行）。 */
+  private commitAppend(): void {
+    const draft = this.editingSource.replace(/\n+$/, '');
+    if (draft.length === 0) {
+      this.clearEditing();
+      return;
+    }
+    const body = this.note.body.replace(/\n+$/, '');
+    const next: string = body.length === 0 ? draft : `${body}\n\n${draft}`;
+    this.clearEditing();
+    this.persist(next);
+  }
+
+  /** 删除正在编辑的块（连同它的空行）。 */
   private deleteBlock(): void {
+    if (this.appending) {
+      this.clearEditing();
+      return;
+    }
     const index = this.editingIndex;
     if (index < 0 || index >= this.blocks.length) {
-      this.editingIndex = -1;
+      this.clearEditing();
+      return;
+    }
+    // 删一整段是不可逆的（只改正文，不进回收站），所以必须问一句。
+    // 一个误触就抹掉一段正文，是这一页最容易造成真实损失的地方。
+    this.getUIContext().showAlertDialog({
+      title: '删除这一段？',
+      message: '这一段会从笔记里移除，不能撤销。',
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '删除',
+        fontColor: $r('app.color.danger'),
+        action: () => {
+          this.removeBlockNow(index);
+        }
+      }
+    });
+  }
+
+  private removeBlockNow(index: number): void {
+    if (index < 0 || index >= this.blocks.length) {
+      this.clearEditing();
       return;
     }
     const lines: string[] = this.bodyLines();
     const range: MdSrcRange = MdParser.srcRangeOf(this.blocks, index, lines.length);
     if (range.end <= range.start) {
-      this.editingIndex = -1;
+      this.clearEditing();
       return;
     }
     const next: string[] = lines.slice(0, range.start).concat(lines.slice(range.end));
-    this.editingIndex = -1;
-    this.editingSource = '';
-    this.previewBlocks = [];
+    this.clearEditing();
     this.persist(next.join('\n'));
   }
 
   /**
    * 勾选任务列表并写回。
    *
-   * 阅读态也能勾选：勾一下是「结清一件事」，不是「改文章」，不该要求先进编辑模式。
    * 只翻这一行的第一组方括号——用正则整段替换会把同一行里的第二组一起改掉。
    */
   private toggleTask(block: MdBlock): void {
+    this.commitPending();
     const lines: string[] = this.bodyLines();
     if (block.srcLine < 0 || block.srcLine >= lines.length) {
       return;
@@ -232,8 +349,16 @@ export struct ReaderPage {
   }
 
   private goBack(): void {
-    if (this.editing && this.editingIndex >= 0) {
-      this.commitBlock();
+    this.commitPending();
+    // 从「+」进来、一个字都没写就离开：把空笔记收掉。
+    // 不收的话，误触一次「+」就在列表里留一张「无标题」——正是这条规则存在的理由。
+    // 只认准「未改动」且正文仍是骨架，所以读到一半离开的笔记绝不会被删。
+    if (this.createdHere && !this.touched) {
+      const body: string = this.note.body.trim();
+      if (body.length === 0 || body === '# 无标题') {
+        NoteStore.instance.purgeNote(this.note);
+        this.onChanged();
+      }
     }
     this.pathStack.pop();
   }
@@ -267,45 +392,37 @@ export struct ReaderPage {
           } else {
             Scroll() {
               Column() {
-                if (this.editing) {
-                  EditableDocument({
-                    blocks: this.blocks,
-                    editingIndex: this.editingIndex,
-                    editingSource: this.editingSource,
-                    previewBlocks: this.previewBlocks,
-                    previewTick: this.previewTick,
-                    bodySize: this.bodySize,
-                    lineHeight: this.lineHeight,
-                    dark: this.dark,
-                    accentColor: this.accentColor,
-                    onBlockTap: (index: number) => {
-                      this.openBlock(index);
-                    },
-                    onDraftChange: (value: string) => {
-                      this.onDraftChange(value);
-                    },
-                    onCommit: () => {
-                      this.commitBlock();
-                    },
-                    onDelete: () => {
-                      this.deleteBlock();
-                    }
-                  })
-                } else {
-                  MdDocumentView({
-                    blocks: this.blocks,
-                    bodySize: this.bodySize,
-                    lineHeight: this.lineHeight,
-                    dark: this.dark,
-                    accentColor: this.accentColor,
-                    onLink: (href: string) => {
-                      this.handleLink(href);
-                    },
-                    onTaskToggle: (block: MdBlock) => {
-                      this.toggleTask(block);
-                    }
-                  })
-                }
+                EditableDocument({
+                  blocks: this.blocks,
+                  editingIndex: this.editingIndex,
+                  editingSource: this.editingSource,
+                  appending: this.appending,
+                  previewBlocks: this.previewBlocks,
+                  previewTick: this.previewTick,
+                  epoch: this.epoch,
+                  bodySize: this.bodySize,
+                  lineHeight: this.lineHeight,
+                  dark: this.dark,
+                  accentColor: this.accentColor,
+                  onBlockTap: (index: number) => {
+                    this.openBlock(index);
+                  },
+                  onDraftChange: (value: string) => {
+                    this.onDraftChange(value);
+                  },
+                  onCommit: () => {
+                    this.commitPending();
+                  },
+                  onDelete: () => {
+                    this.deleteBlock();
+                  },
+                  onTaskToggle: (block: MdBlock) => {
+                    this.toggleTask(block);
+                  },
+                  onAddBlock: () => {
+                    this.startAppend();
+                  }
+                })
               }
               .width('100%')
               .padding({ left: 20, right: 20, top: 4, bottom: 48 })
@@ -329,16 +446,36 @@ export struct ReaderPage {
       return true;
     })
     .onReady((context: NavDestinationContext) => {
-      const id = context.pathInfo.param as string;
-      this.load(id);
-    })
-    // 从其它页面返回时重新解析：`onShown` 每次转场都会触发，与是否带 `pop`
-    // 结果无关（`pushPath({ onPop })` 只在 `pop(result)` 带结果时才回调）。
-    .onShown(() => {
-      if (this.noteId.length > 0) {
-        this.load(this.noteId);
+      const param = context.pathInfo.param as ReaderParam;
+      this.createdHere = param.created;
+      this.load(param.id);
+      // 第一次进笔记时提示一次：这一页没有「编辑」按钮，点正文就是改。
+      // 只在会话内提示一次——重复弹会变成噪音。
+      if (!HINT_SHOWN) {
+        HINT_SHOWN = true;
+        setTimeout(() => {
+          this.getUIContext().getPromptAction().showToast({ message: '点按任意段落就能修改' });
+        }, 700);
       }
     })
+    .onShown(() => {
+      if (this.noteId.length > 0) {
+        this.loadContinuation();
+      }
+    })
+  }
+
+  /**
+   * 回到本页时重新读取。
+   *
+   * 只有在没有未提交草稿时才重解析：本页自己是唯一的写者，但如果从编辑器
+   * 之类的页面返回，磁盘上的内容可能变了。有草稿就保留，不打断用户输入。
+   */
+  private loadContinuation(): void {
+    if (this.editingIndex >= 0 || this.appending) {
+      return;
+    }
+    this.load(this.noteId);
   }
 
   @Builder
@@ -362,20 +499,6 @@ export struct ReaderPage {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
-
-      Text(this.editing ? '完成' : '编辑')
-        .fontSize(14)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.accentColor)
-        .padding({ left: 12, right: 8, top: 8, bottom: 8 })
-        .onClick(() => {
-          if (this.editing) {
-            this.exitEditMode();
-          } else {
-            this.enterEditMode();
-          }
-        })
-        .accessibilityText(this.editing ? '退出编辑' : '进入编辑')
     }
     .width('100%')
     .height(56)
@@ -384,24 +507,8 @@ export struct ReaderPage {
   }
 
   /**
-   * 链接处理。
-   *
-   * 阅读时不跳浏览器：纸见是本地优先应用，没有内置浏览器，把用户踢出去会丢掉
-   * 滚动位置；复制地址是可逆的。站内锚点目前是空操作——复制 `#` 开头的片段对
-   * 用户没有意义，目录跳转要等大纲栏接入后由它承担。
+   * 正文一直处于可编辑状态（点哪块改哪块），行内 `Span` 的点击被用来「选中这一块」，
+   * 所以链接不再是点击目标——与 Typora 的取舍一致：编辑态里点文字是放光标，
+   * 不是打开网址。等接入「打开链接」的显式入口（长按菜单或顶部胶囊）再补。
    */
-  private handleLink(href: string): void {
-    if (href.length === 0 || href.startsWith('#')) {
-      return;
-    }
-    try {
-      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, href);
-      pasteboard.getSystemPasteboard().setDataSync(data);
-      this.getUIContext().getPromptAction().showToast({ message: '链接已复制' });
-    } catch (e) {
-      const err = e as BusinessError;
-      hilog.warn(0x0000, 'HMStartReader', 'copy link failed code=%{public}d', err.code);
-      this.getUIContext().getPromptAction().showToast({ message: '复制失败' });
-    }
-  }
 }

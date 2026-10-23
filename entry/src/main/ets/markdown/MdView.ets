@@ -199,8 +199,8 @@ export struct MdBlockView {
       dark: this.dark,
       accentColor: this.accentColor,
       onLink: this.onLink,
-        tapToEdit: this.tapToEdit,
-        onTextTap: this.onBlockTap
+      tapToEdit: this.tapToEdit,
+      onTextTap: this.onBlockTap
     })
       .width('100%')
       .margin({ top: this.tightTop ? SPACE_TIGHT : SPACE_BLOCK })
@@ -262,8 +262,8 @@ export struct MdBlockView {
       dark: this.dark,
       accentColor: this.accentColor,
       onLink: this.onLink,
-        tapToEdit: this.tapToEdit,
-        onTextTap: this.onBlockTap,
+      tapToEdit: this.tapToEdit,
+      onTextTap: this.onBlockTap,
       overrideColor: $r('app.color.text_secondary'),
       quoteMode: true
     })
