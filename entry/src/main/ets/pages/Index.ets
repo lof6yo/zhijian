@@ -2092,9 +2092,6 @@ struct Index {
               .onClick(() => {
                 this.openWebDav();
               })
-            Divider()
-              .color($r('app.color.divider'))
-              .opacity(0.6)
             Row() {
               this.SettingRow('导入 / 导出', 'Markdown + ZIP', '', false)
             }
