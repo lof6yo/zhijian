@@ -104,6 +104,51 @@ export class NoteStore {
     return note;
   }
 
+  /**
+   * 复制一篇笔记，返回新建的那一份。
+   *
+   * 三个细节都不能省：
+   * - **新 id**。id 是同步的身份（见 AGENTS.md「Sync identity is the frontmatter
+   *   `id`」），复用原 id 会让两份内容在服务器上互相覆盖；这里沿用 `createNote()`
+   *   的生成规则，只是新造一个。
+   * - **正文的 H1 必须是新标题**。`reload()` 的 `note.title` 由 H1 反推，`saveNote()`
+   *   按 H1 重命名文件——只改内存里的 title，下一次保存就会把文件名拽回去，
+   *   列表里两张卡片的标题也会变得一模一样，分不出哪张是副本。
+   * - **`favorite` / `archived` 一律为 false**。副本是一篇新的活笔记，不该继承
+   *   原笔记「收起来」或「收藏」的状态，否则复制一份已归档的笔记会凭空多出一份
+   *   看不见的副本。
+   *
+   * 不碰原笔记的任何字段（标题、正文、标签数组都重新构造），并插在原笔记**紧后
+   * 面**，让列表里两份相邻，用户一眼能看到复制结果。
+   */
+  duplicateNote(note: Note): Note {
+    const now = systemDateTime.getTime();
+    const title = `${note.title.length > 0 ? note.title : '无标题'} 副本`;
+    const copy = new Note();
+    copy.id = `${now.toString(36)}-${Math.floor(Math.random() * 100000)}`;
+    copy.title = title;
+    copy.body = this.retitleCopy(note.body, title);
+    copy.tags = note.tags.slice();
+    copy.archived = false;
+    copy.favorite = false;
+    copy.folder = '';
+    copy.relPath = this.uniquePath(this.sanitize(title), undefined);
+    copy.createdAt = now;
+    copy.updatedAt = now;
+    copy.excerpt = FrontmatterCodec.excerptOf(copy.body);
+    this.writeNote(copy);
+    const index = this.notes.findIndex((item: Note) => item.id === note.id);
+    if (index >= 0) {
+      this.notes = [...this.notes.slice(0, index + 1), copy, ...this.notes.slice(index + 1)];
+    } else {
+      this.notes = [copy, ...this.notes];
+    }
+    this.tags = this.collectTags(this.notes);
+    hilog.info(0x0000, 'HMStartStore', 'duplicate %{public}s -> %{public}s notes=%{public}d',
+      note.relPath, copy.relPath, this.notes.length);
+    return copy;
+  }
+
   saveNote(note: Note, body: string): void {
     if (this.root.length === 0 || note.relPath.length === 0) {
       return;
@@ -601,6 +646,27 @@ const hello = 'HarmonyOS';
         fs.closeSync(file);
       }
     }
+  }
+
+  /**
+   * 把正文的 H1 换成 `# title`，没有 H1 就补一行在最前面。
+   *
+   * 复制出来的正文必须自带新标题：`FrontmatterCodec.build()` 只写 frontmatter，
+   * 标题不在里面，唯一的标题来源就是正文的 H1。有 H1 时只换那一行的文字，段落
+   * 之间保留原来的空行；没有 H1 时插在最前面再补一个空行，让渲染出来仍是
+   * 「标题 + 空行 + 正文」。
+   */
+  private retitleCopy(body: string, title: string): string {
+    const heading = `# ${title}`;
+    const lines = body.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim().startsWith('# ')) {
+        const next = lines.slice();
+        next[i] = heading;
+        return next.join('\n');
+      }
+    }
+    return body.length > 0 ? `${heading}\n\n${body}` : `${heading}\n\n`;
   }
 
   private collectTags(notes: Note[]): string[] {

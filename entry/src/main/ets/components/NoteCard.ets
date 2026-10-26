@@ -29,6 +29,8 @@ export struct NoteCard {
   /** Runtime accent from `Palette`; `$r('app.color.accent')` cannot follow the setting. */
   @Param accentColor: string = '#0A59F7';
   @Param accentChipColor: string = '#E8EEFF';
+  /** 强调色面上的文字色（勾选圈里的对勾）。 */
+  @Param onAccentColor: string = '#FFFFFF';
   /**
    * Card corner radius in vp, from 设置 › 卡片圆角.
    *
@@ -73,12 +75,25 @@ export struct NoteCard {
    * 色相是「光」，深色里光应该更弱，不能直接沿用浅色的比例。
    */
   @Param darkTheme: boolean = false;
+  /**
+   * 多选态。
+   *
+   * 多选不是「加了一个界面」，而是这张卡片换了一套交互：点一下是**勾选**而不是
+   * 打开笔记，左右滑动整个关掉（滑动意味着「对这张卡做一件事」，而在多选里
+   * 那件事只由底部的动作条决定），长按菜单保留但去掉「多选」那一项。
+   */
+  @Param selecting: boolean = false;
+  @Param selected: boolean = false;
   @Event onOpen: (noteId: string) => void = () => {};
   @Event onArchive: (noteId: string) => void = () => {};
   @Event onInsight: (noteId: string) => void = () => {};
   @Event onToggleFavorite: (noteId: string) => void = () => {};
   @Event onDelete: (noteId: string) => void = () => {};
   @Event onEditTags: (noteId: string) => void = () => {};
+  @Event onExport: (noteId: string) => void = () => {};
+  @Event onDuplicate: (noteId: string) => void = () => {};
+  /** 多选态下点卡片的回调：切换这张卡的勾选状态。 */
+  @Event onToggleSelect: (noteId: string) => void = () => {};
 
   // ------------------------------------------------------- 左右滑动
 
@@ -169,6 +184,11 @@ export struct NoteCard {
 
       Column({ space: 8 }) {
         Row({ space: 6 }) {
+        // 多选态的勾选圈。放在标题行**行首**而不是浮在右上角：多选时卡片的内容
+        // 不再重要，重要的是「勾了哪几张」，从左侧开始读是唯一不撞上标题的位置。
+        if (this.selecting) {
+          this.SelectMark()
+        }
         Text(this.title.length > 0 ? this.title : '无标题')
           .fontSize(17)
           .fontWeight(FontWeight.Medium)
@@ -254,6 +274,11 @@ export struct NoteCard {
       // here would be correct-looking but would also cover the material.
       .backgroundColor(this.glassOn ? Color.Transparent : $r('sys.color.ohos_id_color_card_bg'))
       .borderRadius(this.cornerRadius)
+      // 勾选后描一圈强调色：只靠标题前那个小圆点，在一屏八张卡里很难一眼扫出
+      // 选中了哪几张。
+      .border(this.selected
+        ? { width: 2, color: this.accentColor }
+        : { width: 0 })
       .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
       // Press feedback uses the platform interaction effect instead of
       // `.stateStyles()`: this toolchain rejects both the inline object literal
@@ -261,7 +286,13 @@ export struct NoteCard {
       .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.97 })
       .hoverEffect(HoverEffect.Auto)
       .onClick(() => {
-        this.onOpen(this.noteId);
+        // 多选态下点卡片 = 勾/取消勾。这里**不能**再走 onOpen：多选途中点开一篇
+        // 笔记会让用户丢掉已经选好的那一批。
+        if (this.selecting) {
+          this.onToggleSelect(this.noteId);
+        } else {
+          this.onOpen(this.noteId);
+        }
       })
       .bindContextMenu(this.CardMenu(), ResponseType.LongPress, {
         preview: MenuPreviewMode.NONE
@@ -289,12 +320,21 @@ export struct NoteCard {
             this.swipeOffset = 0;
           })
           .onActionUpdate((event: GestureEvent) => {
+            // 多选态里左右滑动整块关掉：滑动在这里没有可执行的动作（归档 / 删除
+            // 都由底部动作条统一决定），留着它只会让「想勾选」的手指滑出一张卡的
+            // 动作提示，然后弹回原样。
+            if (this.selecting) {
+              return;
+            }
             // `offsetX` 是相对起手点的位移（vp，正值向右），不是逐帧增量，
             // 所以直接赋值，不累加。
             const limit: number = this.cardW > 0 ? this.cardW : 198;
             this.swipeOffset = Math.max(-limit, Math.min(limit, event.offsetX));
           })
           .onActionEnd(() => {
+            if (this.selecting) {
+              return;
+            }
             const dx: number = this.swipeOffset;
             // 邮箱式分档：滑出去就要有结果，所以门槛放得很低（24 vp，约一指宽），
             // 低于它才当误触回弹。松手永远回到 0——没有停住的按钮态。
@@ -517,36 +557,87 @@ export struct NoteCard {
     })
   }
 
+  /** 多选态的勾选圈：未选是空心环，选中是实心强调色 + 对勾。 */
+  @Builder
+  SelectMark() {
+    Stack({ alignContent: Alignment.Center }) {
+      if (this.selected) {
+        Column()
+          .width(20)
+          .height(20)
+          .borderRadius(10)
+          .backgroundColor(this.accentColor)
+        SymbolGlyph($r('sys.symbol.checkmark'))
+          .fontSize(12)
+          .fontColor([this.onAccentColor])
+      } else {
+        Column()
+          .width(20)
+          .height(20)
+          .borderRadius(10)
+          .border({ width: 1.5, color: $r('app.color.text_secondary') })
+      }
+    }
+    .width(20)
+    .height(20)
+    .accessibilityText(this.selected ? '已选中' : '未选中')
+  }
+
   @Builder
   CardMenu() {
     Menu() {
-      MenuItem({ content: this.archived ? '取消归档' : '归档' })
-        .contentFontColor($r('app.color.text_primary'))
-        .onClick(() => {
-          // 菜单保留确认：划动手势是「甩一下就完事」，弹框会打断那个节奏，所以
-          // 右滑轻档直接执行；而点开菜单本身就是一次停顿，这里问一句不碍事。
-          // 取消归档两条入口都不问——它只是把笔记拿回来。
-          if (this.archived) {
-            this.onArchive(this.noteId);
-          } else {
-            this.confirmArchive();
-          }
-        })
-      MenuItem({ content: this.favorite ? '取消收藏' : '收藏' })
-        .contentFontColor($r('app.color.text_primary'))
-        .onClick(() => {
-          this.onToggleFavorite(this.noteId);
-        })
-      MenuItem({ content: '标签…' })
-        .contentFontColor($r('app.color.text_primary'))
-        .onClick(() => {
-          this.onEditTags(this.noteId);
-        })
-      MenuItem({ content: '删除' })
-        .contentFontColor($r('app.color.danger'))
-        .onClick(() => {
-          this.confirmDelete();
-        })
+      if (this.selecting) {
+        // 多选途中「多选」这一项没有意义（已经在里面了），而且菜单本身会挡住
+        // 底部动作条；只留单项动作，其余交给动作条。
+        MenuItem({ content: '取消多选' })
+          .contentFontColor($r('app.color.text_primary'))
+          .onClick(() => {
+            this.onToggleSelect(this.noteId);
+          })
+      } else {
+        MenuItem({ content: this.archived ? '取消归档' : '归档' })
+          .contentFontColor($r('app.color.text_primary'))
+          .onClick(() => {
+            // 菜单保留确认：划动手势是「甩一下就完事」，弹框会打断那个节奏，所以
+            // 右滑轻档直接执行；而点开菜单本身就是一次停顿，这里问一句不碍事。
+            // 取消归档两条入口都不问——它只是把笔记拿回来。
+            if (this.archived) {
+              this.onArchive(this.noteId);
+            } else {
+              this.confirmArchive();
+            }
+          })
+        MenuItem({ content: this.favorite ? '取消收藏' : '收藏' })
+          .contentFontColor($r('app.color.text_primary'))
+          .onClick(() => {
+            this.onToggleFavorite(this.noteId);
+          })
+        MenuItem({ content: '标签…' })
+          .contentFontColor($r('app.color.text_primary'))
+          .onClick(() => {
+            this.onEditTags(this.noteId);
+          })
+        MenuItem({ content: '导出 MD' })
+          .contentFontColor($r('app.color.text_primary'))
+          .onClick(() => {
+            this.onExport(this.noteId);
+          })
+        MenuItem({ content: '创建副本' })
+          .contentFontColor($r('app.color.text_primary'))
+          .onClick(() => {
+            this.onDuplicate(this.noteId);
+          })
+        MenuItem({ content: '多选' })
+          .contentFontColor($r('app.color.text_primary'))
+          .onClick(() => {
+            this.onToggleSelect(this.noteId);
+          })
+        MenuItem({ content: '删除' })
+          .contentFontColor($r('app.color.danger'))
+          .onClick(() => {
+            this.confirmDelete();
+          })
+      }
     }
   }
 

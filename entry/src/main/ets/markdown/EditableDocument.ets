@@ -1,5 +1,5 @@
 import { MdBlock } from './MdTypes';
-import { MdBlockView } from './MdView';
+import { MdBlockView, listNumberAt, tightTopAt } from './MdView';
 import { LiveBlockEditor } from './LiveBlockEditor';
 
 /**
@@ -105,6 +105,12 @@ export struct EditableDocument {
               lineHeight: this.lineHeight,
               dark: this.dark,
               accentColor: this.accentColor,
+              // 「这一块紧贴上一块」和「这是第几号」也是渲染的一部分，必须由宿主
+              // 一起给：漏传 `tightTop` 会让每个列表项都吃到一个 16 vp 的段间距
+              // （用户报的「列表行距过大」），漏传 `listNumber` 会让有序列表全
+              // 显示成 `0.`。
+              listNumber: listNumberAt(this.blocks, index, block),
+              tightTop: tightTopAt(this.blocks, index, block),
               // 让正文片段把点击回传上来；没有 Span 的区域（代码块、表格、
               // 分割线）由这一层自己接。
               tapToEdit: true,

@@ -4,6 +4,8 @@ import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NoteStore } from './NoteStore';
+import { FrontmatterCodec } from './Frontmatter';
+import { Note } from '../models/Note';
 
 const DOMAIN = 0x0000;
 const TAG = 'HMStartTransfer';
@@ -23,6 +25,16 @@ export class TransferResult {
   cancelled: boolean = false;
   count: number = 0;
   message: string = '';
+}
+
+/** One note staged for export: the file name to offer and the full `.md` text. */
+export class ExportItem {
+  name: string = '';
+  content: string = '';
+  constructor(name: string, content: string) {
+    this.name = name;
+    this.content = content;
+  }
 }
 
 export class NoteTransfer {
@@ -129,7 +141,140 @@ export class NoteTransfer {
     }
   }
 
+  /**
+   * 导出指定的若干篇笔记（而不是整个笔记库）。
+   *
+   * 一篇时**不打包**：用户点「导出笔记」拿到的是一个 `.md`，双击就能在别的编辑器
+   * 里打开，而不是一个还得先解压的 zip。两篇以上才打包——多个同名文件没法一次
+   * 保存到同一个目录，zip 是唯一不丢文件的形态。
+   *
+   * 两个分支都写在 `cacheDir` 里再交给保存选择器，和 `exportZip()` 走同一条
+   * 「先落盘、再拷进 URI」的路径：picker 给出的 URI 只能按文件句柄写，不能直接
+   * 用文件系统 API 写。`finally` 必须把两条路各自的临时文件/目录都删掉——缓存
+   * 目录不会自己回收，导出过的笔记正文留在里面等同于多存了一份副本。
+   */
+  static async exportItems(context: common.UIAbilityContext, items: ExportItem[]): Promise<TransferResult> {
+    const result = new TransferResult();
+    if (items.length === 0) {
+      result.message = '没有可导出的笔记';
+      return result;
+    }
+    const stamp = NoteTransfer.stampLabel();
+    const cacheDir = context.cacheDir;
+    const stagingDir = `${cacheDir}/zhijian-export-${stamp}`;
+    const singlePath = `${cacheDir}/zhijian-export-${stamp}-single.md`;
+    const zipPath = `${cacheDir}/zhijian-notes-${stamp}.zip`;
+    try {
+      if (items.length === 1) {
+        const one = items[0];
+        const fileName = NoteTransfer.withMdSuffix(one.name);
+        NoteTransfer.writeText(singlePath, one.content);
+        const uri = await NoteTransfer.pickSaveUri(context, fileName);
+        if (uri.length === 0) {
+          result.cancelled = true;
+          result.message = '已取消导出';
+          return result;
+        }
+        NoteTransfer.copyToUri(singlePath, uri);
+        result.ok = true;
+        result.count = 1;
+        result.message = '已导出 1 篇笔记';
+        hilog.info(DOMAIN, TAG, 'export single %{public}s', fileName);
+        return result;
+      }
+
+      NoteTransfer.ensureDir(stagingDir);
+      // 文件名就是笔记自己的 `relPath`，**不加序号前缀**。`notes/` 是平铺目录，
+      // `relPath` 本身唯一，而 `0-a.md` 这样的名字解压后还得手工改回来才认识。
+      // 只有真的重名（调用方传了重复项）才补一个 ` (2)`。
+      const used: Set<string> = new Set<string>();
+      for (const item of items) {
+        const base = NoteTransfer.withMdSuffix(item.name);
+        let name = base;
+        let n: number = 2;
+        while (used.has(name)) {
+          name = NoteTransfer.withMdSuffix(`${item.name} (${n})`);
+          n++;
+        }
+        used.add(name);
+        NoteTransfer.writeText(`${stagingDir}/${name}`, item.content);
+      }
+      await zlib.compressFile(stagingDir, zipPath,
+        { level: zlib.CompressLevel.COMPRESS_LEVEL_DEFAULT_COMPRESSION });
+      const uri = await NoteTransfer.pickSaveUri(context, `zhijian-notes-${stamp}.zip`);
+      if (uri.length === 0) {
+        result.cancelled = true;
+        result.message = '已取消导出';
+        return result;
+      }
+      NoteTransfer.copyToUri(zipPath, uri);
+      result.ok = true;
+      result.count = items.length;
+      result.message = `已导出 ${items.length} 篇笔记`;
+      hilog.info(DOMAIN, TAG, 'export ok notes=%{public}d', items.length);
+      return result;
+    } catch (error) {
+      NoteTransfer.logError('export items failed', error);
+      result.ok = false;
+      result.message = '导出失败，请重试';
+      return result;
+    } finally {
+      NoteTransfer.removeTree(stagingDir);
+      NoteTransfer.removeFile(singlePath);
+      NoteTransfer.removeFile(zipPath);
+    }
+  }
+
+  /** 导出一篇笔记：`exportItems` 的单篇特例，文件名沿用笔记自己的 `relPath`。 */
+  static async exportNote(context: common.UIAbilityContext, note: Note): Promise<TransferResult> {
+    const content = FrontmatterCodec.build(note);
+    return NoteTransfer.exportItems(context, [new ExportItem(note.relPath, content)]);
+  }
+
   // ---------------------------------------------------------------- export
+
+  /** 统一弹一次保存选择器；用户取消时返回空串。 */
+  private static async pickSaveUri(context: common.UIAbilityContext, fileName: string): Promise<string> {
+    const documentPicker = new picker.DocumentViewPicker(context);
+    const options = new picker.DocumentSaveOptions();
+    options.newFileNames = [fileName];
+    const uris = await documentPicker.save(options);
+    if (uris.length === 0 || uris[0].length === 0) {
+      return '';
+    }
+    return uris[0];
+  }
+
+  /** 保证导出的文件名带 `.md`，否则系统会当成无后缀文件。 */
+  private static withMdSuffix(name: string): string {
+    const value = name.trim();
+    return value.toLowerCase().endsWith('.md') ? value : `${value}.md`;
+  }
+
+  /**
+   * 导出文件名里的时间戳：`20261026-1612`，不是裸毫秒。
+   *
+   * `1793002316511` 这种名字在文件管理器里既读不出日期，又长得几乎一样，
+   * 一天导三次就分不清哪个是哪个。本地时间而非 UTC：用户是在自己的时区里找文件。
+   */
+  private static stampLabel(): string {
+    const d = new Date();
+    const p2 = (n: number): string => n.toString().padStart(2, '0');
+    return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}`
+      + `-${p2(d.getHours())}${p2(d.getMinutes())}`;
+  }
+
+  /** 把文本写进缓存目录的临时文件，交给 `copyToUri` 使用。 */
+  private static writeText(path: string, content: string): void {
+    let file: fs.File | undefined = undefined;
+    try {
+      file = NoteTransfer.openOrThrow(path,
+        fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      fs.writeSync(file.fd, content);
+    } finally {
+      NoteTransfer.closeQuietly(file);
+    }
+  }
 
   /** Copies markdown (and the attachments folder) into the staging dir. */
   private static stageNotes(notesDir: string, stagingDir: string): number {

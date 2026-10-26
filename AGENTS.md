@@ -467,10 +467,10 @@ button.
 - **Slider settings are one row each** — label, slider, value side by side. They
   used to be two lines (title + value) plus a full-width slider below, and three
   of them ate most of the settings page.
-- **标签页 has sorting and filtering.** Sort by 名称 / 笔记数量, each with an
+- **标签页 has sorting and filtering.** Sort by 名称 / 数量, each with an
   ascending/descending toggle shown as an arrow on the active chip (tapping the
   active chip flips the direction, tapping the other switches the key); filter by
-  全部 / 有笔记, where 有笔记 hides the tags that exist only in the 名录 and are
+  全部 / 在用, where 在用 hides the tags that exist only in the 名录 and are
   used by no note (`store.countTag(tag) > 0`).
   The chips use the **same** capsule treatment as the notes page's 筛选条/排序条
   (`TagChipGroup` mirrors `ChipGroup`): same 34 vp shell, same 28 vp pills, same
@@ -1000,9 +1000,14 @@ an older device degrades instead of crashing. The HDS libraries live in the
   literal and `@Styles` function references as `StateStyles` values, so
   `.stateStyles()` is not usable here.
 - **The filter and sort groups share one row.** Two capsules side by side
-  (`ChipGroup(0)` = 全部/已归档/收藏, `ChipGroup(10)` = 最近修改/按标题/按创建),
+  (`ChipGroup(0)` = 全部/归档/收藏, `ChipGroup(10)` = 按修改/按标题/按创建),
   each `layoutWeight(1)`, capsule 34 vp / radius 17, chip 28 vp / radius 14,
   label 12 fp. Two stacked rows wasted a whole band and pushed the grid down.
+- **筛选项一律 2 字、排序项一律 3 字.** The chips are `layoutWeight(1)`, so equal
+  widths with unequal label lengths read as misaligned text — 「已归档」3 字 between
+  two 2-字 chips, and 「最近修改」4 字 between two 3-字 chips, both looked like an
+  error. Keep the two groups internally uniform when renaming a chip. The active
+  sort chip is the only one that carries an extra `↑` / `↓`.
 - **All floating surfaces share one inset.** The title row, the chip row and the
   bar are full width minus `SIDE_INSET` (16 vp). Never combine `width('100%')`
   with horizontal `margin`: width wins and the node stays full-bleed (the filter

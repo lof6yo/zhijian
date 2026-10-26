@@ -1,5 +1,5 @@
 import { MdBlock, emptyBlock } from './MdTypes';
-import { MdBlockView } from './MdView';
+import { MdBlockView, listNumberAt, tightTopAt } from './MdView';
 import { EditResult } from './MarkdownEdits';
 import { FormatBar } from './FormatBar';
 
@@ -237,13 +237,17 @@ export struct LiveBlockEditor {
           .width('100%')
           .padding({ bottom: 4 })
 
-          ForEach(this.previewBlocks, (pb: MdBlock) => {
+          ForEach(this.previewBlocks, (pb: MdBlock, index: number) => {
             MdBlockView({
               block: pb,
               bodySize: this.bodySize,
               lineHeight: this.lineHeight,
               dark: this.dark,
-              accentColor: this.accentColor
+              accentColor: this.accentColor,
+              // 预览也是正文：序号与紧贴关系要和阅读态一致，否则预览里一条列表
+              // 会带着一整段间距，看起来和提交后的排版不是同一份文档。
+              listNumber: listNumberAt(this.previewBlocks, index, pb),
+              tightTop: tightTopAt(this.previewBlocks, index, pb)
             })
           }, (pb: MdBlock) => `lbe-${pb.id}-${this.previewTick}`)
         }

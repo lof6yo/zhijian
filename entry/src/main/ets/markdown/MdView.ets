@@ -38,6 +38,7 @@ const SPACE_HEAD_BELOW_H1 = 10;
 const SPACE_HEAD_BELOW_H2 = 8;
 const SPACE_HEAD_BELOW_H3_H6 = 8;
 const LIST_INDENT = 20;        // 列表每级缩进
+const SPACE_LIST_TIGHT = 2;    // 相邻列表项之间的间距（它们是一条条，不是一个段落）
 const QUOTE_BAR_WIDTH = 3;     // 引用竖条宽度
 const QUOTE_DEPTH_INSET = 8;   // 引用每层额外缩进
 const CODE_RADIUS = 12;
@@ -79,28 +80,51 @@ export struct MdDocumentView {
   }
 
   private computeListNumber(index: number, block: MdBlock): number {
-    if (block.kind !== MdBlockKind.ListItem || !block.ordered) {
-      return 0;
-    }
-    let consecutive: number = 0;
-    for (let i: number = index; i >= 0; i--) {
-      const b: MdBlock = this.blocks[i];
-      if (b.kind === MdBlockKind.ListItem && b.ordered && b.indent === block.indent) {
-        consecutive++;
-      } else {
-        break;
-      }
-    }
-    return block.seq + consecutive - 1;
+    return listNumberAt(this.blocks, index, block);
   }
 
   private isTightTop(index: number, block: MdBlock): boolean {
-    if (index === 0) {
-      return false;
-    }
-    const prev: MdBlock = this.blocks[index - 1];
-    return block.kind === MdBlockKind.ListItem && prev.kind === MdBlockKind.ListItem;
+    return tightTopAt(this.blocks, index, block);
   }
+}
+
+/**
+ * 第几号有序列表项（`1.` / `2.` …），非有序项或非列表项返回 0。
+ *
+ * 抽成模块级函数而不是 `MdDocumentView` 的私有方法：**渲染列表项的每个宿主都要
+ * 算出同一个号**。之前只有 `MdDocumentView` 算，而笔记页真正渲染正文的是
+ * `EditableDocument`——它直接调 `MdBlockView` 且不传 `listNumber`，于是阅读页里
+ * 所有有序列表都显示成 `0.`。一个必须两处都用的规则不能只写在一处。
+ */
+export function listNumberAt(blocks: MdBlock[], index: number, block: MdBlock): number {
+  if (block.kind !== MdBlockKind.ListItem || !block.ordered) {
+    return 0;
+  }
+  let consecutive: number = 0;
+  for (let i: number = index; i >= 0; i--) {
+    const b: MdBlock = blocks[i];
+    if (b.kind === MdBlockKind.ListItem && b.ordered && b.indent === block.indent) {
+      consecutive++;
+    } else {
+      break;
+    }
+  }
+  return block.seq + consecutive - 1;
+}
+
+/**
+ * 这一块是否紧贴着上一块（两个相邻列表项之间不该再走一个 16 vp 的段间距）。
+ *
+ * 同样是每个宿主都要算的规则，理由与 `listNumberAt` 一致：`EditableDocument`
+ * 漏传它，阅读页里的列表就一项一段、行距看起来大得离谱——用户报的「列表行距
+ * 过大」正是这个默认值，不是字体行高。
+ */
+export function tightTopAt(blocks: MdBlock[], index: number, block: MdBlock): boolean {
+  if (index === 0) {
+    return false;
+  }
+  const prev: MdBlock = blocks[index - 1];
+  return block.kind === MdBlockKind.ListItem && prev.kind === MdBlockKind.ListItem;
 }
 
 // ===== 单块视图（笔记列表等可复用） =====
@@ -316,7 +340,7 @@ export struct MdBlockView {
     .width('100%')
     .alignItems(VerticalAlign.Top)
     .padding({ left: this.block.indent * LIST_INDENT })
-    .margin({ top: this.tightTop ? 4 : SPACE_BLOCK })
+    .margin({ top: this.tightTop ? SPACE_LIST_TIGHT : SPACE_BLOCK })
   }
 
   @Builder

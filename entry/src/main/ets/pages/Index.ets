@@ -13,11 +13,12 @@ import { MaterialLayer } from '../components/MaterialLayer';
 import { TrashPage } from './TrashPage';
 import { ReaderPage, ReaderParam } from './ReaderPage';
 import { WebDavPage } from './WebDavPage';
-import { NoteTransfer, TransferResult } from '../services/NoteTransfer';
+import { NoteTransfer, TransferResult, ExportItem } from '../services/NoteTransfer';
+import { FrontmatterCodec } from '../services/Frontmatter';
 import { Credentials } from '../services/Credentials';
 import { SyncEngine } from '../services/SyncEngine';
 import { AutoSync } from '../services/AutoSync';
-import { AccentScheme, Palette } from '../common/Palette';
+import { AccentScheme, Palette, TagHeat } from '../common/Palette';
 import { FONT_SIZE_MAX, FONT_SIZE_MIN, CARD_RADIUS_MAX, CARD_RADIUS_MIN, CARD_RADIUS_DEFAULT,
   GEAR_ADAPTIVE, GEAR_HIGH, GEAR_LOW, GEAR_MEDIUM,
   GLASS_LEVEL_DEFAULT, GLASS_LEVEL_MAX, GLASS_LEVEL_MIN,
@@ -86,6 +87,21 @@ struct Index {
   @Local searchExpanded: boolean = false;
   @Local filterMode: number = 0;
   @Local sortMode: number = 0;
+  /**
+   * 排序方向：false = 升序，true = 降序。
+   *
+   * 与标签页的 `tagSortDesc` 是同一套语义，但**分成两个字段**：两个页面的排序
+   * 是各自的选择，在笔记页切到「按标题降序」不该顺手把标签页也翻过来。
+   */
+  @Local sortDesc: boolean = true;
+  /**
+   * 多选态：是否在多选中、以及勾了哪些 id。
+   *
+   * `selectedIds` 是 `@Local` 数组，所以**只能整体赋值**（`concat`/`filter`），
+   * `push` 不会重绘。
+   */
+  @Local selecting: boolean = false;
+  @Local selectedIds: string[] = [];
   @Local listVersion: number = 0;
   @Local notesSnapshot: Note[] = [];
   /**
@@ -121,7 +137,7 @@ struct Index {
   @Local tagSortKey: number = 0;
   /** 标签页排序方向：false = 升序，true = 降序。 */
   @Local tagSortDesc: boolean = false;
-  /** 标签页筛选：0 = 全部，1 = 有笔记在用的（名录里建了但没人用的不算）。 */
+  /** 标签页筛选：0 = 全部，1 = 只在用的（名录里建了但没人用的不算）。 */
   @Local tagFilter: number = 0;
   /** 新建 / 修改标签名的输入面板是否打开。 */
   @Local tagNameShown: boolean = false;
@@ -374,17 +390,38 @@ struct Index {
     return count;
   }
 
+  /**
+   * 排序。
+   *
+   * 三种依据各自的**自然方向**不同：「最近修改」「按创建」是新的在前（降序），
+   * 「按标题」是 A→Z（升序）。所以先按依据做一次基准排序，再由 `sortDesc` 决定
+   * 要不要整体翻转——翻转而不是给每个比较函数写两遍，是因为三种依据的「反向」
+   * 定义完全一致（把结果倒过来），写两遍迟早有一处反了。
+   *
+   * `sortDesc` 的默认值是 `true`，于是「最近修改」保持原来的新在前，而用户点一下
+   * 「按标题」就得到 A→Z——不是 Z→A。基准方向见 `sortDefaultDesc()`。
+   */
   private applySort(list: Note[]): void {
     if (this.sortMode === 1) {
       list.sort((a: Note, b: Note): number => a.title.localeCompare(b.title, 'zh-CN'));
-      return;
+    } else if (this.sortMode === 2) {
+      list.sort((a: Note, b: Note): number => a.createdAt - b.createdAt);
+    } else {
+      // 最近修改。置顶那一档已经去掉，所以这里只剩时间。
+      list.sort((a: Note, b: Note): number => a.updatedAt - b.updatedAt);
     }
-    if (this.sortMode === 2) {
-      list.sort((a: Note, b: Note): number => b.createdAt - a.createdAt);
-      return;
+    if (this.sortDesc) {
+      list.reverse();
     }
-    // 最近修改。置顶那一档已经去掉，所以这里只剩时间。
-    list.sort((a: Note, b: Note): number => b.updatedAt - a.updatedAt);
+  }
+
+  /**
+   * 某个排序依据的「自然」方向。切到这一档时用它初始化 `sortDesc`，
+   * 这样每种依据第一次点开都是它最常用的那个方向。
+   */
+  private sortDefaultDesc(mode: number): boolean {
+    // 0 最近修改 / 2 按创建：新的在前。1 按标题：A→Z。
+    return mode !== 1;
   }
 
   private matches(note: Note, q: string): boolean {
@@ -1332,15 +1369,39 @@ struct Index {
                     updatedAt: note.updatedAt,
                     accentColor: this.accentColor(),
                     accentChipColor: this.accentChipColor(),
+                    onAccentColor: this.onAccentColor(),
                     cornerRadius: this.cardRadius,
                     glassOn: this.glassOn(),
                     glassGear: this.glassLevel,
                     glassTint: this.glassTint(),
                     darkTheme: this.activeDark(),
+                    selecting: this.selecting,
+                    selected: this.selectedIds.includes(note.id),
                     onOpen: (id: string) => {
                       const target = this.store.find(id);
                       if (target !== undefined) {
                         this.openNote(target);
+                      }
+                    },
+                    onToggleSelect: (id: string) => {
+                      // 已在多选里就是勾/取消勾；不在就是「进入多选并选上这一张」
+                      // ——长按菜单里的「多选」走的是同一条路径。
+                      if (this.selecting) {
+                        this.toggleSelect(id);
+                      } else {
+                        this.enterSelect(id);
+                      }
+                    },
+                    onExport: (id: string) => {
+                      const target = this.store.find(id);
+                      if (target !== undefined) {
+                        this.exportNote(target);
+                      }
+                    },
+                    onDuplicate: (id: string) => {
+                      const target = this.store.find(id);
+                      if (target !== undefined) {
+                        this.duplicateNote(target);
                       }
                     },
                     onArchive: (id: string) => {
@@ -1583,14 +1644,260 @@ struct Index {
     // No search field here: search lives in the title row and expands in place.
     // The single filter row is the only pinned chrome above the grid, so the
     // header is now one compact band instead of three stacked rows.
-    Row({ space: 8 }) {
-      this.ChipGroup(0)
-      this.ChipGroup(10)
+    //
+    // 多选态下这一行整条换成动作条，高度与筛选条相同（34 vp），所以进出多选
+    // 网格不会上下一跳。
+    if (this.selecting) {
+      this.SelectionHeader()
+    } else {
+      Row({ space: 8 }) {
+        this.ChipGroup(0)
+        this.ChipGroup(10)
+      }
+      .width('100%')
+      // The measured title row band on this device; the smaller value than before
+      // reflects the title row no longer reserving a separate large-title band.
+      //
+      // `+8` on top of `TITLE_BAR_CLEARANCE`: 96 vp is exactly the title bar's own
+      // bottom edge (285 px / 3), so a filter row pinned at 96 sat flush against
+      // the bar with zero air — reported as 「离顶部按钮过近」. The clearance must
+      // keep meaning "the bar ends here", so the gap is added separately.
+      .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET, top: this.TITLE_BAR_CLEARANCE + 8, bottom: 10 })
+    }
+  }
+
+  /**
+   * 多选态的动作条：已选数量 + 归档 / 删除 / 导出 + 取消。
+   *
+   * 放在页头而不是页底：底部是 HDS 的浮动页签栏（`barOverlap`），一条动作条压在
+   * 它上面会互相遮挡；页头正好是用户刚长按完卡片之后视线所在的位置。
+   *
+   * 三个动作的确认策略不同：归档可逆（笔记只是从「全部」移到「已归档」），不问；
+   * 删除不可逆到需要一次确认（30 天回收站），批量删除更是一次处理很多篇，必须
+   * 报出数量；导出是只读操作，不问，直接弹保存选择器。
+   */
+  @Builder
+  SelectionHeader() {
+    // 外层只负责左右内缩：胶囊本身必须是完整一块（材质走 `matchParent`，如果
+    // 用 padding 缩内容盒，承载层会跟着缩进去，边上露出一圈没材质的边）。
+    Column() {
+      Stack({ alignContent: Alignment.Center }) {
+        this.GlassCapsuleSurface(17)
+        Row({ space: 2 }) {
+          Text(`已选 ${this.selectedIds.length} 项`)
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.accentColor())
+            .padding({ left: 12, right: 8 })
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          this.SelectionAction('归档', false, () => {
+            this.archiveSelected();
+          })
+          this.SelectionAction('删除', true, () => {
+            this.confirmDeleteSelected();
+          })
+          this.SelectionAction('导出', false, () => {
+            this.exportSelected();
+          })
+          this.SelectionAction('取消', false, () => {
+            this.exitSelect();
+          })
+        }
+        .width('100%')
+        .height('100%')
+        .padding(3)
+      }
+      .width('100%')
+      .height(34)
+      .borderRadius(17)
+      .clip(true)
     }
     .width('100%')
-    // The measured title row band on this device; the smaller value than before
-    // reflects the title row no longer reserving a separate large-title band.
-    .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET, top: this.TITLE_BAR_CLEARANCE, bottom: 10 })
+    .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET, top: this.TITLE_BAR_CLEARANCE + 8, bottom: 10 })
+  }
+
+  @Builder
+  SelectionAction(label: string, destructive: boolean, onTap: () => void) {
+    Text(label)
+      .fontSize(12)
+      .fontColor(destructive ? $r('app.color.danger') : this.accentColor())
+      .textAlign(TextAlign.Center)
+      .layoutWeight(1)
+      .height(28)
+      .borderRadius(14)
+      .maxLines(1)
+      .onClick(onTap)
+      .accessibilityText(label)
+  }
+
+  /**
+   * 胶囊外壳：材质 + 遮罩（或手搓玻璃 + 一道顶光）。
+   *
+   * 抽出这一层是因为筛选条 / 排序条 / 多选动作条是**同一个控件家族**。三处各写
+   * 一遍材质与顶光，改一处就会漏两处，页面立刻看起来像三个人做的。
+   */
+  @Builder
+  GlassCapsuleSurface(radius: number) {
+    if (this.glassOn()) {
+      MaterialLayer({
+        radius: radius,
+        gear: this.glassLevel
+      })
+      Column()
+        .width('100%')
+        .height('100%')
+        .borderRadius(radius)
+        .backgroundColor(this.glassTint())
+    } else {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundEffect(this.glassEffect())
+      Column()
+        .width('100%')
+        .height('100%')
+        .linearGradient({
+          angle: 180,
+          colors: [[$r('app.color.glass_hi'), 0.0], ['#00FFFFFF', this.glassSheenStop()]]
+        })
+    }
+  }
+
+  // ------------------------------------------------------------ selection
+
+  /** 进入多选，并把长按的那张卡**直接算作已选**——菜单里点「多选」的人已经选好了。 */
+  private enterSelect(noteId: string): void {
+    this.selecting = true;
+    this.selectedIds = [noteId];
+  }
+
+  private toggleSelect(noteId: string): void {
+    if (this.selectedIds.includes(noteId)) {
+      this.selectedIds = this.selectedIds.filter((id: string) => id !== noteId);
+    } else {
+      // 整体赋值，不 `push`：`@Local` 数组只在赋值时被观察到。
+      this.selectedIds = this.selectedIds.concat([noteId]);
+    }
+  }
+
+  private exitSelect(): void {
+    this.selecting = false;
+    this.selectedIds = [];
+  }
+
+  private selectedNotes(): Note[] {
+    const result: Note[] = [];
+    for (const id of this.selectedIds) {
+      const note = this.store.find(id);
+      if (note !== undefined) {
+        result.push(note);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * 批量归档。可逆，所以不确认；动作完成后退出多选——用户选这一批就是为了做这
+   * 一件事，留着选中态会让格子里的卡全都不见了却还显示「已选 3 项」。
+   */
+  private archiveSelected(): void {
+    const targets = this.selectedNotes();
+    if (targets.length === 0) {
+      this.exitSelect();
+      return;
+    }
+    let changed: number = 0;
+    for (const note of targets) {
+      if (!note.archived) {
+        this.store.toggleArchive(note);
+        changed++;
+      }
+    }
+    this.refreshList();
+    this.exitSelect();
+    this.getUIContext().getPromptAction().showToast({
+      message: changed > 0 ? `已归档 ${changed} 篇` : '这批笔记已在归档里'
+    });
+  }
+
+  private confirmDeleteSelected(): void {
+    const count = this.selectedIds.length;
+    if (count === 0) {
+      return;
+    }
+    // 「已归档」的笔记删起来也没有额外代价，所以一句话说清后果就够了：进回收站、
+    // 30 天内可恢复。
+    this.getUIContext().showAlertDialog({
+      title: `删除 ${count} 篇笔记`,
+      message: `这 ${count} 篇笔记会移入回收站，保留 30 天。`,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '删除',
+        fontColor: $r('app.color.danger'),
+        action: () => {
+          const targets = this.selectedNotes();
+          let removed: number = 0;
+          for (const note of targets) {
+            if (this.store.deleteNote(note)) {
+              removed++;
+            }
+          }
+          this.refreshList();
+          this.exitSelect();
+          this.getUIContext().getPromptAction().showToast({ message: `已移入回收站 ${removed} 篇` });
+        }
+      }
+    });
+  }
+
+  /**
+   * 导出选中的笔记。
+   *
+   * 正文用 `FrontmatterCodec.build(note)` 而不是 `note.body`：导出的 `.md` 要能
+   * 被别的设备导回来，而身份（`id`）、标签与时间戳全在 frontmatter 里——只写正文
+   * 会导出一份「看起来一样但不认识」的笔记。
+   *
+   * 一篇走单文件保存，多篇由 `NoteTransfer.exportItems` 打包成 zip，这里不用分叉。
+   */
+  private exportSelected(): void {
+    const targets = this.selectedNotes();
+    if (targets.length === 0) {
+      this.exitSelect();
+      return;
+    }
+    const items: ExportItem[] = [];
+    for (const note of targets) {
+      items.push(new ExportItem(note.relPath, FrontmatterCodec.build(note)));
+    }
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    NoteTransfer.exportItems(context, items).then((result: TransferResult) => {
+      this.getUIContext().getPromptAction().showToast({ message: result.message });
+      // 导出成功后退出多选；取消保存则留在原地，用户的勾选不该因为点了一下
+      // 「取消」就全丢。
+      if (result.ok) {
+        this.exitSelect();
+      }
+    });
+  }
+
+  /** 长按菜单 › 导出 MD：单篇。 */
+  private exportNote(note: Note): void {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    NoteTransfer.exportNote(context, note).then((result: TransferResult) => {
+      this.getUIContext().getPromptAction().showToast({ message: result.message });
+    });
+  }
+
+  /** 长按菜单 › 创建副本。副本插在原笔记紧后面，所以刷新后两张卡相邻。 */
+  private duplicateNote(note: Note): void {
+    const copy = this.store.duplicateNote(note);
+    this.refreshList();
+    this.getUIContext().getPromptAction().showToast({ message: `已创建「${copy.title}」` });
   }
 
   /**
@@ -1608,36 +1915,26 @@ struct Index {
   @Builder
   ChipGroup(base: number) {
     Stack({ alignContent: Alignment.Center }) {
-      if (this.glassOn()) {
-        MaterialLayer({
-          radius: 17,
-          gear: this.glassLevel
-        })
-        Column()
-          .width('100%')
-          .height('100%')
-          .borderRadius(17)
-          .backgroundColor(this.glassTint())
-      } else {
-        Column()
-          .width('100%')
-          .height('100%')
-          .backgroundEffect(this.glassEffect())
-        Column()
-          .width('100%')
-          .height('100%')
-          .linearGradient({
-            angle: 180,
-            colors: [[$r('app.color.glass_hi'), 0.0], ['#00FFFFFF', this.glassSheenStop()]]
-          })
-      }
+      this.GlassCapsuleSurface(17)
       Row({ space: 2 }) {
         if (base === 0) {
+          // 三个筛选项统一 **2 字**（全部 / 归档 / 收藏）。三个 chip 是等分宽度的，
+          // 字数一旦不等（「已归档」3 字夹在两个字中间），文字看起来就是一高一低，
+          // 像没对齐。
           this.FilterChip('全部', 0)
-          this.FilterChip('已归档', 1)
+          this.FilterChip('归档', 1)
           this.FilterChip('收藏', 2)
         } else {
-          this.FilterChip('最近修改', 10)
+          // 方向做进**当前档**的标签里（`按标题 ↑`），与标签页的 `TagChip` 完全同款：
+          // 点当前项翻转方向、点另一项换依据。另配一个箭头按钮的话，一行里要挤下
+          // 三档 + 一个方向键，每一档都点不准。
+          //
+          // 三个排序项统一 **3 字**（`按修改 / 按标题 / 按创建`）。原先「最近修改」
+          // 是 4 字、另两个 3 字，三个等分 chip 里文字宽度不一，看起来像没对齐。
+          // 换成统一的「按 + 字段」句式后，三个词读起来是一组，而不是两个短词夹一个长词。
+          //
+          // 只传 base label，箭头由 `FilterChip` 在构建体内自己算——见 `chipText`。
+          this.FilterChip('按修改', 10)
           this.FilterChip('按标题', 11)
           this.FilterChip('按创建', 12)
         }
@@ -1736,7 +2033,7 @@ struct Index {
    */
   @Builder
   FilterChip(label: string, mode: number) {
-    Text(label)
+    Text(this.chipText(label, mode))
       .fontSize(12)
       .fontWeight(this.chipSelected(mode) ? FontWeight.Medium : FontWeight.Normal)
       .fontColor(this.chipSelected(mode) ? this.accentColor() : $r('app.color.text_secondary'))
@@ -1754,10 +2051,41 @@ struct Index {
           // 换筛选档 = 换一个问题，「含归档」是上一个问题上的决定。
           this.includeArchived = false;
         } else {
-          this.sortMode = mode - 10;
+          this.onSortChipTap(mode - 10);
         }
       })
-      .accessibilityText(label)
+      .accessibilityText(this.chipText(label, mode))
+  }
+
+  /**
+   * 药丸的文字：排序档在选中时带上方向箭头。
+   *
+   * 读的是 `this.sortMode` / `this.sortDesc`，而调用点在 `Text(...)` 里——
+   * 也就是 `@Builder` 的构建体内部。这一点是必须的，不是风格问题：把结果当参数
+   * 传进来（`this.FilterChip(this.sortLabel(...), 10)`）只在调用处求值一次，
+   * `@Local` 读的不是被构建节点的依赖，于是列表换成了标题序、标签却还写着
+   * 「最近修改 ↓」（实测）。
+   */
+  private chipText(label: string, mode: number): string {
+    if (mode < 10 || this.sortMode !== mode - 10) {
+      return label;
+    }
+    return `${label} ${this.sortDesc ? '↓' : '↑'}`;
+  }
+
+  /**
+   * 排序项的点击：点当前项翻转升降序，点另一项换依据并回到该依据的自然方向。
+   *
+   * 与标签页 `onTagChipTap` 同一套规则——两个页面的排序控件外观一致，行为也必须
+   * 一致，否则用户在两个页面学到的是两种手感。
+   */
+  private onSortChipTap(mode: number): void {
+    if (this.sortMode === mode) {
+      this.sortDesc = !this.sortDesc;
+      return;
+    }
+    this.sortMode = mode;
+    this.sortDesc = this.sortDefaultDesc(mode);
   }
 
   private chipSelected(mode: number): boolean {
@@ -1890,6 +2218,9 @@ struct Index {
         // 排序 + 筛选。样式与笔记页的筛选条 / 排序条**完全一致**：同样的胶囊
         // 外壳、同样的 34 vp 高、同样的 28 vp 药丸。同一类控件在两个页面上
         // 长成两个样子，是最容易让人觉得「这个 app 是拼起来的」。
+        //
+        // 顶部同样留出 `TITLE_BAR_CLEARANCE + 8`：96 vp 正好是标题栏自己的下边缘，
+        // 贴着它排会让控件看起来黏在按钮上。
         Row({ space: 8 }) {
           // 顺序与笔记页一致：**先筛选、后排序**。两个页面的控件长一样，
           // 摆的顺序也该一样，否则用户每次都要重新找一遍。
@@ -1898,40 +2229,28 @@ struct Index {
         }
         .width('100%')
         .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
+        .margin({ top: 8 })
 
-        List({ space: 8, scroller: this.tagsScroller }) {
-          ForEach(this.visibleTags(), (tag: string) => {
-            ListItem() {
-              Row() {
-                Text(`# ${tag}`)
-                  .fontSize(16)
-                  .fontColor($r('app.color.text_primary'))
-                Blank()
-                Text(`${this.store.countTag(tag)}`)
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
-              }
-              .width('100%')
-              .padding(14)
-              .onClick(() => {
-                this.filterByTag(tag);
-              })
-              .bindContextMenu(this.TagMenu(tag), ResponseType.LongPress, {
-                preview: MenuPreviewMode.NONE
-              })
-            }
-            .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
-            .backgroundColor(Color.Transparent)
-            .borderRadius(this.cardRadius)
-            .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
-          }, (tag: string) => tag)
+        // 标签是**药丸**，不是等长的列表行：长度由名字自己决定，从左到右、从上
+        // 到下流式排布。等长行会让人以为每一行是一个「条目」，而标签本质上是
+        // 一堆可以一眼扫完的关键词。
+        Scroll(this.tagsScroller) {
+          Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Start }) {
+            ForEach(this.visibleTags(), (tag: string) => {
+              this.TagPill(tag)
+            }, (tag: string) => `pill-${tag}-${this.store.countTag(tag)}`)
+          }
+          .width('100%')
+          .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
         }
         .width('100%')
         .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        // `Scroll` 的子节点默认**垂直居中**（`align` 的默认值），只有一颗标签时
+        // 药丸会飘在屏幕正中。标签是从上往下读的，必须顶到上沿。
+        .align(Alignment.TopStart)
+        // 与笔记页一致：底部留出浮动页签栏的高度，否则最后一排药丸被压在栏下。
         .contentEndOffset(120)
-        // 卡片不能贴着屏幕边：与笔记页的网格一样留出 SIDE_INSET，
-        // 否则标签行会满宽，视觉上像一张被拉扁的横幅。
-        .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
       }
     }
     .width('100%')
@@ -2103,36 +2422,21 @@ struct Index {
   @Builder
   TagChipGroup(kind: number) {
     Stack({ alignContent: Alignment.Center }) {
-      if (this.glassOn()) {
-        MaterialLayer({
-          radius: 17,
-          gear: this.glassLevel
-        })
-        Column()
-          .width('100%')
-          .height('100%')
-          .borderRadius(17)
-          .backgroundColor(this.glassTint())
-      } else {
-        Column()
-          .width('100%')
-          .height('100%')
-          .backgroundEffect(this.glassEffect())
-        Column()
-          .width('100%')
-          .height('100%')
-          .linearGradient({
-            angle: 180,
-            colors: [[$r('app.color.glass_hi'), 0.0], ['#00FFFFFF', this.glassSheenStop()]]
-          })
-      }
+      this.GlassCapsuleSurface(17)
       Row({ space: 2 }) {
         if (kind === 0) {
-          this.TagChip(this.tagSortKey === 0 ? `名称 ${this.tagSortDesc ? '↓' : '↑'}` : '名称', 0, 0)
-          this.TagChip(this.tagSortKey === 1 ? `数量 ${this.tagSortDesc ? '↓' : '↑'}` : '数量', 0, 1)
+          // 只传基础文字，箭头在 `TagChip` 的构建体内算（同 `FilterChip.chipText`）：
+          // `@Builder` 的参数按值传，在外面算好再传进来，「箭头」就不会随
+          // `tagSortKey` / `tagSortDesc` 重绘——实测点「数量」后列表已按数量重排，
+          // 标签却还写着「名称 ↑」。
+          this.TagChip('名称', 0, 0)
+          this.TagChip('数量', 0, 1)
         } else {
+          // 两个筛选项统一 **2 字**（全部 / 在用）。「有笔记」是 3 字，夹在「全部」
+          // 旁边会让两个等分 chip 的文字看起来不一样宽；「在用」与它的含义一致
+          // （名录里建了但没有任何笔记使用的标签不算），也更短。
           this.TagChip('全部', 1, 0)
-          this.TagChip('有笔记', 1, 1)
+          this.TagChip('在用', 1, 1)
         }
       }
       .width('100%')
@@ -2154,7 +2458,7 @@ struct Index {
    */
   @Builder
   TagChip(label: string, group: number, index: number) {
-    Text(label)
+    Text(this.tagChipText(label, group, index))
       .fontSize(12)
       .fontWeight(this.tagChipSelected(group, index) ? FontWeight.Medium : FontWeight.Normal)
       .fontColor(this.tagChipSelected(group, index) ? this.accentColor() : $r('app.color.text_secondary'))
@@ -2169,7 +2473,20 @@ struct Index {
       .onClick(() => {
         this.onTagChipTap(group, index);
       })
-      .accessibilityText(label)
+      .accessibilityText(this.tagChipText(label, group, index))
+  }
+
+  /**
+   * 标签页药丸的文字：排序档在选中时带上方向箭头。
+   *
+   * 必须在 `TagChip` 的构建体内调用——与 `chipText` 同一个理由：`@Builder` 的
+   * 参数按值传，箭头在外面算出来就不会随排序状态重绘。
+   */
+  private tagChipText(label: string, group: number, index: number): string {
+    if (group !== 0 || this.tagSortKey !== index) {
+      return label;
+    }
+    return `${label} ${this.tagSortDesc ? '↓' : '↑'}`;
   }
 
   private tagChipSelected(group: number, index: number): boolean {
@@ -2198,8 +2515,8 @@ struct Index {
    * 「按名称」用 `localeCompare`，与 `NoteStore.collectTags()` 的默认排序一致，
    * 所以切到按名称升序时顺序不会突然变一次。
    *
-   * 筛选「有笔记」剔掉只在名录里、没有任何笔记使用的标签。之前这一档是「置顶」，
-   * 置顶功能已经整体移除；这里改成「有笔记」而不是干脆删掉这一档，是因为名录里
+   * 筛选「在用」剔掉只在名录里、没有任何笔记使用的标签。之前这一档是「置顶」，
+   * 置顶功能已经整体移除；这里改成「在用」而不是干脆删掉这一档，是因为名录里
    * 确实会有建了还没用上的标签，而它们和真正在用的标签混在一起时，标签页没法回答
    * 「哪些标签是我真的在用的」。
    */
@@ -2225,6 +2542,145 @@ struct Index {
     if (this.tagSortDesc) {
       tags.reverse();
     }
+  }
+
+  // ------------------------------------------------------------ tag pills
+
+  /** 全场最高的标签笔记数。热度档位是**相对**的，这是唯一稳定的参照系。 */
+  private tagMaxCount(): number {
+    let max: number = 0;
+    for (const tag of this.tagsSnapshot) {
+      const count = this.store.countTag(tag);
+      if (count > max) {
+        max = count;
+      }
+    }
+    return max;
+  }
+
+  /**
+   * 一颗标签药丸。
+   *
+   * 三个决定：
+   *
+   * 1. **宽度由内容决定，不设 `layoutWeight`。** 这正是「不等长」的含义——标签是
+   *    关键词，数量和长度本身就是信息；等长行会把它读成一份列表。
+   * 2. **表面是 `MaterialLayer` 承载的**，不是 `.systemMaterial()`：页面内容区不在
+   *    沉浸光感允许的范围内（同一个原因见 `ChipGroup` 的注释）。材质之上压一层
+   *    该标签热度的浅色遮罩，色相从蓝到红随笔记数量走。
+   * 3. **颗数写在药丸里**（`# 工作 12`）。它是色相的依据，不写出来用户只能猜为什么
+   *    这颗是红的——色相不该是唯一的信息通道。
+   */
+  @Builder
+  TagPill(tag: string) {
+    // 表面必须走 `.background(builder)`，**不能**做成 Stack 的兄弟节点。
+    // `MaterialLayer` 用 `LayoutPolicy.matchParent` 定尺寸：在 Stack 里它按「可用
+    // 空间」解析，于是一颗药丸会撑满整个滚动区（实测：一颗 `# Markdowns` 占了
+    // 48…1248 × 450…2208 的整块）。`.background()` 是拿节点已经量好的盒子去排，
+    // 尺寸无从被它影响——这与笔记卡片踩的是同一个坑。
+    Row({ space: 6 }) {
+      Text(`# ${tag}`)
+        .fontSize(14)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.tagHeatHue(tag))
+        .maxLines(1)
+      Text(`${this.store.countTag(tag)}`)
+        .fontSize(11)
+        .fontColor(this.tagHeatHue(tag))
+        .opacity(0.75)
+    }
+    .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+    .background(this.TagPillSurface(tag), CARD_BG_OPTIONS)
+    .borderRadius(16)
+    .border({ width: 1, color: this.tagHeatBorder(tag) })
+    // 材质画在 `backgroundColor` 之上、子节点之下，所以遮罩是 builder 里的第二层，
+    // 不是这颗 Row 的 backgroundColor（那会盖住材质）。
+    .backgroundColor(Color.Transparent)
+    .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.95 })
+    .onClick(() => {
+      this.filterByTag(tag);
+    })
+    .bindContextMenu(this.TagMenu(tag), ResponseType.LongPress, {
+      preview: MenuPreviewMode.NONE
+    })
+    .accessibilityText(`标签 ${tag}，${this.store.countTag(tag)} 篇笔记`)
+    .margin({ right: 8, bottom: 8 })
+  }
+
+  /**
+   * 药丸的表面：沉浸光感承载层 + 这一档热度的浅色遮罩。
+   *
+   * 与 `CardSurface` 同构（carrier 在下、遮罩在上），区别只在遮罩的色相与圆角：
+   * 卡片是一个应用同一套表面，标签药丸要按热度换色。
+   */
+  @Builder
+  TagPillSurface(tag: string) {
+    Stack({ alignContent: Alignment.TopStart }) {
+      if (this.glassOn()) {
+        MaterialLayer({
+          radius: 16,
+          gear: this.glassLevel
+        })
+      }
+      Column()
+        .width('100%')
+        .height('100%')
+        .borderRadius(16)
+        .backgroundColor(this.glassOn() ? this.tagHeatTint(tag) : this.tagHeatOpaque(tag))
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  /** 这颗药丸的档位（0 冷 … 3 热）。 */
+  private tagBucket(tag: string): number {
+    return TagHeat.bucket(this.store.countTag(tag), this.tagMaxCount());
+  }
+
+  private tagHeatHue(tag: string): string {
+    return TagHeat.hue(this.tagBucket(tag), this.activeDark());
+  }
+
+  /** 药丸底色：同一路色相的极低不透明度，让材质仍然透出来。 */
+  private tagHeatTint(tag: string): string {
+    const alpha: number = this.activeDark() ? 0.20 : 0.13;
+    return Index.withAlpha(this.tagHeatHue(tag), alpha);
+  }
+
+  /**
+   * 没有沉浸光感时的药丸底色。
+   *
+   * 不能复用 `tagHeatTint`：那个 13% 的色相是**压在材质上**的一层，直接铺在页面
+   * 背景下会淡到看不出这颗药丸在哪一档（材质的模糊与折射提供了大部分的「板」）。
+   * 没有材质时药丸得自己成为一块板，所以不透明度高得多。
+   */
+  private tagHeatOpaque(tag: string): string {
+    const alpha: number = this.activeDark() ? 0.24 : 0.16;
+    return Index.withAlpha(this.tagHeatHue(tag), alpha);
+  }
+
+  private tagHeatBorder(tag: string): string {
+    const alpha: number = this.activeDark() ? 0.28 : 0.18;
+    return Index.withAlpha(this.tagHeatHue(tag), alpha);
+  }
+
+  /**
+   * `#RRGGBB` → 带指定不透明度的 `#AARRGGBB`。
+   *
+   * 必须自己算：`Color.Transparent` 在非预乘插值里会往黑里沉（露出一道灰），而
+   * `$r()` 拿不到 hex。与 `NoteCard.withAlpha` 是同一个理由，两份实现是因为它们的
+   * 输入（资源色 vs 运行期 hex）不同，各自只需处理自己那一种。
+   */
+  private static withAlpha(hex: string, alpha: number): string {
+    const a: number = Math.round(Math.max(0, Math.min(1, alpha)) * 255);
+    const aHex: string = a.toString(16).padStart(2, '0').toUpperCase();
+    if (hex.length === 9 && hex.startsWith('#')) {
+      return '#' + aHex + hex.substring(3);
+    }
+    if (hex.length === 7 && hex.startsWith('#')) {
+      return '#' + aHex + hex.substring(1);
+    }
+    return hex;
   }
 
   // -------------------------------------------------------------- settings
