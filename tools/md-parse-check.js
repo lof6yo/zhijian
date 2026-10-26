@@ -101,7 +101,7 @@ const CORPUS_CASES = [
         code: 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;'
       },
       { kind: 'Code', lang: '', code: 'tilde fence' },
-      { kind: 'Chart', lang: 'mermaid', code: 'graph TD; A-->B;' },
+      { kind: 'Code', lang: 'mermaid', code: 'graph TD; A-->B;' },
       { kind: 'Code', lang: '', code: '未闭合的围栏\n还有一行' }
     ]
   },
@@ -179,8 +179,16 @@ const CORPUS_CASES = [
   },
   {
     file: '11-chart.md',
-    about: '图表语言名的围栏 → Chart 块，code 是原始图定义（缩进保留）',
-    blocks: [{ kind: 'Chart', lang: 'mermaid', code: 'graph TD\n  A --> B' }]
+    about: '图表语言名的围栏不再分叉：mermaid / echarts 一律是普通代码块（Chart 块与它的 Web 引擎已移除）',
+    blocks: [{ kind: 'Code', lang: 'mermaid', code: 'graph TD\n  A --> B' }]
+  },
+  {
+    file: '14-math-mixed.md',
+    about: '一行里既有块级公式又有正文 → 整行是段落（不许吞掉后面的正文）',
+    blocks: [
+      { kind: 'Math', code: 'E = mc^2' },
+      { kind: 'Paragraph', plain: 'E = mc^2 与行内 a+b=c 两种' }
+    ]
   },
   {
     file: '12-garbage.md',

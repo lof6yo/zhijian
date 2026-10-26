@@ -17,16 +17,18 @@ Tools + 模拟器的 Windows 机器上，也能完成“改代码 → 构建 →
 - HDS 外壳（`HdsNavigation` + `HdsTabs`），底部 3 页签：笔记 / 标签 / 设置；
   悬浮页签栏，内容从其下方滚过；单层全局背景，切页签无拼接缝。
 - 页面标题与右上两个圆形按钮同排；搜索圈就地展开为搜索框，不占第二行。
-- 筛选条 / 排序条压缩在同一行（全部·置顶·收藏 / 最近修改·按标题·按创建）。
+- 筛选条 / 排序条压缩在同一行（全部·已归档·收藏 / 最近修改·按标题·按创建）。
 - 官方沉浸光感：标题栏圆形按钮与搜索框走 `systemMaterial`，算力等级自适应；
   设置 › 外观 › 光感挡位（自适应 / 高 / 中 / 低）实时生效。
 - 标题栏与页签栏的胶囊玻璃统一由 `glassEffect()` 生成，并叠加高光层。
-- ArkWeb + Milkdown/Crepe 的 WYSIWYG 编辑器；正文首个 H1 即标题，文件名自动同步。
+- 原生块级编辑：点哪一块改哪一块（源码在上、渲染在下），另有「简单」整篇模式。
+  正文首个 H1 即标题，文件名自动同步。
 - 500 ms 防抖自动保存 + 返回保存；内容未变时不写盘，避免无谓的 `updatedAt` 抖动。
-- 误触新建立即返回会丢弃空笔记（5 s 窗口 + 从未编辑，走 `purgeNote`）。
+- 误触新建、一个字都没写就返回会丢弃空笔记（`purgeNote`，不进回收站）。
 - 本地 `.md` + YAML frontmatter，笔记平铺在 `notes/`；回收站（`TrashPage`）。
 - 搜索按标题/正文/标签过滤；点标签回到笔记页并把标签变成可见的查询条件。
-- 状态栏与手势条在主页、编辑器、回收站均与页面背景连续（深色模式已逐像素核对）。
+- 笔记卡片左右滑动四档：右轻归档 / 右重删除（确认）/ 左轻收藏 / 左重 AI 洞见（占位）。
+- 状态栏与手势条在主页、阅读页、回收站均与页面背景连续（深色模式已逐像素核对）。
 - 应用图标为分层图标：纯色背景层 + 白色单线折角纸张前景层，1024×1024。
 
 截图：`screenshots/`（`/screenshots` 不入库）。
@@ -89,37 +91,34 @@ entry/src/main/ets/
   common/Palette.ets         # 强调色 light/dark 色对
   common/WindowService.ets   # 系统栏内容色与图标明暗
   components/NoteCard.ets    # 瀑布流卡片（只接收 primitives）
+  components/FormulaWeb.ets  # 块级公式（ArkWeb + 离线 KaTeX），全工程唯一的 Web
   pages/Index.ets            # HDS 外壳 + 3 页签 + 搜索/筛选/排序 + 设置
-  pages/EditorPage.ets       # ArkWeb + Milkdown + 自动保存 + 误触丢弃
+  pages/ReaderPage.ets       # 阅读 + 块级就地编辑（无模式切换）
   pages/TrashPage.ets        # 回收站 NavDestination
 AppScope/resources/base/media/
   layered_image.json         # 分层图标：foreground/background，均 1024
-entry/src/main/resources/rawfile/editor/
-  index.html                 # editor-web 构建产物（单文件，勿手改）
-editor-web/                  # Milkdown/Crepe + Vite 源码
+entry/src/main/resources/rawfile/render/
+  katex.html                 # 唯一的 Web 渲染页（块级公式）
+  vendor/                    # katex.min.js / .css / KaTeX_*.woff2（离线）
 scripts/                     # 环境/构建/签名/截图/日志/图标生成
 signing/                     # 本地 debug 签名材料（.gitignore）
 docs/vibe-coding-harmonyos.md# 环境与 Agent 配置深度研究
 docs/prd-v0.1.md             # 产品需求 v0.1
 ```
 
-## 编辑器二次开发
+## 包体构成
 
-WYSIWYG 编辑面在 `editor-web/`，不要直接改 `rawfile/editor/index.html`：
+HAP ≈ 1.3 MB（release，实测 1,345 KB）。只有两件事：应用代码
+（`ets/modules.abc` 524 KB，另有 `ets/symbolMap.map` 230 KB）和一套离线
+KaTeX（`rawfile/render` 558 KB）。
 
-```powershell
-cd editor-web
-npm install
-npm run build        # 输出到 entry/src/main/resources/rawfile/editor/index.html
-cd ..
-scripts\build.ps1
-scripts\run.ps1 -SkipBuild
-```
+曾经这里有 Mermaid（5.4 MB）、ECharts（1.1 MB）与一个 Vite 构建的 Crepe
+编辑器（2.7 MB），合计占 HAP 的 93%，但没有一条 UI 路径能走到它们——图块被画成
+「渲染未接入」占位卡片，`EditorPage` 也没有任何 `pushPath` 入口。删掉后包体从
+10.5 MB 降到 ~1.3 MB。
 
-当前使用 `@milkdown/crepe` + Vite `vite-plugin-singlefile` 单文件内联，避免
-`resource://` 的 CORS 限制；样式在 `editor-web/src/style.css` 覆盖 Crepe 的桌面
-padding（120px）为手机全宽。原生与 Web 通过 `javaScriptProxy` 的 `native.save`
-传递 Markdown。
+另注：HAP 内的 rawfile 条目是 `method=stored`（不压缩），所以「传到手机」的实际
+流量大头可以靠 HTTP gzip 再省一次；包体本身则以磁盘上的 HAP 为准。
 
 ## MCP
 

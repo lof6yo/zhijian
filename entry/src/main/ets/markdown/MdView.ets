@@ -22,6 +22,8 @@ import {
   emptyBlock
 } from './MdTypes';
 import { CodeHighlight, CodeToken, CodeTokenStyle } from './CodeHighlight';
+import { FormulaWeb } from '../components/FormulaWeb';
+import { MathLite } from './MathLite';
 
 // ===== 节奏标尺（全部来自这里，避免随处硬编码） =====
 const SPACE_BLOCK = 16;        // 块之间基准间距
@@ -144,9 +146,7 @@ export struct MdBlockView {
     } else if (this.block.kind === MdBlockKind.Callout) {
       this.CalloutBlock();
     } else if (this.block.kind === MdBlockKind.Math) {
-      this.PlaceholderBlock('公式', this.block.code, true);
-    } else if (this.block.kind === MdBlockKind.Chart) {
-      this.PlaceholderBlock(this.block.lang, '图表渲染未接入', false);
+      this.MathBlock();
     } else {
       this.ParagraphBlock();
     }
@@ -430,31 +430,33 @@ export struct MdBlockView {
     .margin({ top: this.tightTop ? SPACE_TIGHT : SPACE_BLOCK })
   }
 
-  // ===== 公式 / 图表占位卡片 =====
+  // ===== 公式 =====
 
+  /**
+   * 块级公式。
+   *
+   * 只有一个块级公式走 ArkWeb：一屏十几个**行内**公式不进来，那会变成十几个
+   * WebView（见 `FormulaWeb` 的注释）；行内公式由 `SpanBody` 用 `MathLite`
+   * 线性化成 Unicode 文本。
+   *
+   * 卡片表面给 KaTeX 的页面让出内边距，是为了长公式换行时不贴边；页面自己量到
+   * 高度后把数值报回来，这里只负责给这块一个宽度和一圈底色。
+   */
   @Builder
-  PlaceholderBlock(label: string, detail: string, monospaceDetail: boolean) {
-    Column({ space: SPACE_TIGHT }) {
-      Text(`「${label}」`)
-        .fontSize(this.bodySize)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.md_math_text'))
-
-      Text(detail)
-        .fontSize(this.bodySize * 0.9)
-        .fontColor($r('app.color.text_secondary'))
-        .fontFamily(monospaceDetail ? 'monospace' : '')
-        .maxLines(4)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
-        .textAlign(TextAlign.Center)
+  MathBlock() {
+    Column() {
+      FormulaWeb({
+        code: this.block.code,
+        dark: this.dark,
+        fontPx: this.bodySize,
+        textColor: this.dark ? '#F2F2F7' : '#1A1A1C',
+        accent: this.accentColor,
+        bg: 'transparent'
+      })
     }
     .width('100%')
-    .padding(16)
+    .padding({ top: SPACE_TIGHT, bottom: SPACE_TIGHT, left: 4, right: 4 })
     .backgroundColor($r('app.color.md_math_bg'))
-    .borderWidth(1)
-    .borderColor($r('app.color.md_math_border'))
-    .borderStyle(BorderStyle.Dashed)
     .borderRadius(CODE_RADIUS)
     .margin({ top: this.tightTop ? SPACE_TIGHT : SPACE_BLOCK })
   }
@@ -649,7 +651,7 @@ struct MdInlineText {
   @Builder
   SpanBody() {
     ForEach(this.inlines, (item: MdInline, index: number) => {
-      Span(item.text)
+      Span(this.textFor(item))
         .fontSize(this.fontSizeFor(item))
         .fontColor(this.fontColorFor(item))
         .fontWeight(this.fontWeightFor(item))
@@ -669,6 +671,21 @@ struct MdInlineText {
           }
         })
     }, (item: MdInline, index: number) => `${item.kind}-${item.text}-${index}`)
+  }
+
+  /**
+   * 一个行内片段实际画出来的文字。
+   *
+   * 只有行内公式会改写：`$E = mc^2$` 交给 `MathLite` 压成 `E = mc²`，用正文
+   * 字体渲染。这是**刻意的降级**，不是没做完——行内公式逐个塞 WebView 会让一屏
+   * 十几个公式变成十几个浏览器进程（见 `FormulaWeb` 注释）。块级 `$$…$$` 才走
+   * KaTeX，因为块级公式本来就少、且值得排版。
+   */
+  private textFor(item: MdInline): string {
+    if (item.kind === MdInlineKind.MathInline) {
+      return MathLite.linearize(item.text);
+    }
+    return item.text;
   }
 
   private baseFontSize(): number {
@@ -734,7 +751,9 @@ struct MdInlineText {
    * 字体名，而不是留空。
    */
   private fontFamilyFor(item: MdInline): string {
-    if (item.code || item.kind === MdInlineKind.MathInline) {
+    // 行内公式不排等宽：线性化之后是 `E = mc²` 这类普通字符串，等宽字体让它
+    // 看起来像代码摘录而不是公式。块级公式在 `FormulaWeb` 里由 KaTeX 排。
+    if (item.code) {
       return 'monospace';
     }
     return 'HarmonyOS Sans';
@@ -747,9 +766,8 @@ struct MdInlineText {
     if (item.kind === MdInlineKind.Mark) {
       return { color: $r('app.color.md_mark_bg'), radius: 4 };
     }
-    if (item.kind === MdInlineKind.MathInline) {
-      return { color: $r('app.color.md_code_surface'), radius: 4 };
-    }
+    // 行内公式**不加底色**：线性化之后它是一段正文（`E = mc²`），给它套一层
+    // 代码底色会让人以为那是引用的一段源码。块级公式自带卡片。
     return { color: Color.Transparent, radius: 0 };
   }
 

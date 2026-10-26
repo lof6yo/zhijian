@@ -23,7 +23,7 @@ export struct NoteCard {
   @Param title: string = '';
   @Param excerpt: string = '';
   @Param tags: string[] = [];
-  @Param pinned: boolean = false;
+  @Param archived: boolean = false;
   @Param favorite: boolean = false;
   @Param updatedAt: number = 0;
   /** Runtime accent from `Palette`; `$r('app.color.accent')` cannot follow the setting. */
@@ -74,7 +74,8 @@ export struct NoteCard {
    */
   @Param darkTheme: boolean = false;
   @Event onOpen: (noteId: string) => void = () => {};
-  @Event onTogglePin: (noteId: string) => void = () => {};
+  @Event onArchive: (noteId: string) => void = () => {};
+  @Event onInsight: (noteId: string) => void = () => {};
   @Event onToggleFavorite: (noteId: string) => void = () => {};
   @Event onDelete: (noteId: string) => void = () => {};
   @Event onEditTags: (noteId: string) => void = () => {};
@@ -138,24 +139,24 @@ export struct NoteCard {
    * 松手时执行动作。
    *
    * 邮箱的分档语义：同一侧滑得近是轻动作，滑得远是重动作。
-   *   右滑 → 近：收藏    远：置顶
-   *   左滑 → 近：标签    远：删除
-   * 位置越远代价越大，所以「重」的那个都需要再确认一次或本来就可逆；
-   * 只有删除会弹确认框，因为它滑到底就不可逆，而滑完手指还在原位。
+   *   右滑 → 近：归档（不确认）  远：删除（需确认）
+   *   左滑 → 近：收藏（不确认）  远：AI 洞见（不确认）
+   * 只有删除要确认：它是唯一不可逆的一档。归档把笔记从「全部」移到「已归档」，
+   * 一个筛选条就能拿回来，松手即执行才算「滑一下就有结果」。
    */
   private commitSwipe(rightward: boolean, far: boolean): void {
     if (rightward) {
       if (far) {
-        this.onTogglePin(this.noteId);
+        this.confirmDelete();
       } else {
-        this.onToggleFavorite(this.noteId);
+        this.onArchive(this.noteId);
       }
       return;
     }
     if (far) {
-      this.confirmDelete();
+      this.onInsight(this.noteId);
     } else {
-      this.onEditTags(this.noteId);
+      this.onToggleFavorite(this.noteId);
     }
   }
 
@@ -179,14 +180,6 @@ export struct NoteCard {
           Text('★')
             .fontSize(14)
             .fontColor($r('app.color.favorite'))
-        }
-        if (this.pinned) {
-          Text('置顶')
-            .fontSize(10)
-            .fontColor(this.accentColor)
-            .backgroundColor(this.accentChipColor)
-            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-            .borderRadius(6)
         }
       }
       .width('100%')
@@ -217,10 +210,24 @@ export struct NoteCard {
         .width('100%')
       }
 
-      Text(this.relativeTime(this.updatedAt))
-        .fontSize(11)
-        .fontColor($r('app.color.text_secondary'))
-        .width('100%')
+      // 归档徽标放在最底行的右侧，**不进标题行**：标题在 198 vp 的窄卡上本来就
+      // 只有两行余量，塞一个 46 vp 的胶囊进去实测把「欢迎使用 纸见」折成
+      // 「欢迎使用 纸 / 见」。底行本来就是「时间 + 状态」的位置，空着也是空着。
+      Row({ space: 6 }) {
+        Text(this.relativeTime(this.updatedAt))
+          .fontSize(11)
+          .fontColor($r('app.color.text_secondary'))
+          .layoutWeight(1)
+        if (this.archived) {
+          Text('已归档')
+            .fontSize(10)
+            .fontColor(this.accentColor)
+            .backgroundColor(this.accentChipColor)
+            .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+            .borderRadius(6)
+        }
+      }
+      .width('100%')
       }
       .width('100%')
       .padding(16)
@@ -374,7 +381,7 @@ export struct NoteCard {
     .hitTestBehavior(HitTestMode.None)
   }
 
-  /** 右滑：轻 = 收藏（暖光），重 = 置顶（强调色光）。 */
+  /** 右滑：轻 = 归档（强调色光），重 = 删除（红光）。 */
   @Builder
   StartLayer() {
     Stack({ alignContent: Alignment.TopStart }) {
@@ -394,12 +401,12 @@ export struct NoteCard {
         .linearGradient({
           angle: 90,
           colors: this.pastSecond()
-            ? [[this.withAlpha(this.accentColor, this.accentAlpha(true)), 0.0],
-               [this.withAlpha(this.accentColor, this.accentAlpha(true) * 0.4), 0.55],
+            ? [[$r('app.color.swipe_red_hi'), 0.0],
+               [$r('app.color.swipe_red_mid'), 0.55],
+               [$r('app.color.swipe_red_lo'), 1.0]]
+            : [[this.withAlpha(this.accentColor, this.accentAlpha(false)), 0.0],
+               [this.withAlpha(this.accentColor, this.accentAlpha(false) * 0.4), 0.55],
                [this.withAlpha(this.accentColor, 0), 1.0]]
-            : [[$r('app.color.swipe_gold_hi'), 0.0],
-               [$r('app.color.swipe_gold_mid'), 0.55],
-               [$r('app.color.swipe_gold_lo'), 1.0]]
         })
         .borderRadius({ topLeft: this.cornerRadius, bottomLeft: this.cornerRadius })
 
@@ -407,20 +414,20 @@ export struct NoteCard {
         // 露出太窄时只留一层染色：16 fp 的图标塞进十几 vp 里会溢出到卡片外面。
         if (Math.abs(this.swipeOffset) >= 30) {
           if (this.pastSecond()) {
-            SymbolGlyph($r('sys.symbol.pin'))
+            SymbolGlyph($r('sys.symbol.trash'))
+              .fontSize(this.stripIconSize())
+              .fontColor([$r('app.color.danger')])
+          } else {
+            SymbolGlyph($r('sys.symbol.archivebox'))
               .fontSize(this.stripIconSize())
               .fontColor([this.accentColor])
-          } else {
-            Text('★')
-              .fontSize(this.stripIconSize())
-              .fontColor($r('app.color.favorite'))
           }
         }
-        // 10 fp 的「收藏」需要更宽的位置，窄了就只显示图标。
+        // 10 fp 的文案需要更宽的位置，窄了就只显示图标。
         if (Math.abs(this.swipeOffset) >= 56) {
-          Text(this.pastSecond() ? (this.pinned ? '取消置顶' : '置顶') : '收藏')
+          Text(this.pastSecond() ? '删除' : (this.archived ? '取消归档' : '归档'))
             .fontSize(10)
-            .fontColor(this.pastSecond() ? this.accentColor : $r('app.color.favorite'))
+            .fontColor(this.pastSecond() ? $r('app.color.danger') : this.accentColor)
             .maxLines(1)
         }
       }
@@ -433,7 +440,7 @@ export struct NoteCard {
     .height('100%')
   }
 
-  /** 左滑：轻 = 标签（强调色光），重 = 删除（红光）。 */
+  /** 左滑：轻 = 收藏（暖光），重 = AI 洞见（强调色光）。 */
   @Builder
   EndLayer() {
     Stack({ alignContent: Alignment.TopEnd }) {
@@ -448,25 +455,31 @@ export struct NoteCard {
         .linearGradient({
           angle: 270,
           colors: this.pastSecond()
-            ? [[$r('app.color.swipe_red_hi'), 0.0],
-               [$r('app.color.swipe_red_mid'), 0.55],
-               [$r('app.color.swipe_red_lo'), 1.0]]
-            : [[this.withAlpha(this.accentColor, this.accentAlpha(false)), 0.0],
-               [this.withAlpha(this.accentColor, this.accentAlpha(false) * 0.42), 0.55],
+            ? [[this.withAlpha(this.accentColor, this.accentAlpha(true)), 0.0],
+               [this.withAlpha(this.accentColor, this.accentAlpha(true) * 0.42), 0.55],
                [this.withAlpha(this.accentColor, 0), 1.0]]
+            : [[$r('app.color.swipe_gold_hi'), 0.0],
+               [$r('app.color.swipe_gold_mid'), 0.55],
+               [$r('app.color.swipe_gold_lo'), 1.0]]
         })
         .borderRadius({ topRight: this.cornerRadius, bottomRight: this.cornerRadius })
 
       Column({ space: 4 }) {
         if (Math.abs(this.swipeOffset) >= 30) {
-          SymbolGlyph(this.pastSecond() ? $r('sys.symbol.trash') : $r('sys.symbol.label'))
-            .fontSize(this.stripIconSize())
-            .fontColor([this.pastSecond() ? $r('app.color.danger') : this.accentColor])
+          if (this.pastSecond()) {
+            SymbolGlyph($r('sys.symbol.wand_and_stars'))
+              .fontSize(this.stripIconSize())
+              .fontColor([this.accentColor])
+          } else {
+            Text('★')
+              .fontSize(this.stripIconSize())
+              .fontColor($r('app.color.favorite'))
+          }
         }
         if (Math.abs(this.swipeOffset) >= 56) {
-          Text(this.pastSecond() ? '删除' : '标签')
+          Text(this.pastSecond() ? 'AI 洞见' : (this.favorite ? '取消收藏' : '收藏'))
             .fontSize(10)
-            .fontColor(this.pastSecond() ? $r('app.color.danger') : this.accentColor)
+            .fontColor(this.pastSecond() ? this.accentColor : $r('app.color.favorite'))
             .maxLines(1)
         }
       }
@@ -507,10 +520,17 @@ export struct NoteCard {
   @Builder
   CardMenu() {
     Menu() {
-      MenuItem({ content: this.pinned ? '取消置顶' : '置顶' })
+      MenuItem({ content: this.archived ? '取消归档' : '归档' })
         .contentFontColor($r('app.color.text_primary'))
         .onClick(() => {
-          this.onTogglePin(this.noteId);
+          // 菜单保留确认：划动手势是「甩一下就完事」，弹框会打断那个节奏，所以
+          // 右滑轻档直接执行；而点开菜单本身就是一次停顿，这里问一句不碍事。
+          // 取消归档两条入口都不问——它只是把笔记拿回来。
+          if (this.archived) {
+            this.onArchive(this.noteId);
+          } else {
+            this.confirmArchive();
+          }
         })
       MenuItem({ content: this.favorite ? '取消收藏' : '收藏' })
         .contentFontColor($r('app.color.text_primary'))
@@ -528,6 +548,31 @@ export struct NoteCard {
           this.confirmDelete();
         })
     }
+  }
+
+  /**
+   * 归档确认框。只给**长按菜单**用——划动右滑轻档直接执行（松手即结果，
+   * 弹框会把「甩一下就完事」打断）。归档是可逆的：笔记从「全部」移到
+   * 「已归档」，点一下筛选条就能拿回来，所以手势那边不值得再问一句。
+   */
+  private confirmArchive(): void {
+    const name = this.title.length > 0 ? this.title : '无标题';
+    this.getUIContext().showAlertDialog({
+      title: '归档笔记',
+      message: `“${name}”会从「全部」移到「已归档」，随时可以恢复。`,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '归档',
+        fontColor: this.accentColor,
+        action: () => {
+          this.onArchive(this.noteId);
+        }
+      }
+    });
   }
 
   /**

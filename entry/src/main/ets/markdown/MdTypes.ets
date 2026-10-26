@@ -32,10 +32,8 @@ export enum MdBlockKind {
   Table = 5,
   Divider = 6,
   Callout = 7,
-  /** 数学公式块（`$$…$$`），由 KaTeX 完整渲染；图未就绪时 `MathLite` 线性化兜底 */
-  Math = 8,
-  /** 图表块（围栏语言名是 mermaid / echarts / … 之一），按语言分发到 ArkWeb */
-  Chart = 9
+  /** 数学公式块（`$$…$$`），由 KaTeX 渲染；图未就绪时退回 `MathLite` 线性化文本 */
+  Math = 8
 }
 
 /** 行内片段种类 */
@@ -279,22 +277,15 @@ export function emptyInline(): MdInline {
 }
 
 /**
- * 围栏语言名里「不显示代码、改去渲染成图」的那一组。
+ * 「图表块」这一档已经移除，围栏一律当普通代码块。
  *
- * 刻意只收**确实接了渲染引擎**的语言名。写进这里而没接引擎，结果是整段代码
- * 消失、只留一块空白——比不高亮糟糕得多。新增一种图必须先有对应 harness。
- */
-const CHART_LANGS: string[] = ['mermaid', 'echarts'];
-
-/**
- * 语言名是否是图表块。
+ * 曾经 ` ```mermaid ` / ` ```echarts ` 会被识别成独立的 `Chart` 块，交给 ArkWeb
+ * 里的 Mermaid / ECharts 渲染。但 `MdView` 从头到尾只把它画成一张「图表渲染未
+ * 接入」的占位卡片——两个库（合计 6.5 MB）在包里躺了一个版本，一次都没执行过。
  *
- * 全小写比较：围栏里写 `Mermaid` 不识别，按普通代码块显示——
- * 与作者的官方教程口径一致（「必须是全小写的 mermaid」）。
+ * 现在这些围栏按普通代码块处理：` ```mermaid ` 会以 mermaid 语法高亮成一屏源码。
+ * 这比一张永远写着「未接入」的卡片诚实，也顺手删掉了两个跑不到的引擎。
  */
-export function isChartLang(lang: string): boolean {
-  return CHART_LANGS.indexOf(lang) >= 0;
-}
 
 /**
  * 空解析结果。`parse()` 失败时返回它而不是抛异常——

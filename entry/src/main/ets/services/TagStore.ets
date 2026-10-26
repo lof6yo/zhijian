@@ -5,48 +5,41 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const DOMAIN = 0x0000;
 const STORE_NAME = 'hmstart_tags';
-const KEY_PINNED = 'pinnedTags';
 const KEY_EXTRA = 'extraTags';
+/**
+ * 已废弃：标签置顶的字面量键。
+ *
+ * 「置顶」这个功能已经整体拆掉了，但**名字要留着**：安装过的机器上偏好文件里
+ * 仍然存着 `pinnedTags`，Preferences 从不回收键，谁再拿这个名字去读，就会读到
+ * 一份和现有功能对不上的旧数据。留在这里是为了让下一个人搜到它时知道它已停用，
+ * 而不是认领它去存别的东西。
+ */
+const KEY_PINNED_RETIRED = 'pinnedTags';
 
 /**
  * 标签本身的状态。
  *
  * ## 为什么需要它
  *
- * 标签是**长在笔记 frontmatter 里的字段**，「有哪些标签」可以从笔记推出来。但有两件事
- * 推不出来：
+ * 标签是**长在笔记 frontmatter 里的字段**，「有哪些标签」可以从笔记推出来。但
+ * **刚创建、还没有任何笔记使用的标签**推不出来——它不在任何一份 frontmatter 里，
+ * 所以「创建标签」这个动作无处落地。
  *
- * 1. **置顶**——这是标签自己的属性，不是笔记的。同一份 frontmatter 在任何设备上都
- *    读不出「这个标签被置顶了」。
- * 2. **刚创建、还没有任何笔记使用的标签**——它不在任何一份 frontmatter 里，
- *    所以「创建标签」这个动作无处落地。
+ * 标签的**增删改**仍然作用在笔记的 frontmatter 上（`NoteStore.renameTag` /
+ * `NoteStore.removeTag`），这里只保存「标签目录」这类笔记里放不下的状态。
  *
- * 所以另存一份标签名录与置顶集合。标签的**增删改**仍然作用在笔记的 frontmatter 上
- * （`NoteStore.renameTag` / `NoteStore.removeTag`），这里只保存「标签目录」与
- * 「置顶」这类笔记里放不下的状态。
- *
- * ## 为什么是 `@ObservedV2`
- *
- * 置顶状态是**界面状态**：长按置顶之后，那一行必须立刻长出「置顶」标记并排到前面。
- * 普通单例的字段改动不会触发重绘——实测点「置顶」后列表毫无反应。所以这里用
- * `@ObservedV2` + `@Trace`，让读取（`isPinned()` 里的 `this.pinned`）在渲染期
- * 登记依赖，改了就会重绘。
- *
- * 因此所有修改都必须**整体替换数组**，不能 `push`：数组原地改不触发 `@Trace`。
+ * （此前这里还存过「置顶的标签」。置顶已整体移除，见 `KEY_PINNED_RETIRED`。）
  *
  * ## 存储格式
  *
  * 换行分隔的纯文本。标签名里不会出现换行，所以一行一个就够，也便于人肉查看；
  * 同步基线那套 `id \t updatedAt \t relPath` 的扁平文本格式也是同一个理由。
  */
-@ObservedV2
 export class TagStore {
   static readonly instance: TagStore = new TagStore();
 
-  /** 置顶的标签。 */
-  @Trace pinned: string[] = [];
   /** 已创建但还没有任何笔记使用的标签。 */
-  @Trace extra: string[] = [];
+  extra: string[] = [];
 
   private prefs: preferences.Preferences | null = null;
   private initialized: boolean = false;
@@ -58,30 +51,11 @@ export class TagStore {
     this.initialized = true;
     try {
       this.prefs = preferences.getPreferencesSync(context, { name: STORE_NAME });
-      this.pinned = this.readList(KEY_PINNED);
       this.extra = this.readList(KEY_EXTRA);
     } catch (error) {
       const err = error as BusinessError;
       hilog.warn(DOMAIN, 'HMStartTags', 'init failed code=%{public}d', err.code);
     }
-  }
-
-  isPinned(tag: string): boolean {
-    return this.pinned.includes(tag);
-  }
-
-  setPinned(tag: string, on: boolean): void {
-    const next: string[] = [];
-    for (const item of this.pinned) {
-      if (item !== tag) {
-        next.push(item);
-      }
-    }
-    if (on) {
-      next.unshift(tag);
-    }
-    this.pinned = next;
-    this.writeList(KEY_PINNED, next);
   }
 
   /**
@@ -100,15 +74,13 @@ export class TagStore {
     return true;
   }
 
-  /** 删除标签：连同名录与置顶状态一起清掉。笔记侧由 `NoteStore.removeTag` 处理。 */
+  /** 删除标签：连同名录一起清掉。笔记侧由 `NoteStore.removeTag` 处理。 */
   removeTag(tag: string): void {
     this.extra = this.extra.filter((item: string) => item !== tag);
-    this.pinned = this.pinned.filter((item: string) => item !== tag);
     this.writeList(KEY_EXTRA, this.extra);
-    this.writeList(KEY_PINNED, this.pinned);
   }
 
-  /** 重命名：旧名从名录与置顶里退场，新名接替它的位置。 */
+  /** 重命名：旧名从名录里退场，新名接替它的位置。 */
   renameTag(oldTag: string, newTag: string): void {
     const name = newTag.trim();
     if (name.length === 0 || name === oldTag) {
@@ -119,13 +91,7 @@ export class TagStore {
       extra.push(item === oldTag ? name : item);
     }
     this.extra = extra;
-    const pinned: string[] = [];
-    for (const item of this.pinned) {
-      pinned.push(item === oldTag ? name : item);
-    }
-    this.pinned = pinned;
     this.writeList(KEY_EXTRA, this.extra);
-    this.writeList(KEY_PINNED, this.pinned);
   }
 
   /**

@@ -61,7 +61,7 @@ export class NoteStore {
         note.title = parsed.title;
         note.body = parsed.body;
         note.tags = parsed.tags;
-        note.pinned = parsed.pinned;
+        note.archived = parsed.archived;
         note.favorite = parsed.favorite;
         note.createdAt = parsed.createdAt;
         note.updatedAt = parsed.updatedAt;
@@ -346,8 +346,15 @@ export class NoteStore {
     return count;
   }
 
-  togglePin(note: Note): void {
-    note.pinned = !note.pinned;
+  /**
+   * 归档 / 取消归档。
+   *
+   * 只改 frontmatter 里的标记，不做 `saveNote()`：正文没变，走 `saveNote()` 会按
+   * H1 重命名文件并重算摘要，那是「改了内容」的语义。`updatedAt` 仍然要动——
+   * 归档是用户的一次操作，同步必须把它推上去，否则另一台设备看到的还是旧状态。
+   */
+  toggleArchive(note: Note): void {
+    note.archived = !note.archived;
     note.updatedAt = systemDateTime.getTime();
     this.writeNote(note);
     this.notes = [...this.notes];
@@ -464,25 +471,6 @@ export class NoteStore {
       this.tags = this.collectTags(this.notes);
     }
     return changed;
-  }
-
-  /**
-   * Counts the notes carrying `tag`, optionally only the pinned ones.
-   *
-   * 「置顶」在标签页有两种含义，这里说的是**笔记**被置顶：某个标签可以出现在十篇
-   * 笔记上，其中两篇是置顶的——总数答不出这个，所以分开数。
-   */
-  countTagIn(tag: string, pinnedOnly: boolean): number {
-    let count = 0;
-    for (const note of this.notes) {
-      if (pinnedOnly && !note.pinned) {
-        continue;
-      }
-      if (note.tags.includes(tag)) {
-        count++;
-      }
-    }
-    return count;
   }
 
   private createSample(): void {

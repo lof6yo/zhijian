@@ -10,7 +10,6 @@ import { TagStore } from '../services/TagStore';
 import { NoteCard } from '../components/NoteCard';
 import { CardSurface } from '../components/CardSurface';
 import { MaterialLayer } from '../components/MaterialLayer';
-import { EditorPage } from './EditorPage';
 import { TrashPage } from './TrashPage';
 import { ReaderPage, ReaderParam } from './ReaderPage';
 import { WebDavPage } from './WebDavPage';
@@ -90,20 +89,20 @@ struct Index {
   @Local listVersion: number = 0;
   @Local notesSnapshot: Note[] = [];
   /**
+   * 搜索是否已经扩展到已归档的笔记。
+   *
+   * 默认不扩展：搜索首先是「找我记得的那条笔记」，已归档的东西已经被用户主动收
+   * 起来过一次，混进结果里等于每次搜索都要重新翻一遍旧账。命中数在结果底部提示，
+   * 用户点一下才展开——这一步是显式的，和「点开已归档」是同一个决定。
+   */
+  @Local includeArchived: boolean = false;
+  /**
    * 标签名单的快照。
    *
    * 与 `notesSnapshot` 同理：`this.store.tags` 是普通单例的字段，改了不会触发重绘，
    * 所以标签增删改之后必须显式刷新这份快照。
    */
   @Local tagsSnapshot: string[] = [];
-  /**
-   * 置顶标签的快照。
-   *
-   * 同样出于「普通单例的字段改了不会触发重绘」：跨单例读 `@Trace` 的观察链在这
-   * 个工程里不可靠（实测长按置顶后存储写对了、界面毫无反应）。所以状态先落到
-   * 快照上，渲染只读快照。
-   */
-  @Local tagPinned: string[] = [];
   @Local themeMode: number = 0;
   @Local accentMode: number = 0;
   @Local fontSize: number = 17;
@@ -122,7 +121,7 @@ struct Index {
   @Local tagSortKey: number = 0;
   /** 标签页排序方向：false = 升序，true = 降序。 */
   @Local tagSortDesc: boolean = false;
-  /** 标签页筛选：0 = 全部，1 = 只看置顶的标签。 */
+  /** 标签页筛选：0 = 全部，1 = 有笔记在用的（名录里建了但没人用的不算）。 */
   @Local tagFilter: number = 0;
   /** 新建 / 修改标签名的输入面板是否打开。 */
   @Local tagNameShown: boolean = false;
@@ -312,18 +311,37 @@ struct Index {
     this.notesSnapshot = [...this.store.notes];
     // 标签名单同样要一份快照：`this.store.tags` 是普通单例的字段，改了不会重绘。
     this.tagsSnapshot = TagStore.instance.knownTags(this.store.tags);
-    this.tagPinned = [...TagStore.instance.pinned];
     this.listVersion++;
+  }
+
+  /**
+   * 某一档筛选条允许哪些笔记通过。
+   *
+   * 归档的笔记**只在「已归档」里出现**：它是被用户主动收起来的东西，「全部」
+   * 如果还带着它们，归档就只是换了个没什么区别的顺序。收藏同理——一篇收藏过的
+   * 笔记归档之后又从「收藏」里冒出来，等于归档没生效。
+   *
+   * 唯一的例外是搜索底部的「在已归档中搜索」（`includeArchived`）：那一步由用户
+   * 显式点开，语义是「我知道它被归档了，帮我翻出来」，所以只对「全部」放开。
+   */
+  private passesFilter(note: Note): boolean {
+    if (this.filterMode === 1) {
+      return note.archived;
+    }
+    if (note.archived && !(this.filterMode === 0 && this.includeArchived)) {
+      return false;
+    }
+    if (this.filterMode === 2) {
+      return note.favorite;
+    }
+    return true;
   }
 
   private visibleNotes(): Note[] {
     const q = this.query.trim().toLowerCase();
     const scored: Note[] = [];
     for (const note of this.notesSnapshot) {
-      if (this.filterMode === 1 && !note.pinned) {
-        continue;
-      }
-      if (this.filterMode === 2 && !note.favorite) {
+      if (!this.passesFilter(note)) {
         continue;
       }
       if (q.length > 0 && !this.matches(note, q)) {
@@ -335,6 +353,27 @@ struct Index {
     return scored;
   }
 
+  /**
+   * 命中搜索词、但因为归档而被挡在结果之外的笔记数。
+   *
+   * 这个数字是提示条存在的理由：什么都不说的话，用户只会得出「搜不到」的结论，
+   * 然后去「已归档」里手动翻。这里必须复用 `matches()`，提示的数量才和点开之后
+   * 真正多出来的条数完全一致。
+   */
+  private archivedHitCount(): number {
+    const q = this.query.trim().toLowerCase();
+    if (q.length === 0 || this.filterMode !== 0) {
+      return 0;
+    }
+    let count = 0;
+    for (const note of this.notesSnapshot) {
+      if (note.archived && this.matches(note, q)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
   private applySort(list: Note[]): void {
     if (this.sortMode === 1) {
       list.sort((a: Note, b: Note): number => a.title.localeCompare(b.title, 'zh-CN'));
@@ -344,13 +383,8 @@ struct Index {
       list.sort((a: Note, b: Note): number => b.createdAt - a.createdAt);
       return;
     }
-    // Default: pinned first, then most recently edited.
-    list.sort((a: Note, b: Note): number => {
-      if (a.pinned !== b.pinned) {
-        return a.pinned ? -1 : 1;
-      }
-      return b.updatedAt - a.updatedAt;
-    });
+    // 最近修改。置顶那一档已经去掉，所以这里只剩时间。
+    list.sort((a: Note, b: Note): number => b.updatedAt - a.updatedAt);
   }
 
   private matches(note: Note, q: string): boolean {
@@ -573,13 +607,6 @@ struct Index {
           this.refreshList();
         }
       })
-    } else if (name === 'editor') {
-      EditorPage({
-        pathStack: this.pathStack,
-        onChanged: () => {
-          this.refreshList();
-        }
-      })
     } else if (name === 'trash') {
       TrashPage({
         pathStack: this.pathStack,
@@ -626,18 +653,27 @@ struct Index {
     });
   }
 
+  /**
+   * 页签切换的唯一入口。页签栏的 `onChange` 只做一件事：把它转进来。
+   *
+   * 标题栏只有一套搜索框，搜索词作用在**当前**页签上。不清掉的话，笔记页搜
+   * 「欢迎」再切到标签页，标签页会带着一个它自己从没输入过的过滤条件，看起来
+   * 像是标签莫名少了一半。
+   *
+   * `includeArchived` 一并归零：「全量搜索」是用户在某一次搜索结果上做的决定，
+   * 不是常驻偏好，换页签之后再回来不该还带着归档的那些。
+   *
+   * 不在这里调 `hdsTabs.changeIndex()`：本方法就是被 `onChange` 调的，再调回去
+   * 是让平台自己通知自己。`filterByTag()` 那种**程序**切页签才需要显式 changeIndex。
+   */
   private switchTab(index: number): void {
     if (index === this.selectedTab) {
       return;
     }
     this.selectedTab = index;
-    // The title row is shared by all tabs; leaving search expanded while the
-    // notes list is off-screen would hide the title of the new tab.
     this.searchExpanded = false;
-    // 搜索词是共享的，作用在当前页签上。切页签时清掉，免得把笔记页的搜索词
-    // 带到标签页、把标签页的搜索词带到笔记页。
     this.query = '';
-    this.hdsTabs.changeIndex(index);
+    this.includeArchived = false;
   }
 
   /**
@@ -654,6 +690,7 @@ struct Index {
    */
   private filterByTag(tag: string): void {
     this.query = tag;
+    this.includeArchived = false;
     this.searchExpanded = true;
     if (this.selectedTab !== 0) {
       this.selectedTab = 0;
@@ -1101,7 +1138,7 @@ struct Index {
       .scrollable(false)
       .barFloatingStyle(this.floatingBarStyle())
       .onChange((index: number) => {
-        this.selectedTab = index;
+        this.switchTab(index);
       })
     }
     // MINI keeps the whole title bar to a single compact row, which is what the
@@ -1147,7 +1184,7 @@ struct Index {
     // 与 HDS 外壳一致：卡片左右滑动与页签横滑方向冲突，关掉横滑。
     .scrollable(false)
     .onChange((index: number) => {
-      this.selectedTab = index;
+      this.switchTab(index);
     })
     .width('100%')
     .height('100%')
@@ -1290,7 +1327,7 @@ struct Index {
                     title: note.title,
                     excerpt: note.excerpt,
                     tags: note.tags,
-                    pinned: note.pinned,
+                    archived: note.archived,
                     favorite: note.favorite,
                     updatedAt: note.updatedAt,
                     accentColor: this.accentColor(),
@@ -1306,11 +1343,14 @@ struct Index {
                         this.openNote(target);
                       }
                     },
-                    onTogglePin: (id: string) => {
+                    onArchive: (id: string) => {
                       const target = this.store.find(id);
                       if (target !== undefined) {
-                        this.store.togglePin(target);
+                        this.store.toggleArchive(target);
                         this.refreshList();
+                        this.getUIContext().getPromptAction().showToast({
+                          message: target.archived ? '已归档' : '已取消归档'
+                        });
                       }
                     },
                     onToggleFavorite: (id: string) => {
@@ -1332,6 +1372,10 @@ struct Index {
                       if (target !== undefined) {
                         this.openTagEditor(target);
                       }
+                    },
+                    onInsight: (id: string) => {
+                      // 功能未实现：先把交互位置占住，免得重排一次手势。
+                      this.getUIContext().getPromptAction().showToast({ message: 'AI 洞见还在路上' });
                     }
                   })
               }
@@ -1350,6 +1394,12 @@ struct Index {
         .layoutWeight(1)
         // Clears the floating capsule so the last row stays reachable.
         .contentEndOffset(130)
+      }
+
+      // 搜索命中但被归档挡住时的提示。放在网格**下面**、不进滚动区：
+      // `WaterFlow` 的 `FlowItem` 不能跨列，一整条横贯的提示塞进去会被压成一列宽。
+      if (this.archivedHitCount() > 0) {
+        this.ArchivedSearchHint()
       }
     }
     .width('100%')
@@ -1545,7 +1595,7 @@ struct Index {
 
   /**
    * A single capsule holding one chip group. Two of these share one row:
-   * filter (全部/置顶/收藏) on the left, sort (最近修改/按标题/按创建) on the
+   * filter (全部/已归档/收藏) on the left, sort (最近修改/按标题/按创建) on the
    * right. `base` 0 = filter, 10 = sort; `FilterChip` treats `mode >= 10` as
    * sort, so any future group must use a multiple of 10 as its base.
    *
@@ -1584,7 +1634,7 @@ struct Index {
       Row({ space: 2 }) {
         if (base === 0) {
           this.FilterChip('全部', 0)
-          this.FilterChip('置顶', 1)
+          this.FilterChip('已归档', 1)
           this.FilterChip('收藏', 2)
         } else {
           this.FilterChip('最近修改', 10)
@@ -1639,6 +1689,8 @@ struct Index {
           .caretColor($r('app.color.text_primary'))
           .onChange((value: string) => {
             this.query = value;
+            // 搜索词改了就是另一次搜索：上一轮的「含归档」不能自动延续。
+            this.includeArchived = false;
           })
         Button() {
           SymbolGlyph($r('sys.symbol.xmark'))
@@ -1678,7 +1730,7 @@ struct Index {
 
   /**
    * Two logical chip groups share one builder: `mode` < 10 is the filter row
-   * (全部/置顶/收藏), `mode` >= 10 is the sort row. Selected state is a tinted
+   * (全部/已归档/收藏), `mode` >= 10 is the sort row. Selected state is a tinted
    * wash + accent text, never a saturated accent block: a solid accent fill
    * inside a glass pill reads as a heavy slab.
    */
@@ -1699,6 +1751,8 @@ struct Index {
       .onClick(() => {
         if (mode < 10) {
           this.filterMode = mode;
+          // 换筛选档 = 换一个问题，「含归档」是上一个问题上的决定。
+          this.includeArchived = false;
         } else {
           this.sortMode = mode - 10;
         }
@@ -1710,20 +1764,77 @@ struct Index {
     return mode < 10 ? this.filterMode === mode : this.sortMode === mode - 10;
   }
 
+  /**
+   * 搜索结果的底部提示：命中的笔记里有 N 篇被归档了。
+   *
+   * 两件事必须成立：
+   *
+   *  1. **默认不混进来。** 归档是用户主动做的分类动作，一次搜索就把收起来的东西
+   *     全倒出来，等于归档没生效。
+   *  2. **不能只说「没找到」。** 用户记得那条笔记存在，静默地搜不到只会让人以为
+   *     笔记丢了。所以给出数量，并把「去已归档里搜」做成一次点击。
+   *
+   * 位置在滚动区**外面**（见 `NotesPage`）：`WaterFlow` 的 `FlowItem` 不能跨列，
+   * 一条横贯两列的提示塞进去会被压成一列宽，读起来像第三张卡片。
+   * `includeArchived` 打开后这一条变成「收起」——否则用户被留在全量结果里，
+   * 没有任何地方能回到默认视图。
+   */
+  @Builder
+  ArchivedSearchHint() {
+    Row({ space: 8 }) {
+      SymbolGlyph($r('sys.symbol.archivebox'))
+        .fontSize(15)
+        .fontColor([this.accentColor()])
+      Text(this.includeArchived
+        ? `${this.archivedHitCount()} 篇已归档的笔记也已列出`
+        : `已归档中还有 ${this.archivedHitCount()} 篇匹配`)
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .layoutWeight(1)
+        .maxLines(2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      Text(this.includeArchived ? '收起' : '全量搜索')
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.accentColor())
+        .padding({ left: 8, right: 2, top: 4, bottom: 4 })
+    }
+    .width('100%')
+    .padding({ left: 14, right: 10, top: 10, bottom: 10 })
+    .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+    .borderRadius(this.cardRadius)
+    .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
+    // 底边留出浮动页签栏的高度：它是浮层，会盖住页面底部这一条。
+    .margin({ left: this.SIDE_INSET, right: this.SIDE_INSET, bottom: 96 })
+    .onClick(() => {
+      this.includeArchived = !this.includeArchived;
+    })
+    .accessibilityText(this.includeArchived ? '收起已归档的搜索结果' : '在已归档中搜索')
+  }
+
+  /**
+   * 空列表的说明。
+   *
+   * 三种空法说三件事，不能共用一句话：搜不到（换词）、归档区空（这里本来就可能
+   * 什么都没有，指引「点 +」会把人送去新建，而不是去归档）、真的一篇都没有
+   * （这才是该引导新建的时候）。共用一个「点击右上角 + 记录第一条」时，空的
+   * 「已归档」看起来像是在暗示「你还没新建过笔记」。
+   */
   @Builder
   EmptyState() {
     Column({ space: 10 }) {
-      SymbolGlyph($r('sys.symbol.doc_text'))
+      SymbolGlyph(this.emptyIcon())
         .fontSize(48)
         .fontColor([$r('app.color.text_secondary')])
         .opacity(0.6)
-      Text('还没有笔记')
+      Text(this.emptyTitle())
         .fontSize(17)
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.text_primary'))
-      Text('点击右上角 + 记录第一条')
+      Text(this.emptyHint())
         .fontSize(13)
         .fontColor($r('app.color.text_secondary'))
+        .textAlign(TextAlign.Center)
     }
     .width('100%')
     .layoutWeight(1)
@@ -1731,6 +1842,38 @@ struct Index {
     .padding({ bottom: 120 })
   }
 
+  private emptyIcon(): Resource {
+    if (this.query.trim().length === 0 && this.filterMode === 1) {
+      return $r('sys.symbol.archivebox');
+    }
+    return $r('sys.symbol.doc_text');
+  }
+
+  private emptyTitle(): string {
+    if (this.query.trim().length > 0) {
+      return '没有匹配的笔记';
+    }
+    if (this.filterMode === 1) {
+      return '还没有归档的笔记';
+    }
+    if (this.filterMode === 2) {
+      return '还没有收藏的笔记';
+    }
+    return '还没有笔记';
+  }
+
+  private emptyHint(): string {
+    if (this.query.trim().length > 0) {
+      return '换个关键词试试';
+    }
+    if (this.filterMode === 1) {
+      return '在笔记卡片上右滑，轻滑一下即可归档';
+    }
+    if (this.filterMode === 2) {
+      return '在笔记卡片上左滑，轻滑一下即可收藏';
+    }
+    return '点击右上角 + 记录第一条';
+  }
 
   // ----------------------------------------------------------------- tags
 
@@ -1760,17 +1903,6 @@ struct Index {
           ForEach(this.visibleTags(), (tag: string) => {
             ListItem() {
               Row() {
-                // 置顶的标签带一个小标记：它排在最前面，但光看顺序不知道
-                // 「为什么这个在前面」。
-                if (this.tagPinned.includes(tag)) {
-                  Text('置顶')
-                    .fontSize(10)
-                    .fontColor(this.accentColor())
-                    .backgroundColor(this.accentChipColor())
-                    .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                    .borderRadius(6)
-                    .margin({ right: 6 })
-                }
                 Text(`# ${tag}`)
                   .fontSize(16)
                   .fontColor($r('app.color.text_primary'))
@@ -1821,8 +1953,8 @@ struct Index {
   /**
    * 长按标签卡片弹出的菜单。
    *
-   * 三件事：**置顶**（这个标签排到最前）、**修改**（改名，作用在所有用到它的
-   * 笔记上）、**删除**（把标签从所有笔记里去掉）。
+   * 两件事：**修改**（改名，作用在所有用到它的笔记上）、**删除**（把标签从所有
+   * 笔记里去掉）。
    *
    * 删除**不删笔记**——笔记还在，只是没有这个标签了。所以确认框里要说清楚，
    * 否则「删除」两个字会让人以为内容要没了。
@@ -1830,13 +1962,6 @@ struct Index {
   @Builder
   TagMenu(tag: string) {
     Menu() {
-      MenuItem({ content: this.tagPinned.includes(tag) ? '取消置顶' : '置顶' })
-        .contentFontColor($r('app.color.text_primary'))
-        .onClick(() => {
-          TagStore.instance.setPinned(tag, !this.tagPinned.includes(tag));
-          // 置顶状态落在单例里，界面读的是快照，所以必须显式刷新。
-          this.refreshList();
-        })
       MenuItem({ content: '修改' })
         .contentFontColor($r('app.color.text_primary'))
         .onClick(() => {
@@ -2007,7 +2132,7 @@ struct Index {
           this.TagChip(this.tagSortKey === 1 ? `数量 ${this.tagSortDesc ? '↓' : '↑'}` : '数量', 0, 1)
         } else {
           this.TagChip('全部', 1, 0)
-          this.TagChip('置顶', 1, 1)
+          this.TagChip('有笔记', 1, 1)
         }
       }
       .width('100%')
@@ -2068,35 +2193,22 @@ struct Index {
   }
 
   /**
-   * 当前要显示的标签：置顶的在前，其余按排序整理，最后按搜索词过滤。
+   * 当前要显示的标签，按排序整理后按搜索词过滤。
    *
    * 「按名称」用 `localeCompare`，与 `NoteStore.collectTags()` 的默认排序一致，
    * 所以切到按名称升序时顺序不会突然变一次。
    *
-   * 置顶**覆盖**排序：置顶的标签永远在最前面，其余标签之间才按排序走。
+   * 筛选「有笔记」剔掉只在名录里、没有任何笔记使用的标签。之前这一档是「置顶」，
+   * 置顶功能已经整体移除；这里改成「有笔记」而不是干脆删掉这一档，是因为名录里
+   * 确实会有建了还没用上的标签，而它们和真正在用的标签混在一起时，标签页没法回答
+   * 「哪些标签是我真的在用的」。
    */
   private visibleTags(): string[] {
-    const all: string[] = this.tagsSnapshot;
-    const pinned: string[] = [];
-    for (const tag of this.tagPinned) {
-      if (all.includes(tag)) {
-        pinned.push(tag);
-      }
-    }
-    const rest: string[] = [];
-    for (const tag of all) {
-      if (!pinned.includes(tag)) {
-        rest.push(tag);
-      }
-    }
-    this.sortTags(rest);
-    let result: string[] = pinned.concat(rest);
-    // 筛选的「置顶」与长按菜单的「置顶」是**同一个概念**：被置顶的标签。
-    // 之前这一档被实现成「只含有置顶笔记的标签」，与菜单里的置顶不是一回事——
-    // 同一个词在两处含义不同，是最容易让人绕晕的地方。
+    let result: string[] = this.tagsSnapshot.slice();
     if (this.tagFilter === 1) {
-      result = result.filter((tag: string) => this.tagPinned.includes(tag));
+      result = result.filter((tag: string) => this.store.countTag(tag) > 0);
     }
+    this.sortTags(result);
     const keyword: string = this.query.trim().toLowerCase();
     if (keyword.length > 0) {
       result = result.filter((tag: string) => tag.toLowerCase().includes(keyword));

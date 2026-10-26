@@ -6,8 +6,7 @@ recorded here. No file in this tree may be fetched from a network at runtime;
 all `<script>`/`<link>` references are relative paths into `vendor/`.
 
 Versions were read back out of each downloaded artefact, not taken from the URL
-alone (`katex.version` = `0.19.0`, Mermaid's bundled `version` = `12.2.0`,
-ECharts' `version` = `6.1.0`).
+alone (`katex.version` = `0.19.0`).
 
 ## Libraries
 
@@ -15,8 +14,11 @@ ECharts' `version` = `6.1.0`).
 |---|---|---|---|---|---|
 | `vendor/katex.min.js` | [KaTeX](https://github.com/KaTeX/KaTeX) | 0.19.0 | `MIT` | 272868 | https://cdn.jsdelivr.net/npm/katex@0.19.0/dist/katex.min.js |
 | `vendor/katex.min.css` | [KaTeX](https://github.com/KaTeX/KaTeX) | 0.19.0 | `MIT` | 24793 | https://cdn.jsdelivr.net/npm/katex@0.19.0/dist/katex.min.css |
-| `vendor/mermaid.min.js` | [Mermaid](https://github.com/mermaid-js/mermaid) | 12.2.0 | `MIT` | 5494801 | https://cdn.jsdelivr.net/npm/mermaid@12.2.0/dist/mermaid.min.js |
-| `vendor/echarts.min.js` | [Apache ECharts](https://github.com/apache/echarts) | 6.1.0 | `Apache-2.0` | 1121883 | https://cdn.jsdelivr.net/npm/echarts@6.1.0/dist/echarts.min.js |
+
+**KaTeX is the only web runtime left.** Mermaid (5.4 MB) and ECharts (1.1 MB)
+were removed: `MdView` rendered every `Chart` block as a 「图表渲染未接入」
+placeholder, so neither engine ever executed while occupying 60 % of the HAP.
+Do not re-add a full diagram bundle — see `AGENTS.md` §「图表为什么不在包里」.
 
 ## KaTeX font set (complete — 20 faces)
 
@@ -54,19 +56,9 @@ Only the `.woff2` faces are vendored. `katex.min.css` also lists `.woff` and
 purpose. Browsers fall back through the list only if the earlier format fails to
 decode, not if the file is missing — so this is safe on API 26.
 
-## Bundled third-party code inside the minified files
-
-- `vendor/mermaid.min.js` inlines its dependencies (d3, dagre-d3, khroma,
-  cytoscape, and others). Their copyright notices are preserved as `/*! … */`
-  comments inside the minified file, which is what the MIT/ISC terms require;
-  do not strip comments from this file.
-- `vendor/echarts.min.js` inlines ZRender (Apache-2.0); the Apache licence
-  header is preserved at the top of the file.
-
 ## Licence texts
 
 - MIT — https://opensource.org/license/mit
-- Apache-2.0 — https://www.apache.org/licenses/LICENSE-2.0
 
 ## Update policy
 

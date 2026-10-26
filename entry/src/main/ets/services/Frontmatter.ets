@@ -5,7 +5,7 @@ export class ParsedNote {
   title: string = '';
   body: string = '';
   tags: string[] = [];
-  pinned: boolean = false;
+  archived: boolean = false;
   favorite: boolean = false;
   createdAt: number = 0;
   updatedAt: number = 0;
@@ -58,8 +58,8 @@ export class FrontmatterCodec {
         parsed.hasId = parsed.id.length > 0;
       } else if (key === 'tags') {
         parsed.tags = FrontmatterCodec.parseTags(value);
-      } else if (key === 'pinned') {
-        parsed.pinned = value === 'true';
+      } else if (key === 'archived') {
+        parsed.archived = value === 'true';
       } else if (key === 'favorite') {
         parsed.favorite = value === 'true';
       } else if (key === 'created') {
@@ -72,11 +72,19 @@ export class FrontmatterCodec {
     return parsed;
   }
 
+  /**
+   * Serialises a note.
+   *
+   * The whole frontmatter block is regenerated, so a field that no longer exists
+   * (the retired `pinned:`) disappears from the file the next time the note is
+   * written — no migration pass needed. Readers must keep ignoring unknown keys,
+   * which the `parse()` loop already does.
+   */
   static build(note: Note): string {
     const tags = note.tags.map((tag: string) => `"${tag.replace(/"/g, '\\"')}"`).join(', ');
     const created = new Date(note.createdAt).toISOString();
     const updated = new Date(note.updatedAt).toISOString();
-    return `---\nid: ${note.id}\ncreated: ${created}\nupdated: ${updated}\ntags: [${tags}]\npinned: ${note.pinned}\nfavorite: ${note.favorite}\n---\n${note.body}`;
+    return `---\nid: ${note.id}\ncreated: ${created}\nupdated: ${updated}\ntags: [${tags}]\narchived: ${note.archived}\nfavorite: ${note.favorite}\n---\n${note.body}`;
   }
 
   static titleOf(body: string): string {

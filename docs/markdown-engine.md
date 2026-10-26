@@ -10,16 +10,23 @@
 | 解析 | **自研 ArkTS 解析器**，扁平 AST | 不引第三方 Markdown 库；扁平结构避开 ArkUI 不能递归自引用组件的限制 |
 | 正文渲染 | **原生 ArkUI**（`Text { Span }` / 原生布局） | 不起 WebView。一屏几十个块走 WebView 会直接卡死，且无法用原生滚动/选区 |
 | 代码高亮 | **自研分词器**，按语言族 | 同上，不能为了高亮再挂一个 Web 引擎 |
-| 数学公式 | ArkWeb 加载离线 **KaTeX**（`rawfile/render/katex.html`） | KaTeX 是 MIT，公式排版复杂度不值得自研 |
-| 图表 | ArkWeb 加载离线 **Mermaid / ECharts**（`rawfile/render/*.html`） | MIT / Apache-2.0，同上 |
-| 公式未就绪兜底 | 自研 `MathLite` 线性化成 Unicode 文本 | 图是异步渲染的，缓存未命中时不能让公式位置空着 |
+| 数学公式（块级） | ArkWeb 加载离线 **KaTeX**（`rawfile/render/katex.html`） | KaTeX 是 MIT，公式排版复杂度不值得自研 |
+| 数学公式（行内） | 自研 `MathLite` 线性化成 Unicode 文本 | 一屏十几个行内公式＝十几个 WebView 进程 |
+| 图表 | **不支持**（围栏按普通代码块高亮） | 曾经 vendored Mermaid + ECharts（6.5 MB），但从未渲染过；见下 |
 
-**唯一允许出现 ArkWeb 的地方是公式与图表块。** 正文、标题、列表、表格、代码
-全部原生渲染。这条是硬约束：正文走 WebView 会让原生滚动、文本选择、批注坐标、
+**唯一允许出现 ArkWeb 的地方是块级公式。** 正文、标题、列表、表格、代码、行内
+公式全部原生渲染。这条是硬约束：正文走 WebView 会让原生滚动、文本选择、批注坐标、
 字号设置全部失效。
 
-第三方运行时的授权：KaTeX MIT、Mermaid MIT、ECharts Apache-2.0。清单见
+第三方运行时的授权：只剩 KaTeX MIT。清单见
 `entry/src/main/resources/rawfile/render/LICENSES.md`。
+
+**图表为什么被删掉。** Mermaid（5.4 MB）与 ECharts（1.1 MB）随包发了一个版本，
+而 `MdView` 把每个 `Chart` 块都画成「图表渲染未接入」占位卡片——两个引擎一次都
+没执行过，却占了 HAP 的 60%。现在 ` ```mermaid ` 就是普通围栏代码块，按 mermaid
+语法高亮成源码，这比一张承诺以后会渲染的卡片诚实。要加回图表：先试自研极简流程图
+（`graph TD` + 方框箭头，几百行 ArkUI），或在真机上验证 tree-shaken 的 Mermaid
+子集再谈预算——不要把全量包重新塞回来。
 
 > **不要引入 PlantUML。** 上游是 GPL，与本项目的授权不兼容。
 
@@ -75,8 +82,8 @@ export class MdParser {
 9. 分割线 `---` / `***` / `___`（≥3 个）。**紧跟在文字行下面的 `---` 是标题下划线**，
    不是分割线——这个判定顺序不能错。
 10. 公式块 `$$…$$`（独立成段）。
-11. 图表块：围栏语言名是 `isChartLang()` 认的，块类型为 `MdBlockKind.Chart`，
-    `code` 存原始图定义。
+11. 图表块**不存在**。围栏语言名不再分叉，` ```mermaid ` 与 ` ```echarts ` 都是
+    普通 `MdBlockKind.Code`（`lang` 保留，按该语言高亮成源码）。
 12. 脚注定义 `[^label]: 内容` 收进 `notes`，正文里 `[^label]` 是
     `MdInlineKind.FootnoteRef`（`text` = label，`num` = 序号，0 表示引用存在但缺定义）。
     **不要**把它降级成 `Link`——脚注引用要渲染成上标序号并跳到注释区，
@@ -158,8 +165,12 @@ export struct MdBlockView {
 - 代码块：`Text` 每行一个，行内 `ForEach(tokens) { Span }` 上色；
   横向可滚动（`Scroll` + `.scrollable(ScrollDirection.Horizontal)`），不要换行。
 - 表格：列多时横向滚动；单元格不能换行。
-- 图表/公式块：本阶段先渲染成**带语言标签的占位卡片**（明确写「图表渲染未接入」），
-  不要留空白块。Web 渲染由 `DiagramWeb` 单独接入。
+- 块级公式 `$$…$$`：`MdView.MathBlock()` → `components/FormulaWeb.ets` →
+  `rawfile/render/katex.html`，KaTeX 量到高度后回报，失败时退回
+  `MathLite.linearize()` 的 Unicode 文本，永远不留空白块。
+- 行内 `$…$`：`MdView.textFor()` 用 `MathLite` 线性化成正文（`E = mc²`），
+  不加代码底色——它读起来是散文，不是源码。
+- 图表：**没有图表块**，围栏按普通代码块高亮。
 
 ## 5. 验证
 

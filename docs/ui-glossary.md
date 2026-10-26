@@ -25,7 +25,7 @@
 页面 Page
 └── 区域 Region        标题区 / 搜索区 / 筛选区 / 列表区
     └── 控件 Control   搜索框 / 筛选条 / 笔记卡片 / 页签栏
-        └── 部件 Part  卡片标题 / 置顶徽标 / 页签项
+        └── 部件 Part  卡片标题 / 归档徽标 / 页签项
 ```
 
 另有三个横向概念：**层**（z 序）、**状态**（收起/选中…）、**令牌**（颜色/尺寸）。
@@ -39,8 +39,9 @@
 | 笔记页 | `Index.NotesPage()` | 第 1 个 tab，笔记卡片网格 |
 | 标签页 | `Index.TagsPage()` | 第 2 个 tab，标签列表 |
 | 设置页 | `Index.SettingsPage()` | 第 3 个 tab，设置列表 |
-| 编辑器页 | `EditorPage.ets` | 全屏 WYSIWYG 编辑页（NavDestination） |
+| 阅读页 | `ReaderPage.ets` | 打开笔记的页面（NavDestination）：默认渲染，点正文就地编辑 |
 | 回收站页 | `TrashPage.ets` | 已删笔记列表（NavDestination） |
+| WebDAV 页 | `WebDavPage.ets` | 同步设置（NavDestination） |
 
 ---
 
@@ -52,7 +53,7 @@
 | 标题栏 | HDS `titleBar()`（`titleBarOptions()`） | 只装一行：页面标题 + 两个圆形玻璃按钮，由 `HdsNavigation` 拥有（MINI 模式） |
 | 标题行 | `Index.TitleRow()` | 标题栏内唯一的 Row：页面标题（或展开后的搜索框）+ 搜索按钮 + 新建按钮 |
 | 页头 | `Index.NotesHeader()` | 只有一行筛选条 / 排序条，通栏固定，**不含**页面标题、**不含**搜索框 |
-| 筛选区 | 页头 `ChipGroup(0)` | 只含筛选项（全部 / 置顶 / 收藏） |
+| 筛选区 | 页头 `ChipGroup(0)` | 只含筛选项（全部 / 已归档 / 收藏） |
 | 排序区 | 页头 `ChipGroup(10)` | 只含排序项（最近修改 / 按标题 / 按创建），与筛选条同一行 |
 | 列表区 | `WaterFlow` / `List` | 可滚动内容 |
 | 页签栏 | HDS `HdsTabs` 的 `TabBar` | 底部悬浮胶囊，内容从其下方滚过 |
@@ -78,7 +79,7 @@
 | 页面标题 | `Index.TitleRow()` 的 `Text(tabTitle())` | 标题行左端，随当前页签变化（笔记 / 标签 / 设置） |
 | 搜索框 | `Index.SearchField()` | 单行输入，占位「搜索标题、正文、标签」，`id = notesSearchInput`；**只在搜索按钮被点开时出现**，不常驻 |
 | 筛选条 | `Index.ChipGroup(0)` 的 Row | 装着三个筛选项的胶囊容器 |
-| 筛选项 | `Index.FilterChip(label, mode)` | 全部 / 置顶 / 收藏，`layoutWeight(1)` 三等分 |
+| 筛选项 | `Index.FilterChip(label, mode)` | 全部 / 已归档 / 收藏，`layoutWeight(1)` 三等分 |
 | 排序条 | `Index.ChipGroup(10)` 的 Row | 装着三个排序项的胶囊容器，样式与筛选条完全一致，与筛选条同一行 |
 | 排序项 | `Index.FilterChip(label, mode)`，`mode ≥ 10` | 最近修改 / 按标题 / 按创建，`mode - 10` 即排序下标 |
 | 搜索按钮 | `Index.TitleRow()` 左钮 | 圆形玻璃（`glass_tint` + `COMPONENT_THIN` 模糊 + 发丝边），`sys.symbol.magnifyingglass`；点开后**原地**展开为搜索框 |
@@ -111,10 +112,10 @@
 | 卡片摘要 | `Text(excerpt)` | 最多 2 行，13sp |
 | 卡片标签 | 卡片内 `ForEach(tags)` | 最多 3 个，chip 样式 |
 | 卡片时间 | `Text(relativeTime)` | 「3 小时前」 |
-| 置顶徽标 | `Text('置顶')` | 强调色淡底小胶囊 |
+| 归档徽标 | `Text('已归档')` | 强调色淡底小胶囊；只在「已归档」列表里出现 |
 | 收藏徽标 | `Text('★')` | 金色星号 |
-| 卡片菜单 | `NoteCard.CardMenu()` | 长按弹出：置顶/收藏/删除 |
-| 空状态 | `Index.EmptyState()` | 「还没有笔记」 |
+| 卡片菜单 | `NoteCard.CardMenu()` | 长按弹出：归档/收藏/标签…/删除；这里的归档会确认（划动不确认） |
+| 空状态 | `Index.EmptyState()` | 按筛选项分档：「还没有笔记」/「还没有归档的笔记」/「还没有收藏的笔记」 |
 
 > 新建按钮**不在**这里：它已经迁到标题栏的**标题行**（`Index.TitleRow()`），页面里不再有 FAB。
 > 网格单元宽度由 `columnWidth()` 按屏幕实宽 / 密度 / 两列算出并显式传给
@@ -158,17 +159,17 @@
 
 ---
 
-## 8. 控件 Control —— 编辑器页 / 回收站页
+## 8. 控件 Control —— 阅读页 / 回收站页
 
 | 规范名 | 代码 | 定义 |
 |---|---|---|
-| 编辑器页头 | `EditorPage` 顶部 Row | 高 96，不透明 `page_bg` |
-| 返回按钮 | `Button('‹')` | 编辑器与回收站各一个 |
-| 编辑器标题 | 页头中间 `Text` | 跟随 H1 |
-| 保存状态 | `Text(this.status)` | 「已保存」「保存中」 |
-| 类型标签 | `Text('本地笔记')` | 页头右端 |
-| 编辑区 | `Web` 节点 | Crepe 编辑器，非原生 |
-| 打开遮罩 | `!webReady` 的 Column | 转圈 +「正在打开编辑器…」 |
+| 阅读页头 | `ReaderPage` 顶部 Row | 高 56，不透明 `page_bg`，不加状态栏内边距 |
+| 返回按钮 | `Button('‹')` | 阅读页与回收站各一个 |
+| 笔记标题 | 页头中间 `Text` | 跟随 H1 |
+| 正在编辑条 | `Row`（`正在编辑 · 标题/引用/…`） | 只在该块处于编辑态时出现，右端是 删除 / 完成 |
+| 块编辑器 | `TextArea`（`LiveBlockEditor`） | 源码在上，`预览效果` 在下；等宽字体 |
+| 整篇编辑器 | `TextArea`（`WholeDocEditor`） | 「简单」编辑体验：全屏一个 Markdown 字段 |
+| 格式按钮条 | `FormatBar` | 标题/粗体/斜体/列表/待办/引用/表格/代码，默认关闭 |
 | 回收站行 | `TrashPage` 里的 `ListItem` | 标题 + 删除时间 + 恢复/删除 |
 | 清空按钮 | 页头右端 `Text('清空')` | 危险色 |
 
@@ -254,7 +255,7 @@
 | 弹窗 | **对话框**（`showAlertDialog`）/ **操作面板**（导入导出） |
 | 背景色 | 分**背景层**、**玻璃底**、**页面底色** |
 | 阴影太重 | 说清是 `glass_shadow` 还是强调色光晕 |
-| 上面那三个按钮（全部/置顶/收藏） | **筛选条**里的**筛选项** |
+| 上面那三个按钮（全部/已归档/收藏） | **筛选条**里的**筛选项** |
 | 设置页的筛选条 | **分段控件**（`SegmentButton` 所在的那个 Row） |
 | 顶部标题栏 / header / 头部 | **标题栏**（页面标题 + 两个圆形按钮）/ 下方的叫**页头**（页头 = 筛选区 + 排序区，同一行） |
 | 白框 / 灰框 / 气泡 | **玻璃底**（`glass_bg`）或**玻璃浮层**（`glass_tint`） |

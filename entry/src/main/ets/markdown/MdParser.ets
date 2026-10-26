@@ -63,8 +63,7 @@ import {
   MdTaskState,
   emptyBlock,
   emptyInline,
-  emptyParseResult,
-  isChartLang
+  emptyParseResult
 } from './MdTypes';
 
 /**
@@ -975,6 +974,23 @@ function inlineScan(text: string, bold: boolean, italic: boolean, strike: boolea
             continue;
           }
         }
+      } else if (run === 2) {
+        // 一行里夹着 `$$…$$`：整行不是块级公式（块级要求独占一行，见
+        // `isMathStart`），但它仍然是一段公式，按**行内公式**收下。
+        //
+        // 不收的话，这七个字符会退成普通文本，紧接着的 `^` 就被上标规则抓走——
+        // 实测 `$$E = mc^2$$ 与行内 $a^2+b^2=c^2$ 两种` 渲染成
+        // `$$E = mc2$$ 与行内 $a2+b2=c2$ 两种`，`^` 连同中间的正文一起消失。
+        const close = text.indexOf('$$', i + 2);
+        if (close > i + 2) {
+          const inner = text.substring(i + 2, close);
+          if (inner.indexOf('\n') < 0) {
+            flush();
+            appendInline(out, MdInlineKind.MathInline, inner, '', 0, bold, italic, strike, false);
+            i = close + 2;
+            continue;
+          }
+        }
       }
       plain += text.substring(i, i + run);
       i += run;
@@ -1205,9 +1221,31 @@ function startsBlock(lines: string[], idx: number, to: number): boolean {
   return isTableStart(lines, idx, to);
 }
 
+/**
+ * 这一行是否开启一个块级公式。
+ *
+ * 只认两种形态，**两者都以「整行」为界**：
+ *
+ * 1. `$$ … $$` 单行块——收尾的 `$$` 必须落在行尾；
+ * 2. 独占一行的 `$$`——多行块的开始。
+ *
+ * 曾经只判「以 `$$` 开头」，于是 `$$E = mc^2$$ 与行内 $a^2+b^2=c^2$ 两种` 这种
+ * 行被当成未闭合的公式块，**把后面整篇笔记吞成公式源码**，KaTeX 再把它整段染红
+ * 报错。一行里既有块级公式又有正文，是笔记里很正常的写法；判据必须收到行尾。
+ *
+ * 退化成正文之后，行内的 `$…$` 仍然照常渲染（`$$` 这对定界符按字面保留），
+ * 这比「吞掉整篇」好得多。
+ */
 function isMathStart(line: string): boolean {
   const t = line.trim();
-  return t.length >= 2 && t.charAt(0) === '$' && t.charAt(1) === '$';
+  if (t.length < 2 || t.charAt(0) !== '$' || t.charAt(1) !== '$') {
+    return false;
+  }
+  if (t === '$$') {
+    return true;
+  }
+  // 单行块：收尾的 `$$` 必须是最后两个字符，且中间有内容。
+  return t.length > 4 && t.endsWith('$$');
 }
 
 function fenceSpecOf(info: string): FenceSpec {
@@ -1326,7 +1364,10 @@ function parseFence(lines: string[], src: number[], start: number, to: number,
   }
   const spec = fenceSpecOf(f.info);
   const b = newBlock(ctx);
-  b.kind = isChartLang(spec.lang) ? MdBlockKind.Chart : MdBlockKind.Code;
+  // 围栏一律是代码块：mermaid / echarts 曾经在这里分叉成 `Chart` 块，但那条
+  // 分支的渲染端从未接入（`MdView` 只画「未接入」占位卡片），所以现在它们就是
+  // 一段有语法高亮的源码——看得见语法，比一张写着「未接入」的卡片有用。
+  b.kind = MdBlockKind.Code;
   b.lang = spec.lang;
   b.codeLines = body;
   b.code = body.join('\n');
@@ -1719,7 +1760,7 @@ function isCjkCode(code: number): boolean {
 function countOf(blocks: MdBlock[]): Counts {
   const counts = new Counts();
   for (const b of blocks) {
-    if (b.kind === MdBlockKind.Code || b.kind === MdBlockKind.Chart || b.kind === MdBlockKind.Divider) {
+    if (b.kind === MdBlockKind.Code || b.kind === MdBlockKind.Divider) {
       continue;
     }
     const text = b.plain;

@@ -116,12 +116,12 @@ export class SyncEngine {
   /**
    * Monotonic disambiguator for remote-trash names.
    *
-   * Two notes archived inside the same millisecond would otherwise produce the
+   * Two notes trashed inside the same millisecond would otherwise produce the
    * same `zhijian/.trash/<millis>-<name>` target and the second `MOVE` would
    * overwrite the first — silent data loss in exactly the folder that exists to
    * prevent it.
    */
-  private static archiveSeq: number = 0;
+  private static trashSeq: number = 0;
 
   static get configured(): boolean {
     return SyncEngine.config.baseUrl.length > 0 && SyncEngine.config.username.length > 0;
@@ -288,7 +288,7 @@ export class SyncEngine {
       remote.note.title = parsed.title;
       remote.note.body = parsed.body;
       remote.note.tags = parsed.tags;
-      remote.note.pinned = parsed.pinned;
+      remote.note.archived = parsed.archived;
       remote.note.favorite = parsed.favorite;
       remote.note.createdAt = parsed.createdAt;
       // A file with no `updated:` never wins on merit. `entry.modifiedAt` is
@@ -356,7 +356,7 @@ export class SyncEngine {
     // it while iterating it is asking for a skipped note.
     const locallyDeleted: Note[] = [];
     // Ids whose baseline row must *not* survive this run: both sides are now
-    // known to be gone (or the note was just archived on both).
+    // known to be gone (or the note was just trashed on both).
     const dropped: Set<string> = new Set<string>();
     for (const note of store.notes) {
       handledLocal.add(note.id);
@@ -509,7 +509,7 @@ export class SyncEngine {
         // the baseline path because it lost its `id:` line, not because the user
         // deleted anything. `NoteStore.reload()` falls back to the filename as
         // the id in that case, so the note is here under a foreign key. Restore
-        // the id and leave the remote copy alone — archiving it would delete a
+        // the id and leave the remote copy alone — trashing it would delete a
         // note that is still on this device.
         const row = baseById.get(knownId);
         if (row !== undefined && localPaths.has(row.relPath)) {
@@ -524,11 +524,11 @@ export class SyncEngine {
           }
           continue;
         }
-        // Every path carrying the id is archived: a note renamed after upload
+        // Every path carrying the id is trashed: a note renamed after upload
         // can leave a sibling behind, and leaving one of them would resurrect
         // the note on the next run as "new from another device".
         const paths = remotePathsById.get(knownId) ?? [remote.note.relPath];
-        if (await SyncEngine.archiveRemote(paths)) {
+        if (await SyncEngine.trashRemote(paths)) {
           outcome.trashedRemote++;
           dropped.add(knownId);
         }
@@ -653,13 +653,13 @@ export class SyncEngine {
   /**
    * Moves every server path carrying one id into `zhijian/.trash`.
    *
-   * Returns true only when *all* paths were archived, so the caller drops the
+   * Returns true only when *all* paths were trashed, so the caller drops the
    * baseline row only for a deletion that provably happened. A partial success
    * keeps the row: the next run finds the surviving path, still sees "local gone,
    * baseline says the server had it", and retries — which is exactly the
-   * behaviour a half-finished archive needs.
+   * behaviour a half-finished trash needs.
    */
-  private static async archiveRemote(paths: string[]): Promise<boolean> {
+  private static async trashRemote(paths: string[]): Promise<boolean> {
     if (paths.length === 0) {
       return false;
     }
@@ -674,18 +674,18 @@ export class SyncEngine {
       // local 回收站 reads `<millis>-name.md`. `now + seq` keeps two notes
       // trashed in the same millisecond from colliding, and lands inside the
       // same second so the recorded time is still honest.
-      const stamp = systemDateTime.getTime() + SyncEngine.archiveSeq;
-      SyncEngine.archiveSeq++;
+      const stamp = systemDateTime.getTime() + SyncEngine.trashSeq;
+      SyncEngine.trashSeq++;
       const base = path.substring(path.lastIndexOf('/') + 1);
       const target = `${REMOTE_TRASH_DIR}/${stamp}-${base}`;
       const moved = await WebDavClient.moveTo(SyncEngine.config,
         SyncEngine.encodePath(`${REMOTE_DIR}/${path}`), SyncEngine.encodePath(target));
       if (!moved.ok) {
         all = false;
-        hilog.error(DOMAIN, TAG, 'archive %{public}s failed: %{public}s', path, moved.message);
+        hilog.error(DOMAIN, TAG, 'trash %{public}s failed: %{public}s', path, moved.message);
         continue;
       }
-      hilog.info(DOMAIN, TAG, 'archived remote %{public}s -> %{public}s', path, target);
+      hilog.info(DOMAIN, TAG, 'trashed remote %{public}s -> %{public}s', path, target);
     }
     return all;
   }
@@ -761,7 +761,7 @@ export class SyncEngine {
    *   the still-present remote file as "new from another device" and download
    *   the note the user just deleted.
    * - An id whose row is `dropped` must not be carried forward, or it would be
-   *   archived again on every subsequent run.
+   *   trashed again on every subsequent run.
    */
   private static buildBase(previous: Map<string, BaselineEntry>, localNotes: Note[],
     remoteById: Map<string, RemoteNote>, confirmed: Map<string, number>,
@@ -862,7 +862,7 @@ export class SyncEngine {
     merged.title = remote.title;
     merged.body = remote.body;
     merged.tags = remote.tags.length > 0 ? remote.tags : (existing?.tags ?? []);
-    merged.pinned = remote.pinned;
+    merged.archived = remote.archived;
     merged.favorite = remote.favorite;
     merged.createdAt = remote.createdAt > 0 ? remote.createdAt :
       (existing?.createdAt ?? remote.createdAt);
@@ -891,7 +891,7 @@ export class SyncEngine {
     copy.title = marked;
     copy.body = SyncEngine.markConflictBody(note.body, marked);
     copy.tags = note.tags;
-    copy.pinned = false;
+    copy.archived = false;
     copy.favorite = false;
     copy.createdAt = note.createdAt;
     copy.updatedAt = note.updatedAt;
@@ -911,7 +911,7 @@ export class SyncEngine {
     copy.title = marked;
     copy.body = SyncEngine.markConflictBody(remote.body, marked);
     copy.tags = remote.tags;
-    copy.pinned = false;
+    copy.archived = false;
     copy.favorite = false;
     copy.createdAt = remote.createdAt;
     copy.updatedAt = remote.updatedAt;
@@ -1022,7 +1022,7 @@ export class SyncEngine {
       parts.push(`远端删除 ${outcome.trashedLocal} · 已进回收站`);
     }
     if (outcome.trashedRemote > 0) {
-      parts.push(`本地删除 ${outcome.trashedRemote} · 已归档到远端`);
+      parts.push(`本地删除 ${outcome.trashedRemote} · 已移入远端回收站`);
     }
     if (parts.length === 0) {
       return '已是最新';

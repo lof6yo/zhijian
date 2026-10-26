@@ -141,8 +141,6 @@ export struct LiveBlockEditor {
         return '提示块';
       case 8:
         return '公式';
-      case 9:
-        return '图表';
       default:
         return '段落';
     }

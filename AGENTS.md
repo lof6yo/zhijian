@@ -125,20 +125,6 @@ $env:PATH = "D:\deveco\command-line-tools\bin;D:\deveco\command-line-tools\sdk\d
 | Local debug deploy | `scripts\run.ps1` (build + local sign + install + launch) |
 | Environment doctor | `scripts\doctor.ps1` |
 
-WYSIWYG editor build (only when changing `editor-web/`):
-
-```powershell
-cd editor-web
-npm install
-npm run build        # outputs entry/src/main/resources/rawfile/editor/index.html
-cd ..
-scripts\build.ps1
-scripts\run.ps1 -SkipBuild
-```
-
-Do not hand-edit `entry/src/main/resources/rawfile/editor/index.html`; it is a
-Vite single-file build of `editor-web/`.
-
 App icon (`scripts/gen-icon.ps1`): redraws the layered icon and the start icon
 with GDI+. Run it only when the mark should change, then rebuild. HarmonyOS
 rules baked into the script: foreground and background are both **1024×1024**,
@@ -212,21 +198,29 @@ Current single-HAP layout:
 entry/src/main/ets/
 ├── entryability/        # UIAbility lifecycle only
 ├── pages/               # Index (HDS shell: 3 tabs, title bar actions),
-│                        # EditorPage / TrashPage / WebDavPage (NavDestination)
-├── components/          # NoteCard, MaterialLayer (沉浸光感 Toggle carrier)
+│                        # ReaderPage / TrashPage / WebDavPage (NavDestination)
+├── components/          # NoteCard, CardSurface, MaterialLayer (沉浸光感
+│                        # Toggle carrier), FormulaWeb (KaTeX 块级公式)
 ├── markdown/            # 自研 Markdown 引擎：MdTypes (AST) / MdParser /
-│                        # CodeHighlight / MdView (原生 ArkUI 渲染)
+│                        # CodeHighlight / MathLite / MdView (原生 ArkUI 渲染)
 ├── models/              # Note (V2 @ObservedV2/@Trace)
 ├── services/            # NoteStore (files), Frontmatter (YAML),
 │                        # WebDav (RCP client), SyncEngine (three-way merge),
 │                        # Credentials (Asset Store), SettingsStore (prefs)
 └── common/              # WindowService, Palette
 
-entry/src/main/resources/rawfile/editor/
-└── index.html           # Vite single-file build of editor-web/ (do not hand-edit)
-
-editor-web/              # Milkdown/Crepe + Vite source for the WYSIWYG editor
+entry/src/main/resources/rawfile/render/
+├── katex.html           # 唯一的 Web 渲染页：块级公式
+└── vendor/              # katex.min.js + katex.min.css + KaTeX_*.woff2（离线）
 ```
+
+**包体只有两件事：应用代码（`ets/modules.abc` ≈ 524 KB，debug 另带
+`sourceMaps.map`/`symbolMap.map`）和这一套 KaTeX（≈ 558 KB）。**
+曾经这里有 Mermaid（5.4 MB）与 ECharts（1.1 MB），以及一个 Vite 构建的 Crepe
+编辑器（2.7 MB），三者加起来占 HAP 的 93%——而**没有一条 UI 路径能走到它们**：
+`MdView` 把图块画成「渲染未接入」占位卡片，`EditorPage` 也没有任何 `pushPath`
+入口。删掉之后 release HAP 从 10.5 MB 降到 **1,345 KB**。要加回图表，先读 §6
+「图表为什么不在包里」。
 
 ### WebDAV sync
 
@@ -294,7 +288,7 @@ failed on the device.
   the filename left two cards reading the same title with no way to tell which
   one sync produced.
 - **Deletions propagate through the baseline row, which is also the tombstone.**
-  See *Deletion propagation* below — a note missing on one side is archived on
+  See *Deletion propagation* below — a note missing on one side is trashed on
   the other (local 回收站 / remote `zhijian/.trash`), never re-uploaded blindly.
 - **Remote folder is a dedicated `zhijian/`**, auto-created with `MKCOL` (405 =
   already there), so the user's existing `Obsidian/` is untouched.
@@ -344,12 +338,13 @@ run".
 - **`.trash` sits inside `zhijian/`** so the vault stays one folder. Nothing is
   re-imported from it because every listing runs at `Depth: 1` and skips
   directory entries.
-- **`archiveSeq` disambiguates same-millisecond archives.** Two notes deleted in
+- **`trashSeq` disambiguates same-millisecond trash entries.** Two notes deleted in
   one run would otherwise both target `zhijian/.trash/<same millis>-…`; the
   second `MOVE` would overwrite the first, i.e. data loss in the folder that
-  exists to prevent it.
+  exists to prevent it. (Named `trashSeq`, not `archiveSeq`: 笔记的「归档」是
+  另一个概念，同一个词不能同时指「移入回收站」。)
 - **A refused delete keeps its baseline row; only a confirmed one drops it.**
-  `archiveRemote()` returns true only when *every* path for that id was archived,
+  `trashRemote()` returns true only when *every* path for that id was trashed,
   and `deleteNote()` now returns whether the file actually reached `.trash`. A
   failed `MOVE` that also lost its row would make the next run see a remote file
   with no baseline, call it "new from another device", and *download the note the
@@ -377,11 +372,14 @@ run".
   editor's 删除 just wants the note gone from the list); sync uses it to decide
   whether the deletion is confirmed.
 
-The editor is **ArkWeb + Milkdown/Crepe**; the native shell owns file storage,
-navigation, search, tags and settings. All notes are flat in `notes/`. Markdown text is the source of
-truth; the Web bridge calls `native.save(markdown)` and the native side writes
-`.md` files. `EditorPage` debounces 500 ms and flushes on back/background.
-The editor pops with `{ saved: true }`.
+The native shell owns file storage, navigation, search, tags, rendering and
+editing. All notes are flat in `notes/`. Markdown text is the source of truth:
+`ReaderPage` parses it, writes it back through `NoteStore`, and debounces 500 ms.
+
+**ArkWeb is no longer the editor.** The Crepe/Milkdown surface
+(`EditorPage` + `editor-web/` + `rawfile/editor/`, 2.7 MB) was removed: nothing
+could reach it — `ReaderPage` owns both reading and editing, and no `pushPath`
+ever named `'editor'`. `EditorPage` survives only as history in git.
 
 ### Reading vs editing: one page, no mode switch
 
@@ -449,8 +447,7 @@ button.
   to lose real content on this page.
 - **`+` opens this same page** (`ReaderParam.created: true`), not the ArkWeb editor:
   a new note should start being written immediately. Leaving a just-created note
-  untouched purges it, so a mis-tap does not leave a 无标题 husk. `EditorPage` is
-  still registered for anything that wants the old full-screen surface.
+  untouched purges it, so a mis-tap does not leave a 无标题 husk.
 - **Only a note created from `+` may auto-enter editing.** The rule briefly also
   fired for any note whose body was blank or still just `# 无标题`, which meant a
   list full of untitled notes opened straight into an editor — the reader stopped
@@ -473,9 +470,8 @@ button.
 - **标签页 has sorting and filtering.** Sort by 名称 / 笔记数量, each with an
   ascending/descending toggle shown as an arrow on the active chip (tapping the
   active chip flips the direction, tapping the other switches the key); filter by
-  全部 / 置顶, where 置顶 keeps only the tags that appear on a pinned note —
-  `NoteStore.countTagIn(tag, true)`, because a tag's total count does not tell
-  you how many of its notes are pinned.
+  全部 / 有笔记, where 有笔记 hides the tags that exist only in the 名录 and are
+  used by no note (`store.countTag(tag) > 0`).
   The chips use the **same** capsule treatment as the notes page's 筛选条/排序条
   (`TagChipGroup` mirrors `ChipGroup`): same 34 vp shell, same 28 vp pills, same
   material. Two pages showing the same control in two different styles is what
@@ -487,21 +483,25 @@ button.
 - **合并到同一张卡片里的行，各自要能点。** 「同步与备份」把 WebDAV 同步与
   导入/导出合成一张卡片（中间一条分隔线），两行的点击区仍然分开。
 - **标签页有搜索、新建与长按菜单。** 标题栏两个按钮与笔记页同款（搜索 / 新建）。
-  长按标签卡片弹出 **置顶 / 修改 / 删除**。删除只把标签从笔记里去掉，**笔记本身
+  长按标签卡片弹出 **修改 / 删除**。删除只把标签从笔记里去掉，**笔记本身
   不动**，所以确认框里必须写明「这些笔记不会被删除」。
-- **「置顶」只应有一个含义。** 筛选里的「置顶」与长按菜单里的「置顶」是同一件事
-  ——被置顶的标签。之前筛选那一档被实现成「只含有置顶笔记的标签」，同一个词两处
-  含义不同，是最容易让人绕晕的地方。
+- **「置顶」已整体移除，两处都是。** 笔记置顶（frontmatter `pinned`）与标签置顶
+  （`TagStore.pinned`）一起拆掉：同一个词在两处含义不同，是这页最容易让人绕晕的
+  地方；留一半、拆一半只会更糟。`TagStore` 里保留 `KEY_PINNED_RETIRED` 这个**未读**
+  常量，因为装过的机器上偏好文件里仍有 `pinnedTags`，而 Preferences 从不回收键——
+  留着名字是为了让下一个人搜到它时知道它已停用，而不是认领它去存别的东西。
+  `FrontmatterCodec.build()` 会整块重写 frontmatter，所以旧文件里的 `pinned:` 会在
+  它下次被写入时自然消失，不需要迁移脚本。
 - **标签有一部分状态不在 frontmatter 里。** 「有哪些标签」能从笔记推出来，但
-  **置顶**（标签自己的属性）和**刚创建、还没有笔记使用的标签**都推不出来，
-  所以另存一份标签名录与置顶集合（`services/TagStore.ets`，换行分隔的纯文本）。
+  **刚创建、还没有笔记使用的标签**推不出来，所以另存一份标签名录
+  （`services/TagStore.ets`，换行分隔的纯文本）。
   标签的增删改仍然作用在笔记的 frontmatter 上（`NoteStore.renameTag` /
   `NoteStore.removeTag`）。
-- **界面状态不要靠跨单例的观察。** 普通单例的字段改了不会触发重绘；把单例改成
+- **界面状态不要靠跨单例的观察。** 普通单例的字段改了不会触发重绘；把它改成
   `@ObservedV2` + `@Trace` 之后，实测**跨单例读 `@Trace` 的观察链依然不触发
-  刷新**（长按置顶后存储写对了、界面毫无反应）。可靠做法是本工程一直在用的
+  刷新**（实测：普通单例与 `@ObservedV2` 单例都试过，界面毫无反应）。可靠做法是本工程一直在用的
   `@Local` 快照：把单例里的值拷进 `@Local`，改完显式刷新快照。
-  `Index.tagsSnapshot` / `Index.tagPinned` 就是这么做的——新建标签、改名、删除
+  `Index.tagsSnapshot` / `Index.notesSnapshot` 就是这么做的——新建标签、改名、删除
   之后都必须调 `refreshList()`，否则列表不更新。
 - **搜索词是跨页签共享的**（标题栏只有一套搜索框），作用在当前页签上；切页签时
   清空，免得把笔记页的搜索词带到标签页。
@@ -537,11 +537,21 @@ button.
 
   | 方向 | 轻滑（< 判定线） | 重滑（≥ 判定线） |
   |---|---|---|
-  | 右滑 | 收藏 | 置顶 |
-  | 左滑 | 标签… | 删除（弹确认框） |
+  | 右滑 | 归档（不确认） | 删除（弹确认框） |
+  | 左滑 | 收藏 | AI 洞见（占位，尚未实现） |
 
-  越远代价越大：删除是唯一不可逆的一档，所以它走确认框；`onTogglePin` /
-  `onToggleFavorite` 本身可逆，直接执行。
+  两侧各自成一条语义轴：**右滑是「收起来」**（先归档，再删除），**左滑是
+  「留下来 / 用起来」**（先收藏，再交给 AI）。越远代价越大，所以唯一不可逆的
+  那一档（删除）在最远的外侧，也唯一需要确认。
+  - **划动归档不确认，长按菜单里的归档才确认。** 划动是「甩一下就完事」，弹框
+    会把那个节奏打断；而且归档可逆——笔记只是从「全部」移到「已归档」，点一下
+    筛选条就能拿回来。长按菜单本身已经是一次停顿，在那里问一句不碍事，也能
+    提前说清笔记去哪了。取消归档两条入口都不问（`commitSwipe` 直接
+    `onArchive()`，`CardMenu` 只在 `!archived` 时走 `confirmArchive()`）。
+  - **AI 洞见只留了口子**（`onInsight` → 一个 toast 占位）。手势位置先占住，
+    以后接上功能不必再重排一次四档。
+  - 色相沿用三路：强调色（归档 / AI 洞见）、金（收藏）、红（删除）。
+    **红色只给删除**——它是唯一不可逆的一档，同一档 alpha 下红比任何色都响。
 - **拖动过程只做提示，不落状态。** 卡片 `translate` 出去多少，底下就露出多宽，
   颜色/图标/文案随「是否越过判定线」切换（`pastSecond()`），图标尺寸随进度连续
   放大（`pull()`）——连续的是露出量，离散的是跨线那一下，邮箱就是这样。
@@ -605,11 +615,39 @@ undo by accident:
   `Text` inside the `ForEach` resets the parent component tracking on this
   compiler and the style inheritance breaks. This looks like a style choice and
   is not.
-- **ArkWeb is allowed for math and diagrams only.** KaTeX (MIT), Mermaid (MIT)
-  and ECharts (Apache-2.0) are vendored offline under `rawfile/render/` and
-  loaded by the Web block; body text, headings, lists, tables and code are
-  native. **Do not vendor PlantUML** — upstream is GPL, which is incompatible
-  with this project's licensing.
+- **ArkWeb exists for one thing only: a block-level `$$…$$` formula.** KaTeX
+  (MIT) is vendored offline under `rawfile/render/` and loaded by
+  `components/FormulaWeb.ets`; body text, headings, lists, tables, code and
+  inline `$…$` are all native. Mermaid and ECharts used to live here too, but
+  nothing ever rendered them (see below), so both were deleted.
+  **Do not vendor PlantUML** — upstream is GPL, which is incompatible with this
+  project's licensing.
+- **两种失败态，别混为一谈。** 页面加载失败或量高超时（`FUSE_MS` 6 s）→
+  `FormulaWeb.FailCard()`，用 `MathLite` 把公式画出来。**语法错误不走这条**：
+  `katex.render(..., { throwOnError: false })` 会自己把源码按 `errorColor` 染红
+  就地渲染，用户看得到是哪一段写错了（实测 `$$\frac{1}{$$` 显示成红色的
+  `\ rac{1}{`）。强行把它当加载失败，反而会丢掉 KaTeX 标出的出错位置。
+- **图表为什么不在包里.** Mermaid (5.4 MB) and ECharts (1.1 MB) shipped for a
+  full version while `MdView` rendered every `Chart` block as a 「图表渲染未接入」
+  placeholder — 6.5 MB of engine that never executed once. `Chart` block kind and
+  `isChartLang()` are gone; ` ```mermaid ` is now an ordinary fenced code block
+  highlighted as source, which is *more* useful than a placeholder card claiming
+  it will render later. If diagrams come back, do not re-vendor the full bundle:
+  either draw a minimal native flowchart (a few hundred lines of ArkUI covers
+  `graph TD` with boxes and arrows, which is what notes actually contain), or
+  verify a tree-shaken Mermaid subset on device before budgeting for it.
+- **行内 `$…$` 不进 WebView，它走 `MathLite`。** A screenful of inline formulas would
+  be a screenful of WebView processes. `MdView.textFor()` linearises them to
+  Unicode text (`E = mc²`) with no code background — they read as prose, not as
+  code. Block formulas are few and worth typesetting, which is why only they get
+  KaTeX.
+- **「是块级公式」的判据必须收到行尾。** `isMathStart()` 只认两种形态：独占一行的
+  `$$`，或**以 `$$` 开头且以 `$$` 结尾**的单行块。曾经只判「以 `$$` 开头」，于是
+  `$$E = mc^2$$ 与行内 $a^2+b^2=c^2$ 两种` 被当成未闭合的公式块，**把后面整篇
+  笔记吞成公式源码**，KaTeX 再把整段染红。一行里既有公式又有正文是笔记里的正常
+  写法；退化成段落之后，行内的 `$$…$$` 与 `$…$` 都按行内公式收下——不收的话
+  紧跟的 `^` 会被上标规则抓走，`$$E = mc^2$$` 渲染成 `$$E = mc2$$`。
+  Corpus 用例：`tools/corpus/14-math-mixed.md`。
 - **Inline images do not become `Span`s.** Only a stand-alone `![]()` paragraph
   renders a real image; an image mixed into a line degrades to its alt text,
   because an image inside a `Span` breaks the per-character coordinate system
@@ -656,34 +694,34 @@ inside the builder body is what re-renders. Pass only genuinely constant
 arguments to a `@Builder`; anything that changes at runtime belongs in a
 parameter-less builder or a `@ComponentV2` with `@Param`.
 
-`EditorPage.persist()` skips the write when the markdown is unchanged. Without
+`ReaderPage.persist()` skips the write when the markdown is unchanged. Without
 that guard every open→close bumped `updatedAt`, reordered the list and
 invalidated the `ForEach` key for no reason.
 
 **A mis-tapped 新建笔记 must not leave a 无标题 husk behind.** `newNote()` has to
-create the file up front (the editor loads by id), so `EditorPage` undoes it: on
-exit it purges the note when it is **both** within 5 s of the tap **and** never
-edited. Two details are load-bearing:
-- The emptiness test is `isBlankBody()`, not a byte comparison against the
-  created skeleton. Crepe normalises the document it is handed — `'# 无标题\n\n'`
-  echoes back as `'# 无标题\n'` — so a byte compare marked every fresh note as
-  edited and the discard silently never fired. Compare *meaning* (strip the auto
-  H1 + whitespace), never bytes.
-- Time alone is not the rule. A note the user actually typed into must survive
-  even if they leave in two seconds, so `edited` (set on the first
-  non-blank `markdownUpdated`, which also covers type-then-delete-everything) is
-  required as well.
+create the file up front (the reader loads by id), so `ReaderPage.goBack()` undoes
+it: on exit it purges the note when it is **both** created from `+` this visit
+(`createdHere`) **and** never edited (`touched` false). Two details are
+load-bearing:
+- The emptiness test is semantic, not a byte comparison against the created
+  skeleton. The body is normalised on the way in and out (`'# 无标题\n\n'` comes
+  back as `'# 无标题'`), so a byte compare marked every fresh note as edited and
+  the discard silently never fired. Compare *meaning* (strip the auto H1 +
+  whitespace), never bytes.
+- Creation alone is not the rule. A note the user actually typed into must survive
+  even if they leave in two seconds, so `touched` (set on the first real edit,
+  which also covers type-then-delete-everything) is required as well.
 The purge is `NoteStore.purgeNote()`, deliberately **not** `deleteNote()`: the
 user deleted nothing, so nothing belongs in 回收站 or should hold a retention
-slot. `aboutToDisappear()` only saves — the discard decision lives in exactly one
-place (`leaveEditor()`) so a note cannot be purged after a save already wrote it.
+slot. The discard decision lives in exactly one place (`goBack()`), so a note
+cannot be purged after a save already wrote it.
 
 **Do not pass a `Note` object into `NoteCard`.** `NoteCard` takes immutable
-primitive props (`noteId`, `title`, `excerpt`, `tags`, `pinned`, `updatedAt`);
-the `ForEach` key is `${note.id}-${note.updatedAt}`. This forces a fresh card
-when an existing note is edited. Rendering `store.notes` directly, or passing
-the same mutable `Note` reference through `@Param`, will leave the card showing
-the pre-edit title/excerpt until a tab switch.
+primitive props (`noteId`, `title`, `excerpt`, `tags`, `archived`, `favorite`,
+`updatedAt`); the `ForEach` key is `${note.id}-${note.updatedAt}`. This forces a
+fresh card when an existing note is edited. Rendering `store.notes` directly, or
+passing the same mutable `Note` reference through `@Param`, will leave the card
+showing the pre-edit title/excerpt until a tab switch.
 
 UI immersion uses **HDS** (`@kit.UIDesignKit`; `HdsNavigation` + `HdsTabs` +
 `hdsMaterial`), gated on `deviceInfo.sdkApiVersion >= HDS_MIN_API` (23). Below
@@ -713,8 +751,8 @@ an older device degrades instead of crashing. The HDS libraries live in the
   - Expanding the **shell/root `Stack`** is wrong: it moves `Navigation` with it
     and re-invalidates `TITLE_BAR_CLEARANCE`. Only the `HitTestMode.None`
     decorative layer may expand.
-  Full-bleed pages (`EditorPage`, `TrashPage`) need the same treatment, on **both**
-  edges, in a two-layer `Stack`:
+  Full-bleed pages (`ReaderPage`, `TrashPage`, `WebDavPage`) need the same
+  treatment, on **both** edges, in a two-layer `Stack`:
   ```
   Stack({ alignContent: Alignment.TopStart }) {
     Column().width('100%').height('100%').backgroundColor(page_bg)
@@ -732,13 +770,13 @@ an older device degrades instead of crashing. The HDS libraries live in the
   by eye on a light build.
 - **A `NavDestination` page owes a compact header, not a status-bar inset.**
   Because the content root already begins below the status bar, `NavDestination`
-  content needs **no** top inset of its own. `EditorPage` used
-  `height(96)` + `padding({ top: 40 })` on the reasoning that it had to clear the
-  status bar; the result was 40 vp of dead space and a header that read as
-  "下沉过多" (button measured at `[24,255]` instead of the bar's top). The header
-  is now a plain **56 vp** row with no top padding — back button at `[24,135]`,
-  flush with the content top. `TrashPage` had the same bug via
-  `padding({ top: 48 })`. Neither page may add a status-bar inset while manual
+  content needs **no** top inset of its own. The removed `EditorPage` (and
+  `TrashPage` before it) used `height(96)` + `padding({ top: 40 })` on the
+  reasoning that it had to clear the status bar; the result was 40 vp of dead
+  space and a header that read as "下沉过多" (button measured at `[24,255]`
+  instead of the bar's top). Headers are now a plain **56 vp** row with no top
+  padding — back button at `[24,135]`, flush with the content top. No page may add
+  a status-bar inset while manual
   fullscreen stays off.
 - **`HdsNavigation` is the router.** Use `HdsNavigation(this.pathStack)` with
   `.navDestination(this.pageMap)`; do **not** wrap it in an outer `Navigation`.
@@ -808,8 +846,8 @@ an older device degrades instead of crashing. The HDS libraries live in the
   `saturation` 1.8/2.1/1.8/1.4, `brightness` 1.04/1.06/1.04/1.02),
   `glassSheenStop()` (0.62/0.74/0.62/0.4) and `glassRimWidth()` (1/1.5/1/0.5).
   Gear 3 is still visibly glassy on purpose — a "low" that is a flat fill makes
-  the setting pointless. Changing gear repaints in place; do not rebuild Crepe or
-  remount the shell for it.
+  the setting pointless. Changing gear repaints in place; do not remount the
+  shell for it.
 - **`deviceTier` is read-only and only ever displayed.** `aboutToAppear` probes
   `uiMaterial.isImmersiveMaterialSupported()` then `getGlobalMaterialLevel()` and
   the settings row renders `本机高算力 · 自适应优先`, so the 自适应 gear is
@@ -962,7 +1000,7 @@ an older device degrades instead of crashing. The HDS libraries live in the
   literal and `@Styles` function references as `StateStyles` values, so
   `.stateStyles()` is not usable here.
 - **The filter and sort groups share one row.** Two capsules side by side
-  (`ChipGroup(0)` = 全部/置顶/收藏, `ChipGroup(10)` = 最近修改/按标题/按创建),
+  (`ChipGroup(0)` = 全部/已归档/收藏, `ChipGroup(10)` = 最近修改/按标题/按创建),
   each `layoutWeight(1)`, capsule 34 vp / radius 17, chip 28 vp / radius 14,
   label 12 fp. Two stacked rows wasted a whole band and pushed the grid down.
 - **All floating surfaces share one inset.** The title row, the chip row and the
@@ -1037,10 +1075,10 @@ an older device degrades instead of crashing. The HDS libraries live in the
   every accent-dependent colour; components that need it take
   `@Param accentColor: string` (and `accentChipColor` where a tint is needed)
   from `Index.accentColor()`. Do not hardcode `#0A59F7` in a component.
-- The editor follows the accent + typography settings through CSS variables set
-  by `EditorPage` in `onPageEnd` (`__setTheme`, `__setTypography`,
-  `__setAccent`). Never rebuild Crepe to change font size — a variable write
-  repaints in place.
+- The renderer follows the accent + typography settings directly: `MdView` takes
+  `bodySize`, `lineHeight`, `dark`, `accentColor` as `@Param`s from
+  `ReaderPage.typography()`. There is no CSS/Web bridge to keep in sync any more
+  (the Crepe surface that needed one is gone).
 - **There is no FAB.** The new-note action lives only in the title bar (per the
   Cube redesign). If a floating action ever comes back, place it with
   `Alignment.BottomEnd` + `margin`, never with `position({x: <pixels>})`:
@@ -1065,7 +1103,7 @@ Rules:
   normative Chinese term, not a paraphrase. The load-bearing distinctions:
   「标签」= tag vs 「页签」= tab; the bottom bar is 「页签栏」 (HDS `TabBar`, styled by
   `Index.floatingBarStyle()`), never 「标签栏」or 「tab 栏」; the chips under the search
-  field are 「筛选条」/「筛选项」 (all/pinned/favorite) and 「排序条」/「排序项」
+  field are 「筛选条」/「筛选项」 (全部/已归档/收藏) and 「排序条」/「排序项」
   (updated/title/created), never 「切换栏目」; a grid item is 「笔记卡片」 but a list item
   is 「行」; a bare 「标题」 is never acceptable — say 页面标题 (the HDS 大标题) / 卡片标题 /
   编辑器标题. Locate code as `file › @Builder name` (e.g. `Index.ets › TitleActions()`).
@@ -1267,21 +1305,23 @@ commit message.
   `.expandSafeArea([SYSTEM], [TOP, BOTTOM])` on the decorative background layer
   (and on a `NavDestination`'s own coloured `Column`), never on a layout container.
 - **Double status-bar inset in `NavDestination`**: the content root already starts
-  at the status-bar bottom, so adding `padding({ top: 40 })` (as `EditorPage` did
-  with `height(96)`) only pushes the header down — the "header 下沉" defect.
-  `TrashPage` had the same bug with `top: 48`. A page header is a plain 56 vp row.
+  at the status-bar bottom, so adding `padding({ top: 40 })` (as the removed
+  `EditorPage` did with `height(96)`) only pushes the header down — the "header
+  下沉" defect. `TrashPage` had the same bug with `top: 48`. A page header is a
+  plain 56 vp row.
 - **Half-immersed `NavDestination`**: a page that sets `backgroundColor(page_bg)`
   but expands only `SafeAreaEdge.BOTTOM` still shows the window background in the
   status-bar band. In light mode this is nearly invisible (`#F5F6F8` vs a
   near-white window), so it ships unnoticed and only shows up in dark mode as a
   black band above the page. Use the two-layer backdrop-plus-content `Stack` and
   check dark mode by sampling `(20, y)` for small `y`.
-- **Discarding an untouched 新建笔记 by byte comparison**: Crepe normalises the
-  document, so `'# 无标题\n\n'` comes back as `'# 无标题\n'` and every fresh note
-  looks edited — the 5 s mis-tap discard then never fires, silently. Test
-  emptiness semantically (`isBlankBody()`), and require *both* the window and
-  "never edited" so a real note is never purged. Use `purgeNote()`, not
-  `deleteNote()` — a mis-tap belongs in neither the list nor 回收站.
+- **Discarding an untouched 新建笔记 by byte comparison**: the body is normalised
+  on the way in and out, so `'# 无标题\n\n'` comes back as `'# 无标题'` and every
+  fresh note looks edited — the mis-tap discard then never fires, silently. Test
+  emptiness semantically (strip the auto H1 + whitespace), and require *both*
+  "created from `+` this visit" and "never edited" so a real note is never
+  purged. Use `purgeNote()`, not `deleteNote()` — a mis-tap belongs in neither
+  the list nor 回收站.
 - **`HdsTabs` requires API ≥ 23**: guard with `deviceInfo.sdkApiVersion` and keep
   a non-HDS `PlainShell()` fallback; never call HDS APIs unguarded.
 - **`stateStyles({...})`**: rejected by this toolchain in both forms (inline
@@ -1296,16 +1336,15 @@ commit message.
 - **`WaterFlow` width**: a `FlowItem`'s child is measured against the whole flow,
   so percentage widths bleed into the neighbouring column. Give cells an explicit
   computed width, and never put a full-width header inside a multi-column flow.
-- **Editing the Crepe body through `uinput`/`uiInput` does not work.** Driving the
-  ArkWeb textField from the shell corrupts the note silently instead of failing:
-  `harmonyos_input_text` drops everything after the first newline (or pastes the
-  blob as one line, merging headings into list items); `KEYCODE_ENTER` (2054) is
-  swallowed by the IME — it commits the composition rather than inserting a break;
-  and `MOVE_HOME`/`MOVE_END`/`SHIFT+*` act on the page, not the WebView caret, so
-  the next keystroke replaces unrelated text. 全选 (`Ctrl+A`) + one paste is the
-  only reliable bulk edit, and even that drops fenced code blocks. Verify by
-  `cat`-ing the `.md` over hdc — the rendered view hides the damage (doubled `*`
-  emphasis, stray `%`) that the source keeps. Prefer fixing the template in
+- **Driving a `TextArea` through `uinput`/`uiInput` is brittle, and `$` needs shell
+  quoting care.** `harmonyos_input_text` (and `uitest uiInput text`) types into the
+  focused field, but PowerShell mangles `$` before hdc ever sees it — an unquoted
+  `$E` was expanded away and `$$` arrived as a PID (`17021`). Wrap the whole command
+  in single quotes and escape `$` with a backtick when building it in PowerShell.
+  `KEYCODE_ENTER` (2054) is swallowed by the IME — it commits the composition rather
+  than inserting a break, so use `keyEvent 2055` (DEL) to clear instead of
+  select-all-delete. Verify the result by `cat`-ing the `.md` over hdc: the rendered
+  view hides quoting damage that the source keeps. Prefer fixing the template in
   `NoteStore.createSample()` and reinstalling over hand-editing a live note.
 - **The app sandbox is not writable from `hdc`.** `shell` runs as uid 2000; the
   notes dir is uid 20020064 with `-rw-rw----`, so `ls`/`rm`/`cat` work but
@@ -1341,8 +1380,8 @@ commit message.
   error.
 - **WebDAV: a deletion is only confirmed when it provably happened.** Two
   independent halves, both learned the hard way: `NoteStore.deleteNote()` returns
-  whether the file reached `.trash`, and `archiveRemote()` returns true only when
-  *every* path for the id was archived. Dropping the baseline row on a failed
+  whether the file reached `.trash`, and `trashRemote()` returns true only when
+  *every* path for the id was trashed. Dropping the baseline row on a failed
   attempt makes the next run read the surviving file as "new from another
   device" and download the note the user just deleted. Never infer "deleted" from
   `ok` on the transport call alone.

@@ -75,7 +75,7 @@ Table aligns=[0] cols=1 rows=2 plain="列 a | b"    ← 单元格里的 \| 还�
 ```
 Code lang="js" hlLines=[1,3,4] code="const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;"
 Code lang="" code="tilde fence"                     ← ~~~ 围栏
-Chart lang="mermaid" code="graph TD; A-->B;"        ← isChartLang 认的语言名
+Code lang="mermaid" code="graph TD; A-->B;"        ← 图表语言名不再分叉，是普通代码块
 Code lang="" code="未闭合的围栏\n还有一行"           ← 未闭合吃到文末，不抛异常
 ```
 
@@ -156,11 +156,23 @@ Math code="E = mc^2"
 Math code="未闭合"      ← 未闭合也产出 Math 块，不吞后面的文本
 ```
 
-## 11-chart.md — 图表块
+## 11-chart.md — 图表语言名的围栏
 
 ```
-Chart lang="mermaid" code="graph TD\n  A --> B"   ← 缩进原样保留
+Code lang="mermaid" code="graph TD\n  A --> B"   ← 缩进原样保留；不再是 Chart 块
 ```
+
+## 14-math-mixed.md — 一行里既有块级公式又有正文
+
+```
+Math code="E = mc^2"                              ← 单行 `$$…$$` 独占一行才是块
+Paragraph "E = mc^2 与行内 a+b=c 两种"             ← 行尾还有正文 → 整行是段落
+```
+
+判据必须收到**行尾**。只判「以 `$$` 开头」会把这行当成未闭合的公式块，把后面整篇
+笔记吞成公式源码，KaTeX 再把它整段染红报错。退化成正文之后，行内的 `$$…$$` 与
+`$…$` 都按**行内公式**收下（`plain` 里是去掉定界符的源码），否则紧接着的 `^`
+会被上标规则抓走，`$$E = mc^2$$` 会渲染成 `$$E = mc2$$`。
 
 ## 12-garbage.md — 畸形输入
 
