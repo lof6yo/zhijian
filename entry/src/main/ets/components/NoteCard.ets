@@ -279,7 +279,6 @@ export struct NoteCard {
       .border(this.selected
         ? { width: 2, color: this.accentColor }
         : { width: 0 })
-      .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
       // Press feedback uses the platform interaction effect instead of
       // `.stateStyles()`: this toolchain rejects both the inline object literal
       // and `@Styles` function references as `StateStyles` values.
@@ -418,6 +417,18 @@ export struct NoteCard {
     }
     .width(this.cardW)
     .height(this.cardH)
+    // 圆角与裁剪**只在这里做一次**，且用的是与卡片相同的半径。
+    //
+    // 这一条改过两次才对。原先把圆角放在「色相条」自己身上（宽度 = 露出宽度），
+    // 而 ArkUI 的 `clip(true)` + `borderRadius` 在容器**窄于两倍半径**时，两个圆角
+    // 会被挤在一起、半径被压小：露出 30 vp、半径 16 vp（2r = 32 > 30）时，弧线明显
+    // 向内收，于是露出侧那条弧和卡片自己的弧对不上——滑动时看得到的那条「错位边框」。
+    // 露出越少越明显，正是「微微看到」。
+    //
+    // 放到这块**整卡大小**的容器上就不会发生：宽度恒为 cardW，弧永远是那一条。色相条
+    // 因此不再需要自己的圆角，它的左（右）边缘由这里的弧裁出来，与卡片轮廓严格重合。
+    .borderRadius(this.cornerRadius)
+    .clip(true)
     .hitTestBehavior(HitTestMode.None)
   }
 
@@ -434,7 +445,9 @@ export struct NoteCard {
         .borderRadius(this.cornerRadius)
       // 第 2 层：色相。**只铺在真正露出来的那一条上**，并在卡片边缘处淡到零；
       // 铺满整张卡时，露出来的永远是渐变里最深的那一段，看起来就是一块色板。
-      // 外侧（左）沿用卡片圆角，内侧不留圆角，接缝处才没有第二条弧线。
+      // 这里**不给这一条自己设圆角**——外层的 `clip(true)` 会用与卡片完全相同的
+      // 半径裁它，两者才是同一条弧；单独给圆角会被窄宽度夹成更小的半径，弧线
+      // 向内收，露出侧就多出一条与卡片边缘对不上的弧（实测可见）。
       Column()
         .width(Math.abs(this.swipeOffset))
         .height('100%')
@@ -448,7 +461,6 @@ export struct NoteCard {
                [this.withAlpha(this.accentColor, this.accentAlpha(false) * 0.4), 0.55],
                [this.withAlpha(this.accentColor, 0), 1.0]]
         })
-        .borderRadius({ topLeft: this.cornerRadius, bottomLeft: this.cornerRadius })
 
       Column({ space: 4 }) {
         // 露出太窄时只留一层染色：16 fp 的图标塞进十几 vp 里会溢出到卡片外面。
@@ -489,6 +501,8 @@ export struct NoteCard {
         .height('100%')
         .backgroundColor(this.glassOn ? this.glassTint : $r('sys.color.ohos_id_color_card_bg'))
         .borderRadius(this.cornerRadius)
+      // 同 `StartLayer`：色相条自己不设圆角，交给外层 `clip(true)` 用卡片半径
+      // 裁一次，两端弧线才与卡片轮廓重合。
       Column()
         .width(Math.abs(this.swipeOffset))
         .height('100%')
@@ -502,7 +516,6 @@ export struct NoteCard {
                [$r('app.color.swipe_gold_mid'), 0.55],
                [$r('app.color.swipe_gold_lo'), 1.0]]
         })
-        .borderRadius({ topRight: this.cornerRadius, bottomRight: this.cornerRadius })
 
       Column({ space: 4 }) {
         if (Math.abs(this.swipeOffset) >= 30) {

@@ -5,10 +5,15 @@ param(
     [switch]$Timestamp,
     [switch]$Purge,
     [string]$Product = 'default',
-    # Abort when the build log has not grown for this many seconds. A healthy
-    # build prints a task line every second or two; the failure mode this
-    # catches printed a dozen lines and then nothing at all for ten minutes.
-    [int]$StallSec = 120,
+    # Abort when the build log has not grown for this many seconds.
+    #
+    # Measured on this machine: a healthy `hvigorw --no-daemon` prints its first
+    # line at ~16 s (JVM + task-graph setup) and then a line every 1–2 s; the
+    # whole incremental build is 12–19 s. So 45 s of total silence is already
+    # three times the worst healthy gap — there is nothing to wait for beyond
+    # that, and the earlier 120 s default meant one silent hang cost two minutes
+    # before the retry even started.
+    [int]$StallSec = 45,
     # Absolute ceiling, for a genuinely slow first build on a cold cache.
     [int]$TimeoutSec = 900
 )
@@ -22,7 +27,7 @@ param(
 #   scripts\dist.ps1 -Sign          # also emit a locally debug-signed copy (emulator only)
 #   scripts\dist.ps1 -Timestamp     # additionally keep a dated copy
 #   scripts\dist.ps1 -Purge         # delete previously published HAPs first
-#   scripts\dist.ps1 -StallSec 180  # how long "no output" may last (default 120)
+#   scripts\dist.ps1 -StallSec 90   # how long "no output" may last (default 45)
 #
 # The published name comes from `AppScope/app.json5`, not from hvigor: the
 # build's own output is `entry-default-unsigned.hap` in both debug and release,
@@ -135,6 +140,13 @@ function Invoke-Timed([string]$label, [string]$command) {
         KillHvigorTree
         $why = if ($state -eq 'stalled') { "no output for ${StallSec}s" } else { "exceeded ${TimeoutSec}s" }
         Write-Host "  $label $why; killed hvigor" -ForegroundColor Yellow
+        # Show how far it got. A stall before the first task line (hvigor prints
+        # its first line at ~16 s) is a different fault from a stall in the
+        # middle of CompileArkTS, and only the log can tell them apart.
+        if (Test-Path $buildLog) {
+            $lineCount = @(Get-Content $buildLog).Count
+            Write-Host "    ($lineCount line(s) of output before the stall)" -ForegroundColor DarkGray
+        }
         return $state
     }
     $out = if (Test-Path $buildLog) { Get-Content $buildLog -Raw } else { '' }
@@ -177,18 +189,29 @@ if ($stale.Count -gt 0) {
 
 # `hvigorw --no-daemon` is the primary path, not the fallback: the daemon is
 # what hangs, and this route starts a fresh process every time. It is also
-# faster than it sounds — 80 s cold, 20 s incremental.
+# faster than it sounds — 80 s cold, 12–19 s incremental.
 $hvigor = Join-Path $env:DEVECO_CLI_CLT_PATH 'bin\hvigorw.bat'
 $cli = "`$env:PATH = '$($env:PATH -replace "'", "''")'; " +
     "`$env:DEVECO_CLI_CLT_PATH = '$env:DEVECO_CLI_CLT_PATH'; " +
     "`$env:DEVECO_SDK_HOME = '$env:DEVECO_SDK_HOME'; " +
     "`$env:OHOS_HDC_SERVER_PORT = '$env:OHOS_HDC_SERVER_PORT'; "
-$result = Invoke-Timed 'hvigorw' (
-    $cli + "& '$hvigor' --mode module -p module=$module@$Product " +
-    "-p product=$Product -p buildMode=$mode assembleHap --no-daemon")
+$hvigorCmd = $cli + "& '$hvigor' --mode module -p module=$module@$Product " +
+    "-p product=$Product -p buildMode=$mode assembleHap --no-daemon"
+
+# The `--no-daemon` route is retried **once** before falling back to the CLI.
+# The stall that prompted this is intermittent, and the same command that went
+# silent for two minutes ran in 17 s immediately afterwards on an unchanged
+# tree. A retry therefore costs at most one `$StallSec` and usually recovers the
+# whole build; `devecocli build` is ~6× slower (114 s vs 17 s measured), so it
+# must not be the first response to a one-off silence.
+$result = Invoke-Timed 'hvigorw' $hvigorCmd
+if ($result -ne 'ok') {
+    Write-Host '  retrying hvigorw --no-daemon once ...' -ForegroundColor Yellow
+    $result = Invoke-Timed 'hvigorw' $hvigorCmd
+}
 
 if ($result -ne 'ok') {
-    # Only reached if `--no-daemon` itself failed: an ohpm sync that never ran,
+    # Only reached when `--no-daemon` failed twice: an ohpm sync that never ran,
     # a corrupted hvigor cache. The CLI is the slower route but it repairs both.
     Write-Host '  retrying through devecocli build ...' -ForegroundColor Yellow
     $result = Invoke-Timed 'devecocli build' (

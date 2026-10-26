@@ -2136,7 +2136,6 @@ struct Index {
     .padding({ left: 14, right: 10, top: 10, bottom: 10 })
     .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
     .borderRadius(this.cardRadius)
-    .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
     // 底边留出浮动页签栏的高度：它是浮层，会盖住页面底部这一条。
     .margin({ left: this.SIDE_INSET, right: this.SIDE_INSET, bottom: 96 })
     .onClick(() => {
@@ -2805,7 +2804,6 @@ struct Index {
           .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
           .backgroundColor(Color.Transparent)
           .borderRadius(this.cardRadius)
-          .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
         }
 
         ListItem() {
@@ -2932,7 +2930,6 @@ struct Index {
           .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
           .backgroundColor(Color.Transparent)
           .borderRadius(this.cardRadius)
-          .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
         }
 
         ListItem() {
@@ -2965,7 +2962,6 @@ struct Index {
           .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
           .backgroundColor(Color.Transparent)
           .borderRadius(this.cardRadius)
-          .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
         }
 
         ListItem() {
@@ -2981,7 +2977,6 @@ struct Index {
         .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
         .backgroundColor(Color.Transparent)
         .borderRadius(this.cardRadius)
-        .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
 
         ListItem() {
           this.SectionLabel('关于')
@@ -2993,7 +2988,6 @@ struct Index {
         .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
         .backgroundColor(Color.Transparent)
         .borderRadius(this.cardRadius)
-        .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
       }
       .width('100%')
       .layoutWeight(1)

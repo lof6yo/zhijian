@@ -158,15 +158,25 @@ scripts\dist.ps1 -Sign          # + dist\zhijian-1.0.0-debug-signed.hap (emulato
 scripts\dist.ps1 -Clean         # clean first, when the build looks stale
 scripts\dist.ps1 -Timestamp     # also keep a dated copy
 scripts\dist.ps1 -Purge         # remove previously published HAPs first
-scripts\dist.ps1 -StallSec 180  # how long "no output" may last (default 120)
+scripts\dist.ps1 -StallSec 90   # how long "no output" may last (default 45)
 ```
 
 It builds through `hvigorw --no-daemon`, not `devecocli build`: the daemon is
 what deadlocks (see §11 *stuck hvigor daemon*), and the no-daemon path is the
-same speed — 80 s cold, 20 s incremental. Before starting it reaps any hvigor
+same speed — 80 s cold, 12–19 s incremental. Before starting it reaps any hvigor
 `node` process left by an earlier run, and while building it watches the log;
-**120 s without a new line** is treated as a deadlock (kill, then retry through
-`devecocli build`), not as a slow build.
+**45 s without a new line** is treated as a deadlock, not as a slow build.
+
+The relaxation ladder is `hvigorw --no-daemon` → the same command **once more**
+→ `devecocli build`. The middle rung is not padding: the two-minute silence this
+guard exists for is *intermittent* — the identical command on an unchanged tree
+ran in 17 s immediately afterwards, twice, including right after the same
+daemon reap. A one-off silence therefore costs at most one `$StallSec` and
+usually recovers the whole build, while `devecocli build` measured 114 s against
+17 s and must not be the first response. On a trip the script also prints how
+many lines had been produced, because a stall *before the first task line*
+(hvigor's first line lands at ~16 s) is a different fault from one in the middle
+of `CompileArkTS`.
 
 It refuses to publish rather than shipping something stale: the artifact is
 picked as the newest `*-unsigned.hap`, its mtime must not be older than the
@@ -488,11 +498,17 @@ button.
 - **卡片圆角 belongs to 外观, not to 阅读与编辑.** It decides what a card *looks
   like*, and the settings page's own group cards are drawn with it.
 - **设置 group cards are the same kind of card as a 笔记卡片.** They share
-  `components/CardSurface.ets` (沉浸光感 + 半透明遮罩), the same 卡片圆角 value and
-  the same shadow on the backdrop. The settings page used to paint a flat
+  `components/CardSurface.ets` (沉浸光感 + 半透明遮罩) and the same 卡片圆角 value.
+  The settings page used to paint a flat
   translucent fill with a hard-coded 20 vp radius, which read as another app's
   controls. `NoteCard` and the settings rows must keep using one implementation —
   two copies of the surface would drift.
+- **卡片不画阴影.** Both the 笔记卡片 and the 设置 group cards are flat sheets on
+  the same backdrop; a 20 vp drop shadow makes them read as a layer floating
+  above it, and it also lands on the swipe-action tint underneath a card and
+  darkens a band along the card's edge. There is no `.shadow()` left anywhere in
+  `ets/`; the `glass_shadow` color stays in the resource table unused, so a
+  future *floating* surface (a sheet, a popup) does not reinvent it.
 - **Slider settings are one row each** — label, slider, value side by side. They
   used to be two lines (title + value) plus a full-width slider below, and three
   of them ate most of the settings page.
@@ -1335,13 +1351,27 @@ commit message.
   here a `node` daemon left over from an earlier session (two of them, started
   09:37) kept holding the build directory: the build printed a dozen task lines,
   then sat at ~2 % CPU with no further output. The real numbers on this machine
-  are **full release ~80 s, incremental ~20 s, HAP 1.12 MB**. If a build appears
+  are **full release ~80 s, incremental 12–19 s, HAP 1.12 MB**. If a build appears
   to hang, check `Get-CimInstance Win32_Process -Filter "Name='node.exe'"` for
   `hvigor` command lines whose `CreationDate` predates this run, kill those only
   (never every `node.exe` — that takes out the MCP servers), and rerun with
   `hvigorw --no-daemon`. `scripts\dist.ps1` now does this automatically: it
-  watches the build log and treats **120 s without new output** as a deadlock,
+  watches the build log and treats **45 s without new output** as a deadlock,
   not as slowness.
+- **There is a *second*, unrelated silence that looks identical: hvigor emitting
+  nothing at all for minutes and then succeeding on the very next run.** Measured
+  here: the same `hvigorw --no-daemon` command on an unchanged tree went silent
+  for 120 s (zero bytes, so the first task line had not even been printed),
+  then ran in 17 s and 16.9 s on two immediate retries — including right after
+  the same daemon reap, and the reap has been ruled out (`hvigorw` alone after a
+  kill still finished in 17 s). So a single silence does **not** identify a
+  poisoned daemon, and escalating straight to `devecocli build` (~114 s) turns a
+  12 s build into a 4-minute one. The ladder is *retry the same command once*
+  before switching routes, which is what `dist.ps1` now does. Diagnostic: the
+  script prints how many lines preceded the stall — **0 lines** means it died
+  before drawing the task graph (JVM/wrapper start-up, nothing cached yet),
+  while a stall after a dozen `Finished` lines is the daemon lock described
+  above.
 - **`setWindowLayoutFullScreen(true)` + HDS**: manual fullscreen collapses the
   HDS title bar's custom node to 17 vp and its buttons to 9 vp. Use
   `.ignoreLayoutSafeArea` on the HDS container instead, and clear the title-bar
