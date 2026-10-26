@@ -93,6 +93,30 @@
       "value": "#FFD166"
     },
     {
+      "name": "swipe_gold_hi",
+      "value": "#26FFD166"
+    },
+    {
+      "name": "swipe_gold_mid",
+      "value": "#12FFD166"
+    },
+    {
+      "name": "swipe_gold_lo",
+      "value": "#00FFD166"
+    },
+    {
+      "name": "swipe_red_hi",
+      "value": "#17FF6B6B"
+    },
+    {
+      "name": "swipe_red_mid",
+      "value": "#0BFF6B6B"
+    },
+    {
+      "name": "swipe_red_lo",
+      "value": "#00FF6B6B"
+    },
+    {
       "name": "page_grad_top",
       "value": "#1B2530"
     },

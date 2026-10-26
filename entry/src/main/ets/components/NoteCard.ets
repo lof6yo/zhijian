@@ -65,15 +65,109 @@ export struct NoteCard {
    * layer and hides it completely.
    */
   @Param glassTint: string = '';
+  /**
+   * 当前是否需要按深色配色绘制。
+   *
+   * 只用在左右滑动底层的色相强度上：强调色在深色主题下本身是**提亮**过的一档
+   * （`Palette.accentDark`），同样的透明度压在近黑的卡面上会一次跳成亮块。滑动
+   * 色相是「光」，深色里光应该更弱，不能直接沿用浅色的比例。
+   */
+  @Param darkTheme: boolean = false;
   @Event onOpen: (noteId: string) => void = () => {};
   @Event onTogglePin: (noteId: string) => void = () => {};
   @Event onToggleFavorite: (noteId: string) => void = () => {};
   @Event onDelete: (noteId: string) => void = () => {};
   @Event onEditTags: (noteId: string) => void = () => {};
 
+  // ------------------------------------------------------- 左右滑动
+
+  /**
+   * 卡片当前的横向位移（vp）。正 = 右滑，负 = 左滑。
+   *
+   * 卡片被 `translate` 推开的地方露出底下的操作层——这就是邮箱那套交互：
+   * **拖动只是「正在考虑」，松手才执行**，没有停住不动的按钮态。
+   */
+  @Local swipeOffset: number = 0;
+
+  /**
+   * 卡片实测宽高。操作层要用绝对尺寸，不能用 `'100%'`：
+   * 百分比高度在内容驱动的 `Stack` 里按**可用**高度解析，每张卡会被撑成一屏
+   * （这个坑在 `MaterialLayer` 上已经踩过一次）。
+   */
+  @Local cardW: number = 0;
+  @Local cardH: number = 0;
+
+  /**
+   * 第二档的判定线（vp）。
+   *
+   * 拖到这条线之前是**轻滑**，越过是**重滑**，两档松手执行不同动作。
+   * 按卡片宽度的 55% 取，再夹在 96–150：双列卡片只有约 198 vp 宽，固定值会让
+   * 窄卡几乎一滑就到、宽卡（平板）又够不着。
+   */
+  private longThreshold(): number {
+    const w: number = this.cardW > 0 ? this.cardW : 198;
+    return Math.max(96, Math.min(150, w * 0.55));
+  }
+
+  /**
+   * 拖动进度的 0–1。操作层的颜色浓度与图标缩放都挂在这个值上——
+   * 「短到长有个过渡」说的就是它：越拉越浓，不是到了某一格才变。
+   */
+  private pull(): number {
+    const limit: number = this.longThreshold() * 1.4;
+    return Math.min(1, Math.abs(this.swipeOffset) / limit);
+  }
+
+  /** 当前是否已越过第二档判定线（松手就是重滑动作）。 */
+  private pastSecond(): boolean {
+    return Math.abs(this.swipeOffset) >= this.longThreshold();
+  }
+
+  /**
+   * 回弹到目标位移。
+   *
+   * 必须走 `animateTo`：直接赋值会让卡片瞬移，看起来像闪了一下。
+   */
+  private settle(target: number): void {
+    this.getUIContext().animateTo({ duration: 220, curve: Curve.Friction }, () => {
+      this.swipeOffset = target;
+    });
+  }
+
+  /**
+   * 松手时执行动作。
+   *
+   * 邮箱的分档语义：同一侧滑得近是轻动作，滑得远是重动作。
+   *   右滑 → 近：收藏    远：置顶
+   *   左滑 → 近：标签    远：删除
+   * 位置越远代价越大，所以「重」的那个都需要再确认一次或本来就可逆；
+   * 只有删除会弹确认框，因为它滑到底就不可逆，而滑完手指还在原位。
+   */
+  private commitSwipe(rightward: boolean, far: boolean): void {
+    if (rightward) {
+      if (far) {
+        this.onTogglePin(this.noteId);
+      } else {
+        this.onToggleFavorite(this.noteId);
+      }
+      return;
+    }
+    if (far) {
+      this.confirmDelete();
+    } else {
+      this.onEditTags(this.noteId);
+    }
+  }
+
   build() {
-    Column({ space: 8 }) {
-      Row({ space: 6 }) {
+    Stack({ alignContent: Alignment.Center }) {
+      // 操作层在下，卡片在上。卡片被 `translate` 推开的地方露出这一层。
+      if (this.cardW > 0 && this.cardH > 0) {
+        this.SwipeLayer()
+      }
+
+      Column({ space: 8 }) {
+        Row({ space: 6 }) {
         Text(this.title.length > 0 ? this.title : '无标题')
           .fontSize(17)
           .fontWeight(FontWeight.Medium)
@@ -127,44 +221,271 @@ export struct NoteCard {
         .fontSize(11)
         .fontColor($r('app.color.text_secondary'))
         .width('100%')
+      }
+      .width('100%')
+      .padding(16)
+      .alignItems(HorizontalAlign.Start)
+      // The surface is painted by `.background()`, in this order:
+      //
+      //   1. the material carrier (the Toggle that paints 沉浸光感), then
+      //   2. a translucent veil, then
+      //   3. the text above, as this Column's own children.
+      //
+      // Both choices are load-bearing.
+      //
+      // `.background(builder)` lays the carrier out against *this node's* already
+      // measured box, so the material cannot inflate the card. Putting the carrier
+      // in a `Stack` sibling instead did exactly that on device:
+      // `LayoutPolicy.matchParent` resolved against the flow's available size and
+      // every card grew to the full grid height — one row filled the screen.
+      //
+      // The veil has to sit above the material but below the text. Painting it as
+      // `backgroundColor` would put it *below* the material, because the material's
+      // visual layer is drawn above `backgroundColor`, and hide it entirely.
+      .background(this.CardSurface(), CARD_BG_OPTIONS)
+      // Transparent only when the carrier is actually painting. An opaque fallback
+      // here would be correct-looking but would also cover the material.
+      .backgroundColor(this.glassOn ? Color.Transparent : $r('sys.color.ohos_id_color_card_bg'))
+      .borderRadius(this.cornerRadius)
+      .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
+      // Press feedback uses the platform interaction effect instead of
+      // `.stateStyles()`: this toolchain rejects both the inline object literal
+      // and `@Styles` function references as `StateStyles` values.
+      .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.97 })
+      .hoverEffect(HoverEffect.Auto)
+      .onClick(() => {
+        this.onOpen(this.noteId);
+      })
+      .bindContextMenu(this.CardMenu(), ResponseType.LongPress, {
+        preview: MenuPreviewMode.NONE
+      })
+      // 横向拖动改由 `PanGesture` 接管；纵向滚动仍旧交给瀑布流。
+      .translate({ x: this.swipeOffset })
+      .onAreaChange((oldArea: Area, newArea: Area) => {
+        const w: number = Number(newArea.width);
+        const h: number = Number(newArea.height);
+        if (w !== this.cardW || h !== this.cardH) {
+          this.cardW = w;
+          this.cardH = h;
+        }
+      })
+      // 用**默认**的 `.gesture`，不是 `priorityGesture` 也不是 `parallelGesture`。
+      //   - `parallelGesture` 让滑动和长按菜单**同时**成立，慢拖时菜单会在页面中央
+      //     弹出来（实测）。
+      //   - `priorityGesture` 反过来把长按菜单留在原地、滑动不触发（实测：卡片纹丝
+      //     不动，菜单照样弹出）。
+      // 默认绑定走平台自己的竞争规则：手指移动超过 `distance` 即判定为滑动，
+      // 长按随之取消；按住不动才轮到菜单。「按住不动 = 菜单，移动 = 滑动」。
+      .gesture(
+        PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 6 })
+          .onActionStart(() => {
+            this.swipeOffset = 0;
+          })
+          .onActionUpdate((event: GestureEvent) => {
+            // `offsetX` 是相对起手点的位移（vp，正值向右），不是逐帧增量，
+            // 所以直接赋值，不累加。
+            const limit: number = this.cardW > 0 ? this.cardW : 198;
+            this.swipeOffset = Math.max(-limit, Math.min(limit, event.offsetX));
+          })
+          .onActionEnd(() => {
+            const dx: number = this.swipeOffset;
+            // 邮箱式分档：滑出去就要有结果，所以门槛放得很低（24 vp，约一指宽），
+            // 低于它才当误触回弹。松手永远回到 0——没有停住的按钮态。
+            if (Math.abs(dx) >= 24) {
+              this.commitSwipe(dx > 0, Math.abs(dx) >= this.longThreshold());
+            }
+            this.settle(0);
+          })
+      )
+    }
+    // 卡片根节点自己声明宽度：`FlowItem` 的子节点是按**整条流**测量的，
+    // 不钉宽度，`'100%'` 会解析成两列的宽度并盖住邻居。
+    .width('100%')
+  }
+
+  /**
+   * 强调色色相的强度（0–1）。
+   *
+   * 只有强调色需要这个函数：它是运行期从 `Palette` 读来的 hex，浅深两套色值在
+   * 代码里，透明度只能跟着算。收藏金与危险红是**资源色**，透明度已经写进
+   * `swipe_gold_hi/mid/lo`、`swipe_red_hi/mid/lo`，由 `resources/dark/` 给出
+   * 深色的一套——两条色相总跟着主题走，不会像常量那样只在一种模式下正确。
+   *
+   * 深色仍要再弱一档：`Palette.accentDark` 本身是提亮过的，同一个比例压在近黑
+   * 卡面上会直接跳成一块亮色。
+   */
+  private accentAlpha(strong: boolean): number {
+    if (this.darkTheme) {
+      return strong ? 0.16 : 0.09;
+    }
+    return strong ? 0.22 : 0.11;
+  }
+
+  /**
+   * 把 `#RRGGBB` / `#AARRGGBB` 改成带指定不透明度的 ARGB。
+   *
+   * ArkUI 的 `linearGradient` 只能收 ARGB 字符串，而强调色是运行期从 `Palette`
+   * 读来的普通 hex，没法写进资源表。渐变的收尾端必须是**同色相的 alpha 0**，
+   * 不能用 `Color.Transparent`：后者在非预乘插值里会中途往黑里沉，露出一道灰。
+   */
+  private withAlpha(hex: string, alpha: number): string {
+    const a: number = Math.round(Math.max(0, Math.min(1, alpha)) * 255);
+    const aHex: string = a.toString(16).padStart(2, '0').toUpperCase();
+    if (hex.length === 9 && hex.startsWith('#')) {
+      return '#' + aHex + hex.substring(3);
+    }
+    if (hex.length === 7 && hex.startsWith('#')) {
+      return '#' + aHex + hex.substring(1);
+    }
+    return hex;
+  }
+
+  /**
+   * 卡片底下的操作层——邮箱式，不是按钮式。
+   *
+   * 三条约束，都是为了「不割裂」：
+   *
+   *  1. **形状就是卡片本身。** 整块与卡片同尺寸、同圆角，卡片从它上面滑过去；
+   *     露出来的永远是「这张卡自己的边缘」。早先按露出宽度画窄条，窄的时候圆角
+   *     被夹成尖角薄片，像一块从别处飘来的颜色。
+   *  2. **底色是同一张纸。** 先铺卡片自己的表面色，再叠色相——直接坐在页面背景
+   *     上的纯色会被读成「另一张卡」，不是「这张卡底下的一层」。
+   *  3. **色相从露出侧往里淡出。** 平铺一块色会有一条和卡片边缘齐平的硬色边，
+   *     那就是跳。渐变到底之后，色只是从卡片底下渗出来的一点光。
+   *
+   * 一层两档：越过判定线后同一层加深一档、图标放大、文案换成重动作。跨线是唯一
+   * 离散的那一下，其余随拉动连续变化。
+   *
+   * 所有值都直接读 `@Local`，不经 `@Builder` 参数：参数按值传递，运行时变化的
+   * 字段进不了依赖，拖动时这一层就不会重画。
+   */
+  @Builder
+  SwipeLayer() {
+    Stack() {
+      if (this.swipeOffset > 0) {
+        this.StartLayer()
+      }
+      if (this.swipeOffset < 0) {
+        this.EndLayer()
+      }
+    }
+    .width(this.cardW)
+    .height(this.cardH)
+    .hitTestBehavior(HitTestMode.None)
+  }
+
+  /** 右滑：轻 = 收藏（暖光），重 = 置顶（强调色光）。 */
+  @Builder
+  StartLayer() {
+    Stack({ alignContent: Alignment.TopStart }) {
+      // 第 1 层：卡片自己的表面色。底下这一层必须是「纸」，否则纯色坐在页面
+      // 背景上会被读成另一张卡，而不是这张卡底下的一层。
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.glassOn ? this.glassTint : $r('sys.color.ohos_id_color_card_bg'))
+        .borderRadius(this.cornerRadius)
+      // 第 2 层：色相。**只铺在真正露出来的那一条上**，并在卡片边缘处淡到零；
+      // 铺满整张卡时，露出来的永远是渐变里最深的那一段，看起来就是一块色板。
+      // 外侧（左）沿用卡片圆角，内侧不留圆角，接缝处才没有第二条弧线。
+      Column()
+        .width(Math.abs(this.swipeOffset))
+        .height('100%')
+        .linearGradient({
+          angle: 90,
+          colors: this.pastSecond()
+            ? [[this.withAlpha(this.accentColor, this.accentAlpha(true)), 0.0],
+               [this.withAlpha(this.accentColor, this.accentAlpha(true) * 0.4), 0.55],
+               [this.withAlpha(this.accentColor, 0), 1.0]]
+            : [[$r('app.color.swipe_gold_hi'), 0.0],
+               [$r('app.color.swipe_gold_mid'), 0.55],
+               [$r('app.color.swipe_gold_lo'), 1.0]]
+        })
+        .borderRadius({ topLeft: this.cornerRadius, bottomLeft: this.cornerRadius })
+
+      Column({ space: 4 }) {
+        // 露出太窄时只留一层染色：16 fp 的图标塞进十几 vp 里会溢出到卡片外面。
+        if (Math.abs(this.swipeOffset) >= 30) {
+          if (this.pastSecond()) {
+            SymbolGlyph($r('sys.symbol.pin'))
+              .fontSize(this.stripIconSize())
+              .fontColor([this.accentColor])
+          } else {
+            Text('★')
+              .fontSize(this.stripIconSize())
+              .fontColor($r('app.color.favorite'))
+          }
+        }
+        // 10 fp 的「收藏」需要更宽的位置，窄了就只显示图标。
+        if (Math.abs(this.swipeOffset) >= 56) {
+          Text(this.pastSecond() ? (this.pinned ? '取消置顶' : '置顶') : '收藏')
+            .fontSize(10)
+            .fontColor(this.pastSecond() ? this.accentColor : $r('app.color.favorite'))
+            .maxLines(1)
+        }
+      }
+      .width(Math.abs(this.swipeOffset))
+      .height('100%')
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
     }
     .width('100%')
-    .padding(16)
-    .alignItems(HorizontalAlign.Start)
-    // The surface is painted by `.background()`, in this order:
-    //
-    //   1. the material carrier (the Toggle that paints 沉浸光感), then
-    //   2. a translucent veil, then
-    //   3. the text above, as this Column's own children.
-    //
-    // Both choices are load-bearing.
-    //
-    // `.background(builder)` lays the carrier out against *this node's* already
-    // measured box, so the material cannot inflate the card. Putting the carrier
-    // in a `Stack` sibling instead did exactly that on device:
-    // `LayoutPolicy.matchParent` resolved against the flow's available size and
-    // every card grew to the full grid height — one row filled the screen.
-    //
-    // The veil has to sit above the material but below the text. Painting it as
-    // `backgroundColor` would put it *below* the material, because the material's
-    // visual layer is drawn above `backgroundColor`, and hide it entirely.
-    .background(this.CardSurface(), CARD_BG_OPTIONS)
-    // Transparent only when the carrier is actually painting. An opaque fallback
-    // here would be correct-looking but would also cover the material.
-    .backgroundColor(this.glassOn ? Color.Transparent : $r('sys.color.ohos_id_color_card_bg'))
-    .borderRadius(this.cornerRadius)
-    .shadow({ radius: 20, color: $r('app.color.glass_shadow'), offsetX: 0, offsetY: 6 })
-    // Press feedback uses the platform interaction effect instead of
-    // `.stateStyles()`: this toolchain rejects both the inline object literal
-    // and `@Styles` function references as `StateStyles` values.
-    .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.97 })
-    .hoverEffect(HoverEffect.Auto)
-    .onClick(() => {
-      this.onOpen(this.noteId);
-    })
-    .bindContextMenu(this.CardMenu(), ResponseType.LongPress, {
-      preview: MenuPreviewMode.NONE
-    })
+    .height('100%')
+  }
+
+  /** 左滑：轻 = 标签（强调色光），重 = 删除（红光）。 */
+  @Builder
+  EndLayer() {
+    Stack({ alignContent: Alignment.TopEnd }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.glassOn ? this.glassTint : $r('sys.color.ohos_id_color_card_bg'))
+        .borderRadius(this.cornerRadius)
+      Column()
+        .width(Math.abs(this.swipeOffset))
+        .height('100%')
+        .linearGradient({
+          angle: 270,
+          colors: this.pastSecond()
+            ? [[$r('app.color.swipe_red_hi'), 0.0],
+               [$r('app.color.swipe_red_mid'), 0.55],
+               [$r('app.color.swipe_red_lo'), 1.0]]
+            : [[this.withAlpha(this.accentColor, this.accentAlpha(false)), 0.0],
+               [this.withAlpha(this.accentColor, this.accentAlpha(false) * 0.42), 0.55],
+               [this.withAlpha(this.accentColor, 0), 1.0]]
+        })
+        .borderRadius({ topRight: this.cornerRadius, bottomRight: this.cornerRadius })
+
+      Column({ space: 4 }) {
+        if (Math.abs(this.swipeOffset) >= 30) {
+          SymbolGlyph(this.pastSecond() ? $r('sys.symbol.trash') : $r('sys.symbol.label'))
+            .fontSize(this.stripIconSize())
+            .fontColor([this.pastSecond() ? $r('app.color.danger') : this.accentColor])
+        }
+        if (Math.abs(this.swipeOffset) >= 56) {
+          Text(this.pastSecond() ? '删除' : '标签')
+            .fontSize(10)
+            .fontColor(this.pastSecond() ? $r('app.color.danger') : this.accentColor)
+            .maxLines(1)
+        }
+      }
+      .width(Math.abs(this.swipeOffset))
+      .height('100%')
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  /**
+   * 图标随拉动放大。
+   *
+   * 这是「短到长有过渡」里连续的那一半：底色只是在跨线时加深一档，尺寸一直在长。
+   */
+  private stripIconSize(): number {
+    return 16 + 6 * this.pull();
   }
 
   /**

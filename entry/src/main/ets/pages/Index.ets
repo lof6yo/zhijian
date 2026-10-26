@@ -1095,6 +1095,10 @@ struct Index {
       .vertical(false)
       .barPosition(BarPosition.End)
       .barOverlap(true)
+      // 关掉页签横滑。卡片自己有左右滑动手势，两者方向相同、区域重叠；
+      // 留着横滑，用户在卡片上滑动就有一半概率切了页签。代价是切换页签只能
+      // 点底栏——但底栏本来就一直在。
+      .scrollable(false)
       .barFloatingStyle(this.floatingBarStyle())
       .onChange((index: number) => {
         this.selectedTab = index;
@@ -1140,6 +1144,8 @@ struct Index {
       .tabBar(this.TabItem('设置', 2, $r('sys.symbol.gearshape_fill')))
     }
     .barHeight(56)
+    // 与 HDS 外壳一致：卡片左右滑动与页签横滑方向冲突，关掉横滑。
+    .scrollable(false)
     .onChange((index: number) => {
       this.selectedTab = index;
     })
@@ -1293,6 +1299,7 @@ struct Index {
                     glassOn: this.glassOn(),
                     glassGear: this.glassLevel,
                     glassTint: this.glassTint(),
+                    darkTheme: this.activeDark(),
                     onOpen: (id: string) => {
                       const target = this.store.find(id);
                       if (target !== undefined) {
@@ -1329,6 +1336,9 @@ struct Index {
                   })
               }
               .width(this.columnWidth())
+              // 卡片滑动时会 `translate` 出去，越过的部分要裁掉，否则会盖在
+              // 相邻那一列上，两张卡看起来叠在一起。
+              .clip(true)
             }
           }, (note: Note) => `${note.id}-${note.updatedAt}`)
         }
