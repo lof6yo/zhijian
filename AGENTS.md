@@ -123,6 +123,7 @@ $env:PATH = "D:\deveco\command-line-tools\bin;D:\deveco\command-line-tools\sdk\d
 | Docs search/read | `devecocli docs search <kw>` / `devecocli docs read <id>` |
 | Signing | `devecocli auth login --no-prompt` → `devecocli signature generate` |
 | Local debug deploy | `scripts\run.ps1` (build + local sign + install + launch) |
+| Build + publish to `dist\` | `scripts\dist.ps1` (`-Release` / `-Clean` / `-Sign` / `-Timestamp` / `-Purge`) |
 | Environment doctor | `scripts\doctor.ps1` |
 
 App icon (`scripts/gen-icon.ps1`): redraws the layered icon and the start icon
@@ -144,7 +145,35 @@ D:\deveco\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe -t 127.0
 ```
 
 Build output: `entry/build/default/outputs/default/entry-default-unsigned.hap`
-(unsigned unless `signingConfigs` is configured).
+(unsigned unless `signingConfigs` is configured). The name does **not** encode
+the build mode — debug and release write the same file.
+
+`scripts\dist.ps1` builds and publishes that HAP into `dist/` under the app's
+own name and version:
+
+```powershell
+scripts\dist.ps1                # -> dist\zhijian-1.0.0-unsigned.hap
+scripts\dist.ps1 -Release       # -> dist\zhijian-1.0.0-release-unsigned.hap
+scripts\dist.ps1 -Sign          # + dist\zhijian-1.0.0-debug-signed.hap (emulator only)
+scripts\dist.ps1 -Clean         # clean first, when the build looks stale
+scripts\dist.ps1 -Timestamp     # also keep a dated copy
+scripts\dist.ps1 -Purge         # remove previously published HAPs first
+scripts\dist.ps1 -StallSec 180  # how long "no output" may last (default 120)
+```
+
+It builds through `hvigorw --no-daemon`, not `devecocli build`: the daemon is
+what deadlocks (see §11 *stuck hvigor daemon*), and the no-daemon path is the
+same speed — 80 s cold, 20 s incremental. Before starting it reaps any hvigor
+`node` process left by an earlier run, and while building it watches the log;
+**120 s without a new line** is treated as a deadlock (kill, then retry through
+`devecocli build`), not as a slow build.
+
+It refuses to publish rather than shipping something stale: the artifact is
+picked as the newest `*-unsigned.hap`, its mtime must not be older than the
+newest file under `entry/src`, `AppScope` or the two `oh-package`/`build-profile`
+files, and it must open as a zip containing `module.json`. That check exists
+because `devecocli build` can finish entirely UP-TO-DATE without repackaging —
+the common case where "the build succeeded but the app did not change".
 
 ## 5. MCP routing
 
@@ -1000,13 +1029,17 @@ an older device degrades instead of crashing. The HDS libraries live in the
   literal and `@Styles` function references as `StateStyles` values, so
   `.stateStyles()` is not usable here.
 - **The filter and sort groups share one row.** Two capsules side by side
-  (`ChipGroup(0)` = 全部/归档/收藏, `ChipGroup(10)` = 按修改/按标题/按创建),
+  (`ChipGroup(0)` = 全部/收藏/归档, `ChipGroup(10)` = 修改/标题/创建),
   each `layoutWeight(1)`, capsule 34 vp / radius 17, chip 28 vp / radius 14,
   label 12 fp. Two stacked rows wasted a whole band and pushed the grid down.
-- **筛选项一律 2 字、排序项一律 3 字.** The chips are `layoutWeight(1)`, so equal
-  widths with unequal label lengths read as misaligned text — 「已归档」3 字 between
-  two 2-字 chips, and 「最近修改」4 字 between two 3-字 chips, both looked like an
-  error. Keep the two groups internally uniform when renaming a chip. The active
+  The filter order is 全部 → 收藏 → 归档, ordered by how often each is used, not
+  by `filterMode` — `FilterChip`'s second argument *is* `filterMode` (1 archive,
+  2 favourite), so only the call order changes.
+- **筛选项与排序项一律 2 字，排序项不带「按」.** The chips are `layoutWeight(1)`,
+  so equal widths with unequal label lengths read as misaligned text — 「已归档」
+  3 字 between two 2-字 chips, and 「最近修改」4 字 between two 3-字 chips, both
+  looked like an error. 「按」carries no information in a row that *is* the sort
+  bar, so `修改 / 标题 / 创建` aligns with the filter group's density. The active
   sort chip is the only one that carries an extra `↑` / `↓`.
 - **All floating surfaces share one inset.** The title row, the chip row and the
   bar are full width minus `SIDE_INSET` (16 vp). Never combine `width('100%')`
@@ -1298,6 +1331,17 @@ commit message.
   `127.0.0.1:15000`, and check `Emulator.log`.
 - **Signing**: a HAP signed with a different key cannot replace an installed
   app; uninstall or sign consistently.
+- **A stuck hvigor daemon reads as "compiling 2 MB takes ten minutes".** Twice
+  here a `node` daemon left over from an earlier session (two of them, started
+  09:37) kept holding the build directory: the build printed a dozen task lines,
+  then sat at ~2 % CPU with no further output. The real numbers on this machine
+  are **full release ~80 s, incremental ~20 s, HAP 1.12 MB**. If a build appears
+  to hang, check `Get-CimInstance Win32_Process -Filter "Name='node.exe'"` for
+  `hvigor` command lines whose `CreationDate` predates this run, kill those only
+  (never every `node.exe` — that takes out the MCP servers), and rerun with
+  `hvigorw --no-daemon`. `scripts\dist.ps1` now does this automatically: it
+  watches the build log and treats **120 s without new output** as a deadlock,
+  not as slowness.
 - **`setWindowLayoutFullScreen(true)` + HDS**: manual fullscreen collapses the
   HDS title bar's custom node to 17 vp and its buttons to 9 vp. Use
   `.ignoreLayoutSafeArea` on the HDS container instead, and clear the title-bar

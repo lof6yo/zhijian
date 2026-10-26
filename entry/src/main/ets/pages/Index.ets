@@ -1918,25 +1918,30 @@ struct Index {
       this.GlassCapsuleSurface(17)
       Row({ space: 2 }) {
         if (base === 0) {
-          // 三个筛选项统一 **2 字**（全部 / 归档 / 收藏）。三个 chip 是等分宽度的，
+          // 三个筛选项统一 **2 字**（全部 / 收藏 / 归档）。三个 chip 是等分宽度的，
           // 字数一旦不等（「已归档」3 字夹在两个字中间），文字看起来就是一高一低，
           // 像没对齐。
+          //
+          // 顺序是 **全部 → 收藏 → 归档**，与「多少」无关，读的是使用频率：默认档
+          // 在最左，收藏是日常翻得最多的一档，归档是一次性收起来的东西，放在最右。
+          // `mode` 是 `filterMode` 的值而不是位置，所以这里**交换调用顺序就够了**，
+          // 不需要改 `filterMode` 的语义（1 仍是归档、2 仍是收藏）。
           this.FilterChip('全部', 0)
-          this.FilterChip('归档', 1)
           this.FilterChip('收藏', 2)
+          this.FilterChip('归档', 1)
         } else {
-          // 方向做进**当前档**的标签里（`按标题 ↑`），与标签页的 `TagChip` 完全同款：
+          // 方向做进**当前档**的标签里（`标题 ↑`），与标签页的 `TagChip` 完全同款：
           // 点当前项翻转方向、点另一项换依据。另配一个箭头按钮的话，一行里要挤下
           // 三档 + 一个方向键，每一档都点不准。
           //
-          // 三个排序项统一 **3 字**（`按修改 / 按标题 / 按创建`）。原先「最近修改」
-          // 是 4 字、另两个 3 字，三个等分 chip 里文字宽度不一，看起来像没对齐。
-          // 换成统一的「按 + 字段」句式后，三个词读起来是一组，而不是两个短词夹一个长词。
+          // 三个排序项统一 **2 字**（`修改 / 标题 / 创建`）。去掉「按」的理由是它
+          // 在三个词里信息量为零——这一整组本来就是排序条，每个词都隐含「按」；
+          // 省下这个字之后，2 字与筛选项的 2 字对齐，左右两个胶囊的文字密度一致。
           //
           // 只传 base label，箭头由 `FilterChip` 在构建体内自己算——见 `chipText`。
-          this.FilterChip('按修改', 10)
-          this.FilterChip('按标题', 11)
-          this.FilterChip('按创建', 12)
+          this.FilterChip('修改', 10)
+          this.FilterChip('标题', 11)
+          this.FilterChip('创建', 12)
         }
       }
       .width('100%')
@@ -2027,9 +2032,9 @@ struct Index {
 
   /**
    * Two logical chip groups share one builder: `mode` < 10 is the filter row
-   * (全部/已归档/收藏), `mode` >= 10 is the sort row. Selected state is a tinted
-   * wash + accent text, never a saturated accent block: a solid accent fill
-   * inside a glass pill reads as a heavy slab.
+   * (全部/收藏/归档), `mode` >= 10 is the sort row (修改/标题/创建). Selected state
+   * is a tinted wash + accent text, never a saturated accent block: a solid
+   * accent fill inside a glass pill reads as a heavy slab.
    */
   @Builder
   FilterChip(label: string, mode: number) {
@@ -2064,7 +2069,7 @@ struct Index {
    * 也就是 `@Builder` 的构建体内部。这一点是必须的，不是风格问题：把结果当参数
    * 传进来（`this.FilterChip(this.sortLabel(...), 10)`）只在调用处求值一次，
    * `@Local` 读的不是被构建节点的依赖，于是列表换成了标题序、标签却还写着
-   * 「最近修改 ↓」（实测）。
+   * 「修改 ↓」（实测）。
    */
   private chipText(label: string, mode: number): string {
     if (mode < 10 || this.sortMode !== mode - 10) {
