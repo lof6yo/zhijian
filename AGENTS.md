@@ -707,8 +707,14 @@ button.
   选区手柄：`copyOption(LocalDevice)`、`textSelectable(SELECTABLE_FOCUSABLE)`
   （`..._UNFOCUSABLE` 下 `copyOption` 与 `bindSelectionMenu` 明确不生效），
   以及**包住这一块的容器不能带 `clickEffect`**（见下一节，这是最容易踩的一条）。
-- **请求在飞时面板里显示「正在<动作>…」**，而不是一个转圈：这一步可能等十几秒，
-  用户需要知道「它在做」和「做的是哪一步」。
+- **请求在飞时按钮组不收起，进度就画在被点的那一项上**：该项的图标换成
+  `LoadingProgress`、文案变「翻译中…」，另外两项 `opacity(0.4)` 且
+  `enabled(false)`。请求可能等十几秒，收起面板会让「点没点上」变成谜；
+  只在面板外挂一条「正在翻译…」也不行——读者得在这一排按钮里对齐哪一项在跑。
+  `enabled(false)` 才是「不可点」本身，只靠 `onAiAction` 里的 `aiBusy` 早退，
+  点击仍会被吃掉并给出按下反馈，看起来像点了没反应。**状态一律在
+  `AiPill` 的构建体内部读**（`isBusyFor(action)`），不能当参数传进 `@Builder`
+  ——参数按值传、只在调用处求值一次。
 - **正文与代码块都开了 `copyOption` + `textSelectable(SELECTABLE_FOCUSABLE)`**，
   长按可选中复制。`Span` 只能接 `onClick`，选区能力来自父 `Text` 的属性。
 - **列表回车自动续写**（`MarkdownEdits.autoContinue`）：`- ` / `1. ` / `- [ ] ` /

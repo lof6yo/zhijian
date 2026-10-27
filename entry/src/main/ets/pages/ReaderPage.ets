@@ -566,7 +566,7 @@ export struct ReaderPage {
    * 由用户点「替换正文」才落盘，点「复制」则只进剪贴板。
    */
   private onAiAction(action: AiAction): void {
-    this.aiPanelOpen = false;
+    // 请求在飞时忽略后续点击：这时另外两项是灰的，但点中同一个按钮仍然可能触发。
     if (this.aiBusy) {
       return;
     }
@@ -1018,31 +1018,16 @@ export struct ReaderPage {
   /**
    * AI 面板：AI 钮下方竖排三个胶囊，右对齐。
    *
-   * 只做交互，不接功能——所以三项都是占位提示。面板与按钮组共用同一层 `Stack`，
-   * 同样浮在正文之上；展开时顶端由 `FLOAT_TOP + FLOAT_HIT + FLOAT_GAP` 推出，
-   * 正好落在按钮排下面。
+   * 点其中一项时**面板不收起**：请求可能要等十几秒，收起面板会让「点没点上」
+   * 变成一个谜；进度直接显示在被点的那一项上（转圈 + 「翻译中…」），其余两项
+   * 变淡且不可点。这样「在做哪一步」和「还能不能点别的」都是眼睛能看出来的。
+   *
+   * 面板与按钮组共用同一层 `Stack`，同样浮在正文之上；展开时顶端由
+   * `FLOAT_TOP + FLOAT_HIT + FLOAT_GAP` 推出，正好落在按钮排下面。
    */
   @Builder
   AiPanel() {
     Column({ space: FLOAT_GAP }) {
-      if (this.aiBusy) {
-        // 请求在飞时给一条静态提示，而不是把一个转圈塞进面板：这一步可能等十几秒，
-        // 用户需要知道「它在做」和「做的是哪一步」。
-        Row({ space: 6 }) {
-          LoadingProgress()
-            .width(16)
-            .height(16)
-            .color($r('sys.color.ohos_id_color_text_secondary'))
-          Text(`${this.aiActionLabel}中…`)
-            .fontSize(12)
-            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
-        }
-        .height(FLOAT_HIT)
-        .padding({ left: 14, right: 14 })
-        .borderRadius(FLOAT_HIT / 2)
-        .backgroundEffect({ radius: 18, saturation: 1.6, brightness: 1.04, color: $r('app.color.glass_tint') })
-        .border({ width: 1, color: $r('app.color.glass_border') })
-      }
       ForEach(AI_ACTIONS, (action: AiAction) => {
         this.AiPill(action)
       }, (action: AiAction) => action.label)
@@ -1055,17 +1040,31 @@ export struct ReaderPage {
     .hitTestBehavior(HitTestMode.Transparent)
   }
 
-  /** 一项 AI 动作（图标 + 文字胶囊）。外层 `Row` 只做右对齐定位。 */
+  /**
+   * 一项 AI 动作（图标 + 文字胶囊）。
+   *
+   * 状态一律在**构建体内部**读（`isBusyFor` 这类方法），不靠参数传进来——
+   * `@Builder` 的参数按值传、只在调用处求值一次，传进来的布尔值不会随状态刷新
+   * （撤销钮上已经踩过一次，见 `GATE_UNDO`）。
+   */
   @Builder
   AiPill(action: AiAction) {
     Row() {
       Row({ space: 6 }) {
-        SymbolGlyph(action.icon)
-          .fontSize(15)
-          .fontColor([$r('sys.color.ohos_id_color_text_primary')])
-        Text(action.label)
+        if (this.isBusyFor(action)) {
+          LoadingProgress()
+            .width(15)
+            .height(15)
+            .color($r('sys.color.ohos_id_color_text_primary'))
+        } else {
+          SymbolGlyph(action.icon)
+            .fontSize(15)
+            .fontColor([$r('sys.color.ohos_id_color_text_primary')])
+        }
+        Text(this.isBusyFor(action) ? `${action.label}中…` : action.label)
           .fontSize(13)
           .fontColor($r('sys.color.ohos_id_color_text_primary'))
+          .maxLines(1)
       }
       .height(FLOAT_HIT)
       .padding({ left: 14, right: 14 })
@@ -1074,13 +1073,22 @@ export struct ReaderPage {
       // 所以它和圆钮一样是「材质自己画出的形状」，不需要 `clipShape`。
       .backgroundEffect({ radius: 18, saturation: 1.6, brightness: 1.04, color: $r('app.color.glass_tint') })
       .border({ width: 1, color: $r('app.color.glass_border') })
-      .opacity(this.aiBusy ? 0.5 : 1)
+      // 正在跑的那一项保持全不透明（它是主角），其余两项变淡表示「暂时不可点」。
+      // `enabled(false)` 才是「不可点」本身：只靠 `onAiAction` 里的 `aiBusy` 早退，
+      // 点击仍然会被吃掉、按钮仍然会给出按下的反馈，看着像点了没反应。
+      .opacity(this.aiBusy && !this.isBusyFor(action) ? 0.4 : 1)
+      .enabled(!this.aiBusy)
       .onClick(() => {
         this.onAiAction(action);
       })
-      .accessibilityText(action.label)
+      .accessibilityText(this.isBusyFor(action) ? `${action.label}进行中` : action.label)
     }
     .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  /** 这一项是不是当前正在请求的那一项。 */
+  private isBusyFor(action: AiAction): boolean {
+    return this.aiBusy && this.aiActionLabel === action.label;
   }
 
   /** 强调色的浅底（用于次级按钮）。`#RRGGBB` → `#AARRGGBB`。 */

@@ -45,6 +45,17 @@ if (-not $SkipBuild) {
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
         }
 
+    # 只杀 `$proc.Id` 不够：`hvigorw.bat` 是 cmd 包装器，真正的 hvigor 是它派生出来的
+    # `node`。杀掉包装器，node 仍然握着构建目录——下一次构建照样安静地坐着
+    # （实测：连续两次 45 s 静默，两次都留下 2 个 node）。所以按「本次尝试开始时间
+    # 之后启动的 hvigor node」整棵摘掉；只匹配命令行里带 `hvigor` 的，绝不 `node` 全杀，
+    # MCP 服务也是 node。
+    function KillHvigorTree([datetime]$since) {
+        Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+            Where-Object { $_.CommandLine -match 'hvigor' -and $_.CreationDate -ge $since.AddSeconds(-2) } |
+            ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { } }
+    }
+
     $hvigor = Join-Path $env:DEVECO_CLI_CLT_PATH 'bin\hvigorw.bat'
     $args_ = @('--mode', 'module', '-p', 'module=entry@default', '-p', 'product=default',
         'assembleHap', '--no-daemon')
@@ -53,6 +64,7 @@ if (-not $SkipBuild) {
 
     for ($attempt = 1; $attempt -le 2; $attempt++) {
         Write-Host "Building entry (attempt $attempt) ..."
+        $attemptStart = Get-Date
         $proc = Start-Process -FilePath $hvigor -ArgumentList $args_ -WorkingDirectory $root `
             -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
         $lastSize = -1
@@ -65,7 +77,8 @@ if (-not $SkipBuild) {
                 $lastChange = Get-Date
             } elseif (((Get-Date) - $lastChange).TotalSeconds -ge $StallSec) {
                 Write-Warning "no build output for ${StallSec}s (lines so far: $((Get-Content $log -ErrorAction SilentlyContinue | Measure-Object -Line).Lines)) - treating as deadlock"
-                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                try { $proc.Kill() } catch { }
+                KillHvigorTree $attemptStart
                 break
             }
         }
