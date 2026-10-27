@@ -126,51 +126,53 @@ $env:PATH = "D:\deveco\command-line-tools\bin;D:\deveco\command-line-tools\sdk\d
 | Build + publish to `dist\` | `scripts\dist.ps1` (`-Release` / `-Clean` / `-Sign` / `-Timestamp` / `-Purge`) |
 | Environment doctor | `scripts\doctor.ps1` |
 
-App icon (`scripts/gen-icon.ps1`): the mark is **authored raster**, not drawn in
-code — `design/icon/app-icon-master.png` (1024², a glass `#` generated from a
-prompt, kept as the single source). The script adapts that artwork to the
-HarmonyOS layering contract and writes `foreground.png`, `background.png` and
-the 216² `startIcon.png`. Run it only when the artwork changes, then rebuild.
+App icon (`scripts/gen-icon.ps1`): the single source is
+`design/my-icon.png` — 1024², a white glyph on a 3×3 blue **mosaic**. The script
+draws nothing; it **splits that raster into the two layers** HarmonyOS requires
+and writes `foreground.png`, `background.png` and the 216² `startIcon.png`. Run
+it only when the master changes, then rebuild. Full rationale:
+`design/icon/README.md`.
 
-HarmonyOS rules baked into the script: foreground and background are both
-**1024×1024**; the foreground is a **transparent** PNG; the background is a
-**pure solid colour** (no gradient, no graphics, no transparency); nothing
-self-clips a rounded corner; nothing adds inner padding. The **entry** copy of
+Structural rules (not style choices): both layers are **1024×1024**; the
+foreground is a **transparent** PNG; the background is **opaque**; nothing
+self-clips a rounded corner or adds inner padding. The **entry** copy of
 `foreground.png/background.png` wins over `AppScope`, so the script writes both
 — editing only one leaves the launcher showing the old icon.
 
-What the script does to the art, and why:
+A mosaic background is allowed. "背景层建议使用纯色" is design guidance, not a
+resource validator — the layer is an ordinary PNG. But **everything the glyph
+covers must be back-filled with the plate**: a white patch left under the
+foreground shows as a hairline when the two layers land at slightly different
+scales.
 
-- **Keys the glyph per pixel on the red channel**, then a 2 px morphological
-  close. A `#` has real holes (the four gaps between the bars, plus the counter),
-  so the older "fill each row between its first and last lit pixel" trick would
-  turn the two verticals into a slab — it only suits a convex silhouette.
-- **Levels the artwork** (`$TILT`, degrees). The generator ships the glyph a few
-  degrees off vertical; nothing else in the pipeline corrects that, and a
-  crooked `#` reads as an error rather than as a physical object.
-- **Fits the alpha bounds to a SQUARE** (`$SQUARE`), not to the long axis. A `#`
-  is taller than it is wide (705×772 here), so scaling uniformly leaves the
-  left/right margins wider than the top/bottom ones — the "间距不协调" look.
-  Squaring the box costs ~9% of horizontal stretch and buys equal margins
-  (measured 174/173/174/174 px).
-- **Replaces the plate with `$PLATE`.** The master's own plate is a near-black
-  navy; on a home screen it reads as a black square, so the layer uses `#0B4FA8`
-  instead. The byte-level rule is the reason this is a flat fill and not the
-  artwork's gradient: a background layer may not carry one.
-- **Rebuilds the depth on the transparent layer**: a blurred silhouette as a
-  contact shadow plus a pale-blue light spill. Both are part of the foreground,
-  so the background stays one flat colour.
+**The split is an alpha *solve*, not a guess.** `src = a·255 + (1−a)·bg`, so
+`a = (src − bg) / (255 − bg)` — solvable because `bg` is *known*, not inferred:
+the master is a 3×3 pure-colour mosaic whose cell boundaries are computable
+(`1024/3 ≈ 341.33`, offset by half a cell). The end-to-end assertion is
+"composite the layers back and they must reproduce the master" — currently max
+channel error **1**, mean **0**, 0 of 350 892 samples over 12.
 
-Two traps worth remembering:
-- **The Lance/asset-pack `android/adaptive-foreground.png` is a hard square crop
-  of the full artwork**, not a transparent mark — corners go from alpha 0 to 255
-  in one pixel. Do not wire it in as `foreground.png`; it renders as a square
-  patch.
-- **GDI+ matrices are row-vector**: `Matrix.Scale` then `Translate` with
-  `MatrixOrder.Append` applies scale-then-translate. Using `Prepend` puts the
-  translation through the scale, and the mark lands ~20 px off centre — which is
-  exactly the kind of "margins look wrong" defect this icon has already been
-  through once.
+Three traps, all from guessing instead of solving:
+- **Hard luminance threshold** cuts the glyph but leaves the 716 px antialias
+  band (lum 150–200) in the background layer. It is far brighter than the plate,
+  so the icon gets a grey-white halo (measured `#526FA0`) — "像是糊了一层".
+- **Estimating alpha for the transition band** needs the colour underneath,
+  which is exactly what is hidden; a few levels of error become a grey ring on a
+  dark plate. Solve it, do not estimate it.
+- **Picking each cell's colour as "the most frequent non-white pixel"** loses on
+  a cell the glyph covers almost entirely: the winner is a blend from the edge.
+  Extract a **palette** first (real cell colours have 70 k+ votes, blends a few
+  dozen), then let every cell choose only from the palette. The script asserts
+  no non-palette colour with >200 samples survives in the background.
+
+Measured geometry: glyph box 538×538 = 52.5 % of the canvas, margins 243 px on
+all four sides (inside the 17 % mask-safe margin), 48 px white coverage 12.6 %.
+
+**This machine is CLT-only — no .NET SDK, no `csc`.** PowerShell 7's `Add-Type`
+cannot reference `System.Drawing` (`CS1069: System.Drawing.Common not found`),
+so inline C# in the icon script is impossible. All pixel work runs through
+`Add-Type -AssemblyName System.Drawing` + `LockBits` into a `byte[]`; a pass over
+1 M pixels costs ~2.3 s and the whole script ~11 s.
 
 Direct fallbacks (only when DevEco CLI is unavailable):
 
@@ -676,6 +678,17 @@ button.
   「失败」，而重试一次又是十几秒。只给一次机会。
 - **一次请求一个会话、用完即关**（`session.close()` 在 `finally` 里）。
 
+**AI 洞见（自动打标签）在 `services/AiTags.ets`，语义细节见「AI 洞见」一节。**
+这里只记三条实现约束：
+
+- **提示词里带上库里全部标签**并要求「意思相同就复用」，解析后再做一次代码层的
+  归一比对——提示词管不住模型的手，代码能。
+- **分隔符不只换行**：模型经常一句 `- 学习, Markdown` 把两三个标签写成一行，
+  所以 `\n , ， 、 ; ； |` 全部当分隔符。行首的 `- ` / `1. ` / `#` 与两端引号、
+  句末标点都剥掉，超 18 字的丢掉（那基本是把一句话当标签了）。
+- **一次最多 4 个**。超过 4 个，卡片上的标签行开始挤压标题。
+- 正文只送前 4000 字：开头几段足以判断主题，全文只会把请求撑大。
+
 ### 阅读页：悬浮顶栏、撤销、AI 结果
 
 - **没有顶栏，只有两组 40 vp 玻璃圆钮浮在正文之上**：左上返回，右上「撤销 /
@@ -755,7 +768,7 @@ button.
   | 方向 | 轻滑（< 判定线） | 重滑（≥ 判定线） |
   |---|---|---|
   | 右滑 | 归档（不确认） | 删除（弹确认框） |
-  | 左滑 | 收藏 | AI 洞见（占位，尚未实现） |
+  | 左滑 | 收藏 | AI 洞见（自动打标签） |
 
   两侧各自成一条语义轴：**右滑是「收起来」**（先归档，再删除），**左滑是
   「留下来 / 用起来」**（先收藏，再交给 AI）。越远代价越大，所以唯一不可逆的
@@ -765,8 +778,22 @@ button.
     筛选条就能拿回来。长按菜单本身已经是一次停顿，在那里问一句不碍事，也能
     提前说清笔记去哪了。取消归档两条入口都不问（`commitSwipe` 直接
     `onArchive()`，`CardMenu` 只在 `!archived` 时走 `confirmArchive()`）。
-  - **AI 洞见只留了口子**（`onInsight` → 一个 toast 占位）。手势位置先占住，
-    以后接上功能不必再重排一次四档。
+  - **AI 洞见是「合并」，不是「覆盖」**（`onInsight` → `Index.runInsight()`）。
+    AI 给的是建议，手打过的 `工作` 不会因为模型想到「效率」就消失——覆盖会让
+    每一次误划都变成静默的数据丢失，而重划到底恰恰最容易误触。合并还做了两遍：
+    发请求前先快照 `target.tags` 作基准，落盘前再读一次当前值合并，这十几秒里
+    用户手动加的标签不会被结果盖掉。
+  - **新建标签不需要 `TagStore.addTag()`。** 标签的「存在」等于「至少有一篇笔记
+    带着它」：`NoteStore.setTags()` 写进 frontmatter，`collectTags()` 一收集，
+    标签页就多一个。`TagStore` 那份名录只服务「刚建好、还没有笔记使用」的标签。
+  - **对齐只做确定性的归一匹配**（大小写 + 空白），不做模糊匹配。把 `工作` 猜成
+    `工作流` 这种错在标签上无法撤销——用户只会看到一个莫名其妙的标签。归一比对
+    在代码里做，因为提示词管不住模型的手。
+  - **手势触发必须有进度胶囊**（`InsightOverlay`）。点按钮触发的请求有按钮本身
+    承载进度；手势触发时松手后卡片已回弹、手指也离开了屏幕，界面上没有任何东西
+    还停着表示「在做」，而请求要等十几秒。胶囊浮在页签栏上方、`HitTestMode.None`
+    ——它只是状态，不该顺手吃掉用户的下一次点击。同时 `insightBusy` 挡住第二次
+    触发（同步是串行的，两篇一起跑会互相踩）。
   - 色相沿用三路：强调色（归档 / AI 洞见）、金（收藏）、红（删除）。
     **红色只给删除**——它是唯一不可逆的一档，同一档 alpha 下红比任何色都响。
 - **拖动过程只做提示，不落状态。** 卡片 `translate` 出去多少，底下就露出多宽，

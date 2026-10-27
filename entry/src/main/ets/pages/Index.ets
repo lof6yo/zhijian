@@ -24,6 +24,7 @@ import { FONT_SIZE_MAX, FONT_SIZE_MIN, CARD_CORNER,
   GLASS_LEVEL_DEFAULT, GLASS_LEVEL_MAX, GLASS_LEVEL_MIN,
   LINE_HEIGHT_MAX, LINE_HEIGHT_MIN } from '../services/SettingsStore';
 import { AiKey } from '../services/AiKey';
+import { AiTags, TagSuggestion } from '../services/AiTags';
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -203,6 +204,16 @@ struct Index {
   @Local aiKeyDraft: string = '';
   /** 是否已存过密钥。只用来决定占位文案，从不回填密钥本身。 */
   @Local aiKeyPresent: boolean = false;
+  /**
+   * AI 洞见（左重划）正在跑。
+   *
+   * 请求可能等十几秒，而这一次是**在卡片上手势触发的**——手指已经离开，卡片也已
+   * 回弹到原位，没有任何东西还停在那里表示「在做事」。所以这一页自己给一条浮在
+   * 底部的进度胶囊（`InsightPill`），而不是让用户对着一张看不出变化的网格等。
+   */
+  @Local insightBusy: boolean = false;
+  /** 正在处理的那一篇的标题，用于进度胶囊里点明「在做哪一篇」。 */
+  @Local insightTarget: string = '';
   /**
    * Snapshot of `syncFinishedAt`, and of the state word the 设置 › WebDAV 同步
    * row renders.
@@ -1400,6 +1411,12 @@ struct Index {
       .hideTitleBar(true)
       .height('100%')
       .width('100%')
+      // AI 洞见的进度挂在整个 shell 之上，不在某个页签里：它是手势的反馈，
+      // 而手势可能发生在任何一个页签上，且切换页签不该打断它（也不会——请求
+      // 由服务层持有，这一层只负责显示）。
+      if (this.insightBusy) {
+        this.InsightOverlay()
+      }
     }
     .width('100%')
     .height('100%')
@@ -1717,8 +1734,7 @@ struct Index {
                       }
                     },
                     onInsight: (id: string) => {
-                      // 功能未实现：先把交互位置占住，免得重排一次手势。
-                      this.getUIContext().getPromptAction().showToast({ message: 'AI 洞见还在路上' });
+                      this.runInsight(id);
                     }
                   })
               }
@@ -1801,6 +1817,124 @@ struct Index {
       this.refreshList();
     }
     this.tagSheetShown = false;
+  }
+
+  // ------------------------------------------------------------- AI insight
+
+  /**
+   * 左重划的落点：让 AI 给这一篇打标签。
+   *
+   * ## 为什么是「合并」而不是「覆盖」
+   *
+   * 标签是**用户自己的分类体系**，AI 给的是建议。手打过的 `工作` 不会因为模型这次
+   * 想到「效率」就消失——覆盖会让每一次误划都变成一次静默的数据丢失，而这个手势
+   * 恰恰是最容易误触的一个（重划到底才触发）。
+   *
+   * ## 为什么「新建标签」不需要额外动作
+   *
+   * 见 `AiTags`：标签的存在就等于「有笔记带着它」，写进 frontmatter 就出现在标签
+   * 页。所以这里只调 `setTags()`，不调 `TagStore.addTag()`。
+   *
+   * ## 为什么要一条进度胶囊
+   *
+   * 这一次不是点按钮触发的，是**手势**触发的：松手之后卡片已经回弹、手指也离开
+   * 了屏幕，界面上没有任何东西还停在那儿表示「在做」。请求要等十几秒，不给进度
+   * 就只是「划了一下，什么都没发生」。
+   */
+  private runInsight(id: string): void {
+    const target = this.store.find(id);
+    if (target === undefined) {
+      return;
+    }
+    if (this.insightBusy) {
+      this.getUIContext().getPromptAction().showToast({ message: '上一篇还在打标签' });
+      return;
+    }
+    if (target.body.trim().length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '这一篇还没有内容' });
+      return;
+    }
+    this.insightBusy = true;
+    this.insightTarget = target.title.length > 0 ? target.title : '无标题';
+    // 快照在**发请求之前**取：等结果回来的十几秒里用户可能已经在别处改过标签，
+    // 那时再读 `target.tags` 会读到更新的值，合并的基准就不对了。
+    const baseline: string[] = target.tags.slice();
+    AiTags.suggest(target.title, target.body, this.tagsSnapshot).then((result: TagSuggestion) => {
+      this.insightBusy = false;
+      if (!result.ok) {
+        this.getUIContext().getPromptAction().showToast({ message: result.message });
+        return;
+      }
+      const merged: string[] = baseline.slice();
+      const added: string[] = [];
+      for (const tag of result.tags) {
+        if (!merged.includes(tag)) {
+          merged.push(tag);
+          added.push(tag);
+        }
+      }
+      if (added.length === 0) {
+        this.getUIContext().getPromptAction().showToast({ message: '这篇已经有这些标签了' });
+        return;
+      }
+      const fresh = this.store.find(id);
+      if (fresh === undefined) {
+        // 这十几秒里笔记被删了。什么都没写，也就不用提示「已加标签」。
+        return;
+      }
+      // 以当前值为底再合并一次：期间用户手动加的标签不能被这次结果盖掉。
+      const finalTags: string[] = fresh.tags.slice();
+      const reallyAdded: string[] = [];
+      for (const tag of merged) {
+        if (!finalTags.includes(tag)) {
+          finalTags.push(tag);
+          reallyAdded.push(tag);
+        }
+      }
+      if (reallyAdded.length === 0) {
+        this.getUIContext().getPromptAction().showToast({ message: '这篇已经有这些标签了' });
+        return;
+      }
+      this.store.setTags(fresh, finalTags);
+      this.refreshList();
+      this.getUIContext().getPromptAction().showToast({
+        message: `已加标签 ${reallyAdded.map((tag: string) => `# ${tag}`).join(' ')}`
+      });
+    });
+  }
+
+  /**
+   * 「正在打标签」胶囊。
+   *
+   * 浮在页底、页签栏之上，`HitTestMode.None` 让整层透明区域不挡手势——它只是一条
+   * 状态，不该顺手吃掉用户的下一次点击。宽度撑满只为了居中，胶囊本身是内容宽的。
+   */
+  @Builder
+  InsightOverlay() {
+    Column() {
+      Row({ space: 8 }) {
+        LoadingProgress()
+          .width(15)
+          .height(15)
+          .color($r('sys.color.ohos_id_color_text_secondary'))
+        Text(`正在给「${this.insightTarget}」打标签…`)
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .constraintSize({ maxWidth: 220 })
+      }
+      .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+      .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+      .borderRadius(17)
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.End)
+    // 页签栏是 HDS 的浮动胶囊（`barBottomMargin: 28`），再加上它自己的高度，
+    // 120 vp 是让这条状态落在栏上方一点、又不会贴到正文最后一行。
+    .padding({ bottom: 120 })
+    .hitTestBehavior(HitTestMode.None)
   }
 
   @Builder
