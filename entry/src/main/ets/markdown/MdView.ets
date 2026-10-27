@@ -259,6 +259,12 @@ export struct MdBlockView {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Clip })
             .width('100%')
+            // 代码也要能复制：一条 `npm i` 抄不出来就得手打。
+            // 代码块的外层 `Scroll` 与逐行的 `Span` 都不消费长按，所以这里加
+            // 选择不会和任何「点一下进编辑」抢事件——那一层在 `EditableDocument`
+            // 的容器上。
+            .copyOption(CopyOptions.LocalDevice)
+            .textSelectable(TextSelectableMode.SELECTABLE_UNFOCUSABLE)
           }, (line: CodeToken[], index: number) => `${index}`)
         }
         .width('auto')
@@ -649,6 +655,22 @@ struct MdInlineText {
   @Param tapToEdit: boolean = false;
   @Event onTextTap: () => void = () => {};
 
+  /**
+   * 正文可以**选中并复制**，即使此刻它同时是「点一下就编辑」的入口。
+   *
+   * 这两个属性是一组的：`copyOption` 决定长按要不要弹「复制 / 全选」菜单，
+   * `textSelectable` 决定能不能拖出选区。用 `CopyOptions.LocalDevice` 而不是
+   * `InApp`——复制到别的应用是这个功能全部的意义，只在本应用内可粘贴等于没有。
+   *
+   * **不要为了 `tapToEdit` 关掉它。** 单击与长按是两条独立的手势通道：单击仍然走
+   * `Span.onClick` → `onBlockTap`（进入编辑），长按才唤出选择手柄并进入选区模式。
+   * 两者不冲突（`text.d.ts` 里 `copyOption` 的说明也是「长按显示复制/全选菜单」，
+   * 与点击无关）。代价是长按会先经过一段时间才判定，但此前这一页根本拿不到任何
+   * 选区——能选中一段话去发消息，比长按快几十毫秒重要得多。
+   *
+   * 取 `SELECTABLE_UNFOCUSABLE` 而不是 `..._FOCUSABLE`：正文若可获得焦点，
+   * 每次点正文都会抢走输入框的焦点，正在编辑的那一块会被迫收起键盘。
+   */
   build() {
     if (this.quoteMode) {
       Text() {
@@ -661,6 +683,8 @@ struct MdInlineText {
       .borderWidth({ left: QUOTE_BAR_WIDTH })
       .borderColor(this.accentColor)
       .width('100%')
+      .copyOption(CopyOptions.LocalDevice)
+      .textSelectable(TextSelectableMode.SELECTABLE_UNFOCUSABLE)
     } else {
       Text() {
         this.SpanBody()
@@ -669,6 +693,8 @@ struct MdInlineText {
       .fontColor($r('app.color.text_primary'))
       .lineHeight(this.baseLineHeight())
       .width('100%')
+      .copyOption(CopyOptions.LocalDevice)
+      .textSelectable(TextSelectableMode.SELECTABLE_UNFOCUSABLE)
     }
   }
 

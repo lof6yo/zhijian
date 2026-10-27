@@ -126,15 +126,31 @@ $env:PATH = "D:\deveco\command-line-tools\bin;D:\deveco\command-line-tools\sdk\d
 | Build + publish to `dist\` | `scripts\dist.ps1` (`-Release` / `-Clean` / `-Sign` / `-Timestamp` / `-Purge`) |
 | Environment doctor | `scripts\doctor.ps1` |
 
-App icon (`scripts/gen-icon.ps1`): redraws the layered icon and the start icon
-with GDI+. Run it only when the mark should change, then rebuild. HarmonyOS
-rules baked into the script: foreground and background are both **1024×1024**,
-the background is a **pure solid colour** (no gradient, no graphics, no
-transparency), nothing self-clips a rounded corner, nothing adds inner padding,
-and the mark is scaled about the canvas centre so its half-diagonal stays inside
-the launcher mask circle. The **entry** copy of `foreground/background.png`
-wins over `AppScope`, so the script writes both — editing only one leaves the
-launcher showing the old placeholder.
+App icon (`scripts/gen-icon.ps1`): the mark is **authored raster**, not drawn in
+code — `design/icon/app-icon-master.png` (1024², generated with the Lance MCP
+`generate_assets`, `gpt-image-2`). The script adapts that artwork to the
+HarmonyOS layering contract and writes `foreground.png`, `background.png` and
+the 216² `startIcon.png`. Run it only when the artwork changes, then rebuild.
+
+HarmonyOS rules baked into the script: foreground and background are both
+**1024×1024**; the foreground is a **transparent** PNG; the background is a
+**pure solid colour** (no gradient, no graphics, no transparency); nothing
+self-clips a rounded corner; nothing adds inner padding; the mark is scaled
+about the canvas centre so its outer corner stays inside the launcher mask
+circle. The **entry** copy of `foreground/background.png` wins over `AppScope`,
+so the script writes both — editing only one leaves the launcher showing the
+old icon.
+
+Two traps specific to raster artwork:
+- **The master's plate is a diagonal gradient, and a background layer may not
+  carry one.** The script keys the sheet out of the master (red channel
+  separates it cleanly) and replaces the plate with its own ink `#021A64`;
+  painting the gradient into the background gets rejected by the icon spec, and
+  putting it in the foreground makes the foreground opaque, which the spec also
+  forbids. Rebuild the depth (glow + contact shadow) on the transparent layer.
+- **The Lance pack's `android/adaptive-foreground.png` is a hard square crop of
+  the full artwork**, not a transparent mark — corners go from alpha 0 to 255 in
+  one pixel. Do not wire it in as `foreground.png`; it renders as a square patch.
 
 Direct fallbacks (only when DevEco CLI is unavailable):
 
@@ -492,11 +508,15 @@ button.
   list full of untitled notes opened straight into an editor — the reader stopped
   being a reader. Existing notes now always open rendered; the keyboard only appears
   when the user taps the body.
-- **设置 is grouped by purpose**, in this order: 外观 / 阅读与编辑 / 同步与备份 /
+- **设置 is grouped by purpose**, in this order: 外观 / 阅读与编辑 / 同步与备份 / AI /
   回收站 / 关于. Each group is a `SectionLabel` plus its cards; keep a new row inside
   the group it belongs to rather than appending it to the end of the list.
-- **卡片圆角 belongs to 外观, not to 阅读与编辑.** It decides what a card *looks
-  like*, and the settings page's own group cards are drawn with it.
+- **卡片圆角是常量，不是设置项。** `CARD_CORNER = 17`（`SettingsStore.ets`），
+  笔记卡片、设置分组卡片、搜索提示条与筛选条 / 排序条那条胶囊共用同一个数。
+  原来那档 8–36 的滑块只影响「卡片有多圆」——既不是密度也不是可读性，却让卡片
+  弧度在每台机器上都可能不同，永远对不上胶囊。`KEY_CARD_RADIUS = 'cardRadius'`
+  常量**故意保留但不读**：装过的机器偏好里仍有值，Preferences 从不回收键，
+  删掉名字只会让下一个人搜不到它、于是又建一个同义字段。
 - **设置 group cards are the same kind of card as a 笔记卡片.** They share
   `components/CardSurface.ets` (沉浸光感 + 半透明遮罩) and the same 卡片圆角 value.
   The settings page used to paint a flat
@@ -550,6 +570,110 @@ button.
   之后都必须调 `refreshList()`，否则列表不更新。
 - **搜索词是跨页签共享的**（标题栏只有一套搜索框），作用在当前页签上；切页签时
   清空，免得把笔记页的搜索词带到标签页。
+
+### 搜索：空格分词 + 历史
+
+- **查询按空白切成多个 token，全部都要命中（AND），`-词` 表示排除。**
+  「微信 群」只找同时含两者的笔记，「会议 -周报」排掉整个系列。在笔记库里
+  「同时出现」比「任一出现」有用得多：后者用两个常见汉字搜就能返回半个库。
+  只有 `-` 后面还有字才算排除——孤立的一个 `-` 是用户在打「- [ ]」，当普通字符。
+- **每个 token 仍是子串匹配，不是分词匹配。** 中文没有空格可切，用户输入的一段
+  连续汉字往往正是标题里的一段。
+- **搜索历史只记回车提交的词**（`rememberSearch`，`onSubmit`），不记 `onChange`：
+  否则记下来的是「微」「微信」「微信 群」三条残句。去重后新的在前，最多 8 条，
+  存 `SettingsStore.searchHistory`（`\n` 分隔纯文本）。
+- **历史列表只在「搜索框展开、查询为空、历史非空」时出现**（`historyVisible()`），
+  一个条件都不能少：查询非空时用户要的是结果，历史会把第一屏结果挤下去。
+  点一条只**填进输入框**、不直接搜——填进去之后还能改，误触只损失两个字。
+- **搜索框右侧那个 × 有两个含义**：有词时只清词（换词再搜是常态，收起就要重新点
+  放大镜），空的时候才收起搜索框。
+- **归档提示是一条窄文字，不是卡片，并且贴在筛选条下面**（`ArchivedSearchHint`）。
+  它原来在页底、横贯两列、还带命中数量——键盘一弹就被顶出屏幕，等于没有。
+  现在只有「已归档中还有匹配 · 查看」两截文字，位置在页顶，键盘永远碰不到。
+  不显示数量：用户要的是「去看吗」，不是一份统计。
+- **`archivedHitCount()` 改成了 `hasArchivedHits()`。** 既然不显示数量，就只需要
+  布尔值；而且点开之后「多出来的条数」要与之完全一致，所以判定仍复用 `matches()`。
+
+### 滚动时顶栏与页签栏一起让位
+
+- **两条 chrome 共用一个 `chromeHidden` 状态**，同时收起、同时回来。一半收一半
+  不收的界面看起来像卡住了，不像让位。
+- **不用 HDS 的 `dynamicHideTitleBar`**：它只收标题栏，页面顶部那条筛选胶囊是
+  内容、不在它的模型里，标题栏让开之后胶囊会孤零零地悬在 96 vp 的位置。方向由
+  这一页自己判。
+- **页签栏的显隐只能走 `hdsTabs.applyHideAnimation/applyShowAnimation`**
+  （`HdsAnimationMode.SCROLL_ANIMATION`）。`HdsTabsFloatingStyle` 没有可见性
+  字段，栏本身画在 HDS 里；给自绘胶囊加 `translate` 不参与布局，等于没做。
+- **方向取自 `notesScroller.currentOffset().yOffset`，不是 `onDidScroll` 的增量**
+  （增量正负号在容器之间含义不一致）。`onDidScroll` 只当节拍器。
+- **同向累计 24 vp 才翻转状态**：手指落下时的抖动与回弹都产生反向的几 vp，
+  直接跟着翻会让界面在滑动中闪烁。
+- **`yOffset ≤ 4` 无条件恢复**：那是「我从头再看一遍」的位置，顶栏不在就等于
+  没有搜索框和新建按钮。
+- **筛选胶囊的 `top` 跟着一起收**：`chromeHidden` 时从 `TITLE_BAR_CLEARANCE + 8`
+  收到 `statusBarHeightVp() + 8`。收到 8 会压在状态栏的时钟上（实测「全部/收藏/
+  归档」与时间重叠）——本页用 `ignoreLayoutSafeArea` 做沉浸，内容原点是**窗口
+  顶端**，不是状态栏下沿。
+- **搜索框展开时不收顶栏**（`hideTitleBar(chromeHidden && !searchExpanded)`）：
+  搜索框就是标题栏本身，收起来等于把用户手上的输入框抽走。
+- 切页签、进详情页、清空搜索之后都调 `restoreChrome()` 复位。
+
+### AI（OpenAI 兼容）
+
+- **接口是 OpenAI 兼容的 `POST {endpoint}/chat/completions`**，请求体三个字段
+  （`model` / `messages` / `stream:false`），响应取 `choices[0].message.content`。
+  云端、自建、本机 llama.cpp / Ollama / vLLM 都说这一套，用户只填地址就能接上。
+- **`key` 是可选的。** 本机或内网节点通常不校验鉴权；要求 endpoint 与 key 同时
+  非空，等于把「局域网里跑的小模型」判成没配置好。空 key 就不发
+  `Authorization`，而不是发一个空的（某些实现看到 `Bearer ` 后面没东西会 401）。
+- **明文 HTTP 必须显式开**。RCP 自 API 23 起默认禁止明文 HTTP，所以
+  `entry/src/main/resources/base/profile/network_config.json` 里对
+  `Remote Communication Kit` 打开了 `cleartextTrafficPermitted`。否则所有
+  `http://127.0.0.1:…` / 内网节点一律连不上。
+- **密钥只进 Asset Store**（`services/AiKey.ets`，alias `zhijian.ai`），endpoint
+  与三个场景的模型名进 preferences。密钥输入框**永不回填**，留空表示「不修改」。
+- **三个场景各有自己的模型**：洞见与格式 / 翻译 / 润色。便宜快的模型适合格式
+  修正（机械、可能每篇都跑），洞见要最强的，计费也不同。
+- **请求体用 `class` 而不是对象字面量**（`arkts-no-untyped-obj-literals`），
+  `JSON.stringify` 的入参也不例外。
+- **响应不用 `JSON.parse` 之后逐层断言**：`JSON.parse` 返回 `Object`，往深里取
+  字段要么全用 `ESObject`（禁），要么写一整套 `as` 链（一层不存在就抛）。
+  这里只取一个字符串，按第一个 `"content"` 取并自行处理 `\n` / `\"` / `\\` /
+  `\uXXXX` 四种转义更稳，还兼容在响应里多塞字段的实现。
+- **传输超时 120 s**：推理型模型的首 token 可能等十几秒，30 s 会把「慢」误报成
+  「失败」，而重试一次又是十几秒。只给一次机会。
+- **一次请求一个会话、用完即关**（`session.close()` 在 `finally` 里）。
+
+### 阅读页：悬浮顶栏、撤销、AI 结果
+
+- **没有顶栏，只有两组 40 vp 玻璃圆钮浮在正文之上**：左上返回，右上「撤销 /
+  重做 / 模式 / AI」。正文顶部让出 `CONTENT_TOP_INSET`（64 vp），滚动时正文从
+  玻璃底下穿过。
+- **`@Builder` 的参数按值传，所以「灰不灰」要传档位、不能传布尔值。**
+  `GlassButton(..., !this.canUndo, ...)` 在调用处求值一次，`@Local canUndo` 的
+  读取不构成被构建节点的依赖——实测「写完一段，撤销钮仍是灰的，点了也没反应」。
+  现在传 `GATE_UNDO` / `GATE_REDO` / `GATE_NONE`，由 `gateDim()` 在构建体内部读。
+  同一类坑还出现在 `Index` 的 WebDAV 行（见那一节）。
+- **撤销栈记的是整篇正文快照**，上限 50 步。压栈的判据必须是**旧正文 vs 即将
+  写入的新正文**：写成 `before !== this.note.body` 时（`persist` 先记历史、后
+  `reparse`），比较永远是 false，撤销栈一条都进不去。
+- **撤销 / 重做不走 `persist()`**：否则撤销会把自己也记进历史，按两下撤销等于
+  原地不动。走 `applyHistory()`——只写盘 + 重解析，历史栈自己维护。
+- **AI 结果是提案，不是覆盖。** 面板里给出全文（纯文本，不渲染——用户此刻在
+  核对「模型改了什么」，排版会把 `**` 藏起来），点「替换正文」才落盘，并且那次
+  写盘仍可撤销；点「复制」只进剪贴板。
+- **发请求前必须先 `commitPending()`**：AI 读的是 `note.body`，正在编辑的那一块
+  还没写回，不提交的话润色结果里缺着刚打的那段，替换回去就真丢了。
+- **AI 面板展开时给一次重档震动**（`Haptics.hard()`）；收起不给——那是「算了」。
+- **请求在飞时面板里显示「正在<动作>…」**，而不是一个转圈：这一步可能等十几秒，
+  用户需要知道「它在做」和「做的是哪一步」。
+- **正文与代码块都开了 `copyOption` + `textSelectable(SELECTABLE_UNFOCUSABLE)`**，
+  长按可选中复制。`Span` 只能接 `onClick`，选区能力来自父 `Text` 的属性。
+- **列表回车自动续写**（`MarkdownEdits.autoContinue`）：`- ` / `1. ` / `- [ ] ` /
+  `> ` 四种，长的在前匹配（`- [ ] ` 先于 `- `）。判据是「长度差恰为 1、插入点是
+  `\n`、其余字符一致」，所以粘贴与输入法组合不会误判。空内容时退出列表（变成
+  空行），否则回车会「什么都不发生」，列表再也退不出去。
+
 
 ### 自动同步与下拉同步
 
@@ -1076,9 +1200,12 @@ an older device degrades instead of crashing. The HDS libraries live in the
   follow system, `1` light, `2` dark), `accentMode` (`0` blue, `1` teal, `2` amber),
   `editorFontSize` (14–22 px), `editorLineHeight` (**75–150**, i.e. 0.75–1.50×,
   default 120; a range topping out at 2.20× is double-spacing and the useful tight
-  end sits below 1.10), `cardRadius` (8–36 vp, default 26), `simpleEditing`
+  end sits below 1.10), `simpleEditing`
   (default `false` = 分块) and `formatBar` (default `false`), plus `glassLevel`
-  (see the immersion section).
+  (see the immersion section). `WindowService` also caches the status-bar height
+  (`statusBarHeightVp()`) from `getWindowAvoidArea(TYPE_SYSTEM)` — the page needs
+  it because immersion makes the content origin the **window top**, so any pinned
+  chrome that slides up must clear the status bar explicitly, not use a constant.
   `Index.PageBackdrop` is drawn **once** behind the whole shell, not per tab, so
   the background does not jump when switching tabs and the swipe has no seam.
 - **背景 is 光感 only, and it follows 强调色.** There is no 背景样式 setting any more:
@@ -1412,6 +1539,33 @@ commit message.
   设置 › WebDAV 同步 row showed pre-sync text on device even though `didShow`
   had already updated the value. Read runtime state inside a parameter-less
   builder (`Index.WebDavRow()`), or use `@ComponentV2` + `@Param`.
+  **The same trap bites a `boolean` argument**: `GlassButton(..., !this.canUndo, ...)`
+  froze the undo button in its first-built (dimmed) state, so 撤销 was grey and
+  unclickable for the whole session. Pass a discriminant (`GATE_UNDO`) and read
+  the flag inside the builder body.
+- **`pushHistory(before)` compared against `this.note.body`, which is still the
+  old value at that point.** `persist` records history *before* `reparse`, so
+  `before !== this.note.body` was always false and the undo stack stayed empty —
+  silently, with no error. Pass both `before` and `after`.
+- **`yOffset`-style scroll deltas are not portable; `currentOffset()` is.**
+  `onDidScroll`'s `scrollOffset` sign differs between containers. Use the
+  callback only as a tick and read `scroller.currentOffset().yOffset`.
+- **A pinned row that slides up must clear the status bar explicitly.** With
+  `ignoreLayoutSafeArea` the content origin is the window top, so `top: 8` puts
+  the filter capsule under the clock (measured: 「全部/收藏/归档」 overlapped the
+  time). Read `WindowService.statusBarHeightVp()`.
+- **Cleartext HTTP is denied by default from API 23 for RCP.** A local LLM node
+  at `http://127.0.0.1:8787/v1` needs `network_config.json` with
+  `cleartextTrafficPermitted` at base-config and
+  `component-config: { 'Remote Communication Kit': true }`; otherwise every
+  request fails with `Failure when receiving data from the peer`
+  (`1007900056`) and looks like a server bug.
+- **`TextInput.onSubmit` is the only right place to record a search term.**
+  `onChange` fires per keystroke; a history built from it is a list of prefixes.
+- **Long-pressing a `Text` with `copyOption` + `textSelectable` shows selection
+  handles but does not open the copy menu on the first press** — the menu needs
+  a follow-up tap on the selection. Verify by the handles appearing, not by
+  looking for a popup.
 - **`WaterFlow` width**: a `FlowItem`'s child is measured against the whole flow,
   so percentage widths bleed into the neighbouring column. Give cells an explicit
   computed width, and never put a full-width header inside a multi-column flow.

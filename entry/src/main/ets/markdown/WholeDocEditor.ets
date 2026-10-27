@@ -1,4 +1,4 @@
-import { EditResult } from './MarkdownEdits';
+import { EditResult, MarkdownEdits } from './MarkdownEdits';
 import { FormatBar } from './FormatBar';
 
 /**
@@ -41,6 +41,14 @@ export struct WholeDocEditor {
   @Event onChange: (text: string) => void = () => {};
 
   private controller: TextAreaController = new TextAreaController();
+  /**
+   * 上一次的草稿文本，仅供回车续写做差分。
+   *
+   * 必须和 `draft` **一起**赋值：续写本身就是一次程序性改文本，改完若只更新
+   * `draft`，下一次 `onChange` 拿到的 `prev` 就落后一截，长度差不再等于 1，
+   * 续写会从第二个回车起彻底失灵。
+   */
+  private prevDraft: string = '';
 
   aboutToAppear(): void {
     this.seed();
@@ -65,6 +73,9 @@ export struct WholeDocEditor {
     }
     this.seeded = this.source;
     this.draft = this.source;
+    // 播种等于「换了一篇文本」：差分的基线也必须跟着重置，否则从 A 篇切到 B 篇
+    // 的第一下回车会被当成「B 篇在 A 篇末尾多了一个换行」。
+    this.prevDraft = this.source;
     this.selStart = this.initialCaret;
     this.selEnd = this.initialCaret;
     setTimeout(() => {
@@ -91,10 +102,37 @@ export struct WholeDocEditor {
   /** 格式按钮的结果：替换草稿、通知宿主、把光标放到应有位置。 */
   private applyResult(result: EditResult): void {
     this.draft = result.text;
+    // 按钮改的是整段文本（长度差远不止 1），续写判定自然会跳过这一次；
+    // 但仍要把基线跟上，免得编辑了一次前缀之后第一个回车被误判。
+    this.prevDraft = result.text;
     this.onChange(result.text);
     setTimeout(() => {
       this.moveCaret(result.caret);
     }, 0);
+  }
+
+  /**
+   * 回车续写：列表 / 待办 / 引用里敲回车，自动带上下一项的前缀。
+   *
+   * 只在「新旧文本只差一个换行」时生效（见 `MarkdownEdits.autoContinue`），
+   * 所以粘贴、输入法组词、增删字符都会原样交给输入框。改完文本要**立刻**
+   * 把光标放到新前缀之后，否则默认会停在续写出来的那一项的开头，下一个字会
+   * 落在符号前面。
+   */
+  private onDraftEdited(value: string): void {
+    const cont: EditResult | null = MarkdownEdits.autoContinue(this.prevDraft, value);
+    if (cont !== null) {
+      this.draft = cont.text;
+      this.prevDraft = cont.text;
+      this.onChange(cont.text);
+      setTimeout(() => {
+        this.moveCaret(cont.caret);
+      }, 0);
+      return;
+    }
+    this.draft = value;
+    this.prevDraft = value;
+    this.onChange(value);
   }
 
   build() {
@@ -131,14 +169,17 @@ export struct WholeDocEditor {
           this.selEnd = end;
         })
         .onChange((value: string) => {
-          this.draft = value;
-          this.onChange(value);
+          this.onDraftEdited(value);
         })
     }
     .width('100%')
     .layoutWeight(1)
     // 左右 20 vp 与渲染视图的 Scroll 内边距一致，切换时文字不会横向跳动。
-    .padding({ left: 20, right: 20, top: 4, bottom: 8 })
+    //
+    // 顶部 64 vp 是为悬浮按钮让位：整篇输入时按钮仍然浮在上面（撤销 / AI 恰恰
+    // 是写作时最需要的），第一行字不能落在它们底下。切换模式时这个值与渲染视图
+    // 的 `CONTENT_TOP_INSET` 相同，两边的首行位置才不会一换模式就跳一下。
+    .padding({ left: 20, right: 20, top: 64, bottom: 8 })
     .alignItems(HorizontalAlign.Start)
   }
 }

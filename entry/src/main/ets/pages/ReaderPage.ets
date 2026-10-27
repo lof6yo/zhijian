@@ -1,4 +1,6 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
+import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { MdBlock, MdParseResult, MdSrcRange } from '../markdown/MdTypes';
 import { MdParser } from '../markdown/MdParser';
 import { EditableDocument } from '../markdown/EditableDocument';
@@ -6,6 +8,8 @@ import { WholeDocEditor } from '../markdown/WholeDocEditor';
 import { Note } from '../models/Note';
 import { NoteStore } from '../services/NoteStore';
 import { SettingsStore } from '../services/SettingsStore';
+import { AiClient, AiReply } from '../services/AiClient';
+import { Haptics } from '../common/Haptics';
 
 /**
  * 打开笔记页的参数。
@@ -20,6 +24,70 @@ export interface ReaderParam {
 
 /** 会话内只提示一次「点按段落就能改」。 */
 let HINT_SHOWN: boolean = false;
+
+const DOMAIN: number = 0x0000;
+
+/** 悬浮按钮直径。40 vp 是「一眼可点」与「别挡字」之间的折中。 */
+const FLOAT_HIT: number = 40;
+/** 悬浮按钮离屏幕边缘的距离。 */
+const FLOAT_INSET: number = 16;
+/** 悬浮按钮组的顶边距（正文区顶部，状态栏之下）。 */
+const FLOAT_TOP: number = 8;
+/** 同一排按钮之间的间距。 */
+const FLOAT_GAP: number = 8;
+/** 正文顶部为悬浮按钮让出的空间：按钮底边 + 一点呼吸。 */
+const CONTENT_TOP_INSET: number = 64;
+
+/**
+ * 一步 AI 动作。
+ *
+ * `scenario` 决定用哪个模型（`SettingsStore.modelFor()`）；`system` 是这一步的
+ * 提示词，写在这里而不是服务里，因为「润色」与「格式修正」的分界是产品选择，
+ * 不是传输细节。`wholeBody` 为真时把整篇正文发过去（三个动作都是整篇）。
+ */
+interface AiAction {
+  label: string;
+  icon: Resource;
+  scenario: number;
+  system: string;
+}
+
+const AI_ACTIONS: AiAction[] = [
+  {
+    label: '翻译',
+    icon: $r('sys.symbol.translate'),
+    scenario: 1,
+    system: '把下面这篇 Markdown 笔记翻译成中文；如果原文已经是中文，就翻译成英文。' +
+      '只输出译文本身，保留原有的 Markdown 结构与代码块，不要加任何解释。'
+  },
+  {
+    label: '格式修正',
+    icon: $r('sys.symbol.doc_text_badge_checkmark'),
+    scenario: 0,
+    system: '整理下面这篇 Markdown 笔记的格式：统一标题层级、列表符号、空行与代码块围栏。' +
+      '不得改写任何文字内容。只输出整理后的 Markdown，不要加任何解释。'
+  },
+  {
+    label: '润色',
+    icon: $r('sys.symbol.wand_and_stars'),
+    scenario: 2,
+    system: '润色下面这篇 Markdown 笔记：让表达更准确、通顺、简洁，保持原意与 Markdown 结构。' +
+      '只输出润色后的 Markdown，不要加任何解释。'
+  }
+];
+
+/** 撤销栈上限。50 步足够覆盖一次写作会话，再多只会让内存跟着一篇长文线性增长。 */
+const UNDO_LIMIT: number = 50;
+
+/**
+ * `GlassButton` 的「哪一档决定灰不灰」。
+ *
+ * 传数字而不是布尔值：见 `GlassButton` 的注释——`@Builder` 的参数按值传，
+ * `!this.canUndo` 在调用处求值就断了依赖，撤销钮会永远停在初始的灰。
+ */
+const GATE_NONE: number = 0;
+const GATE_UNDO: number = 1;
+const GATE_REDO: number = 2;
 
 /**
  * 笔记页 —— 打开就是可写的文章，没有「只读 / 编辑」模式。
@@ -39,11 +107,28 @@ let HINT_SHOWN: boolean = false;
  * 推断结束行；末块没有下一块，所以显式传总行数）。替换区间时连同块之间的空行
  * 一起带走，再补一个回来，否则「改一块」会把相邻块粘到一起。
  *
- * ## 布局
+ * ## 布局：没有顶栏，只有两组悬浮玻璃按钮
  *
- * 两层 `Stack`：底层只负责上色的 `Column` 拥有 `expandSafeArea`，内容层绝不
- * 扩展——否则页头会钻到状态栏底下。`NavDestination` 的内容本来就起于状态栏
- * 下沿，所以页头是一条没有顶部内边距的 56 vp 行。
+ * 曾经这里是一条 56 vp 的实心顶栏：左边返回、中间标题、右边完成。它有两个问题，
+ * 都不是「再调一下间距」能解决的：
+ *
+ * 1. **标题是重复的。** 读者页的身份由正文的 H1 承担（列表卡片也是从 H1 取的
+ *    标题），顶栏再写一遍，等于一屏里同一个名字出现两次，还遮掉正文。
+ * 2. **一整条实心行只为放三个按钮。** 它把内容区往下压了 56 vp，而其中大部分
+ *    是空的。
+ *
+ * 现在正文从屏幕顶部开始，两组 40 vp 的玻璃圆钮**浮在内容之上**：左上是返回，
+ * 右上是「撤销 / 重做 / 模式 / AI」一排。它们不占布局高度，滚动起来正文从玻璃
+ * 底下穿过——这正是「内容在纸上流动、控件浮在上面」的观感。代价是正文顶部要
+ * 让出 `CONTENT_TOP_INSET`（见下），否则第一行字被按钮压住。
+ *
+ * 玻璃是手搓的，**不能用 `systemMaterial`**：沉浸材质只在 `Navigation` /
+ * `NavDestination` 标题栏以及 `Toggle` 等特定组件里生效，直接放在内容区里实测
+ * 不生效（见 AGENTS.md）。所以这里沿用 `Index.CircleAction` 的降级形态：
+ * 一层 `backgroundEffect` 背景模糊 + 一层上缘高光渐变 + 一圈 1 vp 细边。
+ *
+ * 两层 `Stack` 的分工没有变：底层只负责上色的 `Column` 拥有 `expandSafeArea`，
+ * 内容层绝不扩展——否则内容会钻到状态栏底下。
  */
 @ComponentV2
 export struct ReaderPage {
@@ -54,6 +139,13 @@ export struct ReaderPage {
 
   @Local note: Note = new Note();
   @Local blocks: MdBlock[] = [];
+  /**
+   * 笔记标题。
+   *
+   * 顶栏已经不显示了（身份由正文 H1 承担），但**不删这个字段**：它跟着
+   * `saveNote()` 一起更新，是「文件真的改了名字 / 改了 H1」的现成信号。
+   * 以后要做「标题变了就提示」时不用再解析一遍。
+   */
   @Local title: string = '';
   @Local bodySize: number = 17;
   @Local lineHeight: number = 175;
@@ -83,6 +175,25 @@ export struct ReaderPage {
   @Local simpleEditing: boolean = false;
   /** 设置 › 格式按钮条（默认关）。 */
   @Local showFormatBar: boolean = false;
+  /** AI 面板是否展开。 */
+  @Local aiPanelOpen: boolean = false;
+  /** 一次 AI 请求是否在飞。用来禁用重复点击，并按需显示进度。 */
+  @Local aiBusy: boolean = false;
+  /** 最近一次 AI 结果面板是否打开。 */
+  @Local aiResultShown: boolean = false;
+  /** AI 返回的全文（尚未写回正文）。 */
+  @Local aiResult: string = '';
+  /** 产生这份结果的动作名，用于提示与面板标题。 */
+  @Local aiActionLabel: string = '';
+  /**
+   * 撤销 / 重做是否可用。
+   *
+   * `undoStack` / `redoStack` 是普通私有字段，改了不会触发重绘，所以按钮的
+   * 「灰不灰」不能直接读它们的 `length`——必须另存两个 `@Local` 快照，在
+   * 每次进出栈之后显式刷新。K 这一页反复踩过：普通单例的字段变化不会让界面更新。
+   */
+  @Local canUndo: boolean = false;
+  @Local canRedo: boolean = false;
   /**
    * 渲染纪元：正文每变一次 +1。
    *
@@ -101,6 +212,26 @@ export struct ReaderPage {
   private touched: boolean = false;
   /** 当前编辑块的原始源码，用来判断草稿是否真的偏离了原文。 */
   private initialSourceOfEditing: string = '';
+  /**
+   * 文档级撤销栈：存的是**每次写盘之前**的正文。
+   *
+   * ## 为什么自己做，而不是用输入框自带的撤销
+   *
+   * `TextArea` 的撤销栈没有对外接口，而且它只覆盖「一次连续输入」——块编辑里
+   * 提交一块、再改另一块，两次改动在输入框眼里是两段互不相干的历史。用户要的是
+   * 「把刚才那步撤掉」，那一步可能是分块编辑的一次提交、一次待办勾选、一次
+   * 块删除，甚至一次整篇输入的完成。所以历史的粒度就是**一次写盘**，两条编辑
+   * 路径共用一份。
+   *
+   * 粒度是「整篇正文」而不是「增量 diff」：一次写盘的产物本来就只是那一个字符串，
+   * 存整篇最简单、也不可能还原错位；上限 50 步，一篇百万字的笔记极端情况下也就
+   * 几十 MB，且只在同一页会话内存在，退出即释放。
+   */
+  private undoStack: string[] = [];
+  /** 重做栈：被撤销掉的正文。任何一次新的写盘都会清空它。 */
+  private redoStack: string[] = [];
+  /** 当前历史对应的笔记 id；换一篇就把两个栈清空（见 `load()`）。 */
+  private loadedId: string = '';
 
   private systemIsDark(): boolean {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -136,6 +267,16 @@ export struct ReaderPage {
     }
     this.note = note;
     this.title = note.title;
+    // 换了笔记就清空历史：撤销栈存的是整篇正文，跨笔记复用会让「撤销」把另一篇
+    // 的内容写进这一篇。判据是 `loadedId`，而不是 `noteId`——后者在 `load()`
+    // 第一行就被改成入参了，永远相等。`loadContinuation()` 重读同一篇不清：
+    // 那是同一段写作会话里的刷新。
+    if (this.loadedId !== id) {
+      this.undoStack = [];
+      this.redoStack = [];
+      this.syncHistoryFlags();
+      this.loadedId = id;
+    }
     const result: MdParseResult = MdParser.parse(note.body);
     this.blocks = result.blocks;
     this.ready = true;
@@ -172,12 +313,97 @@ export struct ReaderPage {
    *
    * `saveNote()` 只在 H1 与文件名不一致时才改名，所以块编辑不会重命名文件；
    * 它同时刷新 `updatedAt`，同步据此判定为一次编辑并推送。
+   *
+   * 这里是**唯一**记历史的地方：任何改变正文的动作（块提交、块删除、待办勾选、
+   * 整篇输入的完成、文末追加）最终都会落到这一处，所以这一次写盘就是一次
+   * 「可以撤销的操作」。撤销 / 重做自己不走这条路径——否则撤销会把自己也记进
+   * 历史，按两下撤销就等于原地不动。
    */
   private persist(body: string): void {
+    this.pushHistory(this.note.body, body);
     NoteStore.instance.saveNote(this.note, body);
     this.reparse(body);
     this.onChanged();
   }
+
+  // ------------------------------------------------------------- 撤销 / 重做
+
+  /**
+   * `before` / `after` 都要传。
+   *
+   * 原来只传 `before`，然后用 `before !== this.note.body` 判断「有没有变」——
+   * 而 `this.note.body` 此刻**还是旧值**（`persist` 先记历史、后 `reparse`），
+   * 于是这个比较永远是 false，撤销栈一条都进不去，撤销按钮全程是灰的。
+   * 「变没变」必须拿**旧正文**和**即将写入的新正文**比，不能拿旧正文和自己比。
+   */
+  private pushHistory(before: string, after: string): void {
+    // 内容没变就不是一步操作。没有这道判断，打开一篇笔记后先改一个字再改回来，
+    // 撤销栈里会多出一个「等于当前正文」的项，按撤销看起来毫无反应。
+    // 重复内容不重复入栈，但仍要清空重做栈：新的写盘意味着「另一条未来」。
+    if (before !== after) {
+      this.undoStack.push(before);
+      while (this.undoStack.length > UNDO_LIMIT) {
+        this.undoStack.shift();
+      }
+    }
+    this.redoStack = [];
+    this.syncHistoryFlags();
+  }
+
+  private syncHistoryFlags(): void {
+    this.canUndo = this.undoStack.length > 0;
+    this.canRedo = this.redoStack.length > 0;
+  }
+
+  /**
+   * 撤销一步。
+   *
+   * `target` 是「要恢复成的那段正文」。恢复时**必须**先把正在编辑的草稿提交掉：
+   * 不提交的话，草稿还挂在 `editingSource` 里，用户下一次点「完成」就会把撤销
+   * 掉的文字又写回去——撤销看起来失效，实际是被草稿覆盖了。
+   */
+  private undo(): void {
+    this.commitPending();
+    if (this.undoStack.length === 0) {
+      return;
+    }
+    const target: string | undefined = this.undoStack.pop();
+    if (target === undefined) {
+      return;
+    }
+    this.redoStack.push(this.note.body);
+    this.applyHistory(target);
+  }
+
+  private redo(): void {
+    this.commitPending();
+    if (this.redoStack.length === 0) {
+      return;
+    }
+    const target: string | undefined = this.redoStack.pop();
+    if (target === undefined) {
+      return;
+    }
+    this.undoStack.push(this.note.body);
+    this.applyHistory(target);
+  }
+
+  /**
+   * 把正文直接换成历史里的某一段。
+   *
+   * 刻意**不走 `persist()`**：它会把「写入前的正文」再压进撤销栈，于是撤销
+   * 之后按重做、再按撤销会在两步之间来回打转且栈越来越长。这里只写盘 + 重解析，
+   * 历史栈由 `undo()` / `redo()` 自己维护。
+   */
+  private applyHistory(body: string): void {
+    NoteStore.instance.saveNote(this.note, body);
+    this.reparse(body);
+    this.touched = true;
+    this.onChanged();
+    this.syncHistoryFlags();
+  }
+
+  // ------------------------------------------------------------- 模式 / AI
 
   // ------------------------------------------------------------- 整篇输入
 
@@ -288,6 +514,93 @@ export struct ReaderPage {
     this.previewTick = this.previewTick + 1;
   }
 
+  /**
+   * 简单 / 分块 模式切换。
+   *
+   * ## 为什么写回 `SettingsStore`
+   *
+   * 这个开关在设置页也有一行（设置 › 编辑体验）。两处若各存各的，设置页会显示
+   * 「分块」而这里实际是简单模式，用户永远不知道哪个是真的。所以**这一处改动
+   * 立刻持久化**，设置页下次读到的就是同一个值。
+   *
+   * ## 为什么切换前必须提交草稿
+   *
+   * 分块 → 简单时，正在编辑的那一块要交给整篇输入接管。不先提交，草稿就只存在
+   * `editingSource` 里，切过去之后整篇输入拿到的是**没有这次改动**的正文，
+   * 用户刚打的字就这么没了。
+   */
+  private toggleEditingMode(): void {
+    const index: number = this.editingIndex;
+    this.commitPending();
+    this.simpleEditing = !this.simpleEditing;
+    SettingsStore.instance.setSimpleEditing(this.simpleEditing);
+    // 从分块切到简单：若刚才有一块在编辑，光标直接落到那一块，而不是文首——
+    // 「点哪儿写哪儿」不能因为换了个模式就失效。
+    if (this.simpleEditing && index >= 0) {
+      this.enterWholeEditingAt(index);
+    }
+  }
+
+  private toggleAiPanel(): void {
+    // 展开是一次明确的状态切换，给一下重档反馈。收起不给：那是「算了」，
+    // 震动会让它显得像一次成功的操作。
+    if (!this.aiPanelOpen) {
+      Haptics.hard();
+    }
+    this.aiPanelOpen = !this.aiPanelOpen;
+  }
+
+  /**
+   * 跑一步 AI 动作。
+   *
+   * ## 为什么先把草稿提交掉
+   *
+   * AI 读的是 `note.body`。正在编辑的那一块还没写回正文，不提交的话，润色出来
+   * 的结果里缺着用户刚打的那一段——而且拿回来一替换，那段就真丢了。
+   *
+   * ## 为什么结果先摆出来、不直接替换
+   *
+   * 一次模型调用可能改动全篇措辞。直接写回去等于把「润色」变成一次不可逆的
+   * 覆盖，而用户此刻并没有逐字看过新文本。所以结果是**提案**：面板里给出全文，
+   * 由用户点「替换正文」才落盘，点「复制」则只进剪贴板。
+   */
+  private onAiAction(action: AiAction): void {
+    this.aiPanelOpen = false;
+    if (this.aiBusy) {
+      return;
+    }
+    this.commitPending();
+    const body: string = this.note.body.trim();
+    if (body.length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '这一篇还没有内容' });
+      return;
+    }
+    this.aiBusy = true;
+    this.aiActionLabel = action.label;
+    AiClient.chat(action.scenario, action.system, body).then((reply: AiReply) => {
+      this.aiBusy = false;
+      if (!reply.ok) {
+        this.getUIContext().getPromptAction().showToast({ message: reply.message });
+        return;
+      }
+      this.aiResult = reply.text;
+      this.aiResultShown = true;
+    });
+  }
+
+  /** 把 AI 结果写回正文。走 `persist()`，所以这一步可以撤销。 */
+  private applyAiResult(): void {
+    const next: string = this.aiResult.trim();
+    this.aiResultShown = false;
+    if (next.length === 0 || next === this.note.body) {
+      return;
+    }
+    this.clearEditing();
+    this.touched = true;
+    this.persist(next);
+    this.getUIContext().getPromptAction().showToast({ message: `已替换为${this.aiActionLabel}结果` });
+  }
+
   private commitPending(): void {
     if (this.wholeEditing) {
       this.commitWhole();
@@ -358,7 +671,7 @@ export struct ReaderPage {
     // 一个误触就抹掉一段正文，是这一页最容易造成真实损失的地方。
     this.getUIContext().showAlertDialog({
       title: '删除这一段？',
-      message: '这一段会从笔记里移除，不能撤销。',
+      message: '这一段会从笔记里移除。可以用顶部的「撤销」找回，但不会再出现在回收站里。',
       primaryButton: {
         value: '取消',
         action: () => {
@@ -440,8 +753,6 @@ export struct ReaderPage {
           .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
         Column() {
-          this.Header()
-
           if (!this.ready) {
             Column({ space: 8 }) {
               Text('笔记不存在')
@@ -518,7 +829,10 @@ export struct ReaderPage {
                 })
               }
               .width('100%')
-              .padding({ left: 20, right: 20, top: 4, bottom: 48 })
+              // 顶部 64 vp 给悬浮按钮让位：正文第一行要落在按钮下沿之下，
+              // 否则「返回」正好压在第一段上。滚动起来之后正文会从玻璃底下
+              // 穿过——那正是想要的效果，玻璃是浮在纸面上的。
+              .padding({ left: 20, right: 20, top: CONTENT_TOP_INSET, bottom: 48 })
               .alignItems(HorizontalAlign.Start)
             }
             .width('100%')
@@ -529,11 +843,39 @@ export struct ReaderPage {
         }
         .width('100%')
         .height('100%')
+
+        // 悬浮按钮组必须是 `Stack` 的**最后**一个子节点：叠在内容之上，
+        // 但仍是正常命中的节点（默认 hitTestBehavior），所以按钮可点。
+        //
+        // 用 `alignContent: TopStart` + `margin` 定位，不用 `position`：
+        // `position` 会把节点抽出布局流，而这里需要的是「贴着屏幕左上角」，
+        // 顶部对齐 + 外边距就够，且不依赖任何百分比高度。
+        //
+        // 整篇输入时也要显示：整篇输入框里没有第二行可以放按钮，撤销与 AI
+        // 恰恰在写作时最需要。它与悬浮返回钮之间留出 `CONTENT_TOP_INSET`
+        // 同样的间距（见 `WholeDocEditor` 自己的内边距）。
+        this.BackButton()
+
+        if (this.ready) {
+          this.Actions()
+          if (this.aiPanelOpen) {
+            this.AiPanel()
+          }
+        }
       }
       .width('100%')
       .height('100%')
     }
     .hideTitleBar(true)
+    .bindSheet(this.aiResultShown, this.AiResultSheet(), {
+      height: SheetSize.LARGE,
+      dragBar: true,
+      showClose: false,
+      backgroundColor: $r('app.color.page_bg'),
+      onDisappear: () => {
+        this.aiResultShown = false;
+      }
+    })
     .onBackPressed(() => {
       this.goBack();
       return true;
@@ -571,46 +913,304 @@ export struct ReaderPage {
     this.load(this.noteId);
   }
 
+  /**
+   * 左上角的返回钮。
+   *
+   * 返回本身由 `GlassButton` 的 `.onClick` 接；外面这层 `Row` 只负责定位，
+   * 同时给「若以后要在左边再加一个钮」留出成排的位置。
+   */
   @Builder
-  Header() {
-    Row({ space: 4 }) {
-      Button('‹')
-        .fontSize(28)
-        .fontColor($r('app.color.text_primary'))
-        .backgroundColor(Color.Transparent)
-        .width(44)
-        .height(44)
-        .onClick(() => {
-          this.goBack();
-        })
-        .accessibilityText('返回笔记列表')
+  BackButton() {
+    Row() {
+      this.GlassButton($r('sys.symbol.chevron_left'), '返回笔记列表', () => {
+        this.goBack();
+      }, GATE_NONE, $r('sys.color.ohos_id_color_text_primary'))
+    }
+    // 只让按钮本身吃触摸，`Row` 的其余部分是透明的。
+    .hitTestBehavior(HitTestMode.Transparent)
+    .margin({ left: FLOAT_INSET, top: FLOAT_TOP })
+  }
 
-      Text(this.title.length > 0 ? this.title : '无标题')
-        .fontSize(16)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1)
+  /**
+   * 右上角一排：撤销 / 重做 / 模式切换 / AI。
+   *
+   * 顺序按「用到的频率 × 靠近拇指的程度」排：撤销最常用，放在最左边（离拇指
+   * 最近的那一头），AI 最不常用且会弹出面板，放在最右、离正文最远。
+   */
+  @Builder
+  Actions() {
+    Row({ space: FLOAT_GAP }) {
+      this.GlassButton($r('sys.symbol.undo'), '撤销', () => {
+        this.undo();
+      }, GATE_UNDO, $r('sys.color.ohos_id_color_text_primary'))
 
-      // 整篇输入时，完成只能放在页头：整篇输入框占满正文区，里面没有第二行
-      // 可以放按钮的地方。
-      if (this.wholeEditing) {
-        Text('完成')
+      this.GlassButton($r('sys.symbol.redo'), '重做', () => {
+        this.redo();
+      }, GATE_REDO, $r('sys.color.ohos_id_color_text_primary'))
+
+      // 图标与颜色都反映**当前模式**：分块时用强调色（这个模式更需要「被看见」，
+      // 因为它决定点正文之后发生什么），简单时用普通正文色（默认档不必强调）。
+      this.GlassButton($r('sys.symbol.doc_plaintext'),
+        this.simpleEditing ? '编辑模式：简单，点按切换为分块' : '编辑模式：分块，点按切换为简单',
+        () => {
+          this.toggleEditingMode();
+        }, GATE_NONE, this.simpleEditing ? $r('sys.color.ohos_id_color_text_primary') : this.accentColor)
+
+      this.GlassButton($r('sys.symbol.wand_and_stars'),
+        this.aiPanelOpen ? 'AI 功能，已展开' : 'AI 功能', () => {
+          this.toggleAiPanel();
+        }, GATE_NONE, this.aiPanelOpen ? this.accentColor : $r('sys.color.ohos_id_color_text_primary'))
+    }
+    .alignItems(VerticalAlign.Center)
+    // 右对齐：`Stack` 的 `alignContent` 是 TopStart，所以这一排若只靠 `margin`
+    // 就得知道屏幕宽度才能算出 x。让 `Row` 自己撑满宽度并 `FlexAlign.End`，
+    // 右边的 16 vp 就永远落在屏幕边缘，与「返回」的左边距对称。
+    .width('100%')
+    .justifyContent(FlexAlign.End)
+    .padding({ right: FLOAT_INSET })
+    .margin({ top: FLOAT_TOP })
+    // 只有按钮本身要接点击，整条空白带不该挡住正文。
+    .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  /**
+   * AI 面板：AI 钮下方竖排三个胶囊，右对齐。
+   *
+   * 只做交互，不接功能——所以三项都是占位提示。面板与按钮组共用同一层 `Stack`，
+   * 同样浮在正文之上；展开时顶端由 `FLOAT_TOP + FLOAT_HIT + FLOAT_GAP` 推出，
+   * 正好落在按钮排下面。
+   */
+  @Builder
+  AiPanel() {
+    Column({ space: FLOAT_GAP }) {
+      if (this.aiBusy) {
+        // 请求在飞时给一条静态提示，而不是把一个转圈塞进面板：这一步可能等十几秒，
+        // 用户需要知道「它在做」和「做的是哪一步」。
+        Row({ space: 6 }) {
+          LoadingProgress()
+            .width(16)
+            .height(16)
+            .color($r('sys.color.ohos_id_color_text_secondary'))
+          Text(`${this.aiActionLabel}中…`)
+            .fontSize(12)
+            .fontColor($r('sys.color.ohos_id_color_text_secondary'))
+        }
+        .height(FLOAT_HIT)
+        .padding({ left: 14, right: 14 })
+        .borderRadius(FLOAT_HIT / 2)
+        .backgroundEffect({ radius: 18, saturation: 1.6, brightness: 1.04, color: $r('app.color.glass_tint') })
+        .border({ width: 1, color: $r('app.color.glass_border') })
+      }
+      ForEach(AI_ACTIONS, (action: AiAction) => {
+        this.AiPill(action)
+      }, (action: AiAction) => action.label)
+    }
+    .alignItems(HorizontalAlign.End)
+    .width('100%')
+    .justifyContent(FlexAlign.End)
+    .padding({ right: FLOAT_INSET })
+    .margin({ top: FLOAT_TOP + FLOAT_HIT + FLOAT_GAP })
+    .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  /** 一项 AI 动作（图标 + 文字胶囊）。外层 `Row` 只做右对齐定位。 */
+  @Builder
+  AiPill(action: AiAction) {
+    Row() {
+      Row({ space: 6 }) {
+        SymbolGlyph(action.icon)
+          .fontSize(15)
+          .fontColor([$r('sys.color.ohos_id_color_text_primary')])
+        Text(action.label)
+          .fontSize(13)
+          .fontColor($r('sys.color.ohos_id_color_text_primary'))
+      }
+      .height(FLOAT_HIT)
+      .padding({ left: 14, right: 14 })
+      .borderRadius(FLOAT_HIT / 2)
+      // 与圆钮同一套玻璃：模糊 + 上缘高光 + 细边。胶囊的圆角半径取半个高度，
+      // 所以它和圆钮一样是「材质自己画出的形状」，不需要 `clipShape`。
+      .backgroundEffect({ radius: 18, saturation: 1.6, brightness: 1.04, color: $r('app.color.glass_tint') })
+      .border({ width: 1, color: $r('app.color.glass_border') })
+      .opacity(this.aiBusy ? 0.5 : 1)
+      .onClick(() => {
+        this.onAiAction(action);
+      })
+      .accessibilityText(action.label)
+    }
+    .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  /** 强调色的浅底（用于次级按钮）。`#RRGGBB` → `#AARRGGBB`。 */
+  private accentChipColor(): string {
+    const alpha: number = this.dark ? 0.24 : 0.12;
+    const a: string = Math.round(alpha * 255).toString(16).padStart(2, '0').toUpperCase();
+    if (this.accentColor.length === 7 && this.accentColor.startsWith('#')) {
+      return `#${a}${this.accentColor.substring(1)}`;
+    }
+    return this.accentColor;
+  }
+
+  /** 把结果放进剪贴板。 */
+  private copyAiResult(): void {
+    if (this.aiResult.length === 0) {
+      return;
+    }
+    const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.aiResult);
+    pasteboard.getSystemPasteboard().setData(data).then(() => {
+      this.getUIContext().getPromptAction().showToast({ message: '已复制' });
+    }).catch((error: BusinessError) => {
+      hilog.warn(DOMAIN, 'ReaderPage', 'copy failed: %{public}d', error.code);
+    });
+  }
+
+  /**
+   * AI 结果面板。
+   *
+   * 三段：标题行（动作名 + 取消）、全文预览（可滚动、可选中复制）、底部两个动作。
+   * 预览是**纯文本**而不是渲染后的 Markdown：用户此刻在核对「模型改了什么」，
+   * 排版会把 `**` 藏起来，而改动往往正是出在标记上。
+   */
+  @Builder
+  AiResultSheet() {
+    Column({ space: 16 }) {
+      Row() {
+        Text(`${this.aiActionLabel}结果`)
+          .fontSize(20)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+        Blank()
+        Text('取消')
+          .fontSize(16)
+          .fontColor($r('app.color.text_secondary'))
+          .padding({ left: 12, right: 4, top: 6, bottom: 6 })
+          .onClick(() => {
+            this.aiResultShown = false;
+          })
+          .accessibilityText('放弃这次 AI 结果')
+      }
+      .width('100%')
+
+      Text('下面是模型给出的全文。替换之后仍然可以撤销。')
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+
+      Scroll() {
+        Text(this.aiResult)
           .fontSize(14)
+          .lineHeight(22)
+          .fontColor($r('app.color.text_primary'))
+          .width('100%')
+          .copyOption(CopyOptions.LocalDevice)
+          .textSelectable(TextSelectableMode.SELECTABLE_UNFOCUSABLE)
+      }
+      .layoutWeight(1)
+      .width('100%')
+      .align(Alignment.TopStart)
+      .scrollBar(BarState.Auto)
+      .padding(12)
+      .borderRadius(14)
+      .backgroundColor($r('app.color.card_bg'))
+
+      Row({ space: 10 }) {
+        Text('复制')
+          .fontSize(15)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.accentColor)
-          .padding({ left: 12, right: 8, top: 8, bottom: 8 })
+          .textAlign(TextAlign.Center)
+          .layoutWeight(1)
+          .height(46)
+          .borderRadius(23)
+          .backgroundColor(this.accentChipColor())
           .onClick(() => {
-            this.commitWhole();
+            this.copyAiResult();
           })
-          .accessibilityText('完成编辑')
+          .accessibilityText('复制结果')
+        Text('替换正文')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(Color.White)
+          .textAlign(TextAlign.Center)
+          .layoutWeight(1)
+          .height(46)
+          .borderRadius(23)
+          .backgroundColor(this.accentColor)
+          .onClick(() => {
+            this.applyAiResult();
+          })
+          .accessibilityText('用结果替换正文')
       }
+      .width('100%')
     }
     .width('100%')
-    .height(56)
-    .padding({ left: 8, right: 12 })
-    .backgroundColor($r('app.color.page_bg'))
+    .height('100%')
+    .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  /**
+   * 40 vp 圆形玻璃按钮。
+   *
+   * ## 为什么第四个参数是 `gate` 而不是 `dimmed: boolean`
+   *
+   * `@Builder` 的参数按值传：`this.GlassButton(..., !this.canUndo, ...)` 只在
+   * 调用处求值一次，`@Local canUndo` 的读取不构成被构建节点的依赖。实测表现是
+   * 「写完一段，撤销钮仍是灰的，点了也没反应」——按钮永远停在第一次构建时的状态。
+   *
+   * 所以传的是**哪一档开关**（`GATE_UNDO` / `GATE_REDO` / `GATE_NONE`），由
+   * `gateDim()` 在构建体内部读 `canUndo` / `canRedo`，依赖才成立。
+   *
+   * 为什么不用 `.enabled(false)`：它会把整个节点（包括 `backgroundEffect` 的
+   * 玻璃底和边框）一起按系统禁用色灰掉，得到的是一个灰饼而不是一个「暂时没用」
+   * 的玻璃钮。这里只降透明度，并让 `onClick` 直接返回。
+   *
+   * `tint` / `gate` 都写成**必填**：`@Builder` 的参数在这个工具链上不认可选形参
+   * （`Expected 4-5 arguments`），缺一个就要在调用处补 `undefined`，反而更容易漏。
+   *
+   * 圆角必须走 `borderRadius(FLOAT_HIT / 2)`，**不能**用 `clipShape(CircleShape)`：
+   * 材质层按节点自己的圆角画，`clipShape` 只裁绘制，四个直边会露成亮弧
+   * （AGENTS.md 里记过这条）。
+   */
+  @Builder
+  GlassButton(icon: Resource, label: string, onTap: () => void, gate: number, tint: ResourceColor) {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .linearGradient({
+          angle: 180,
+          colors: [[$r('app.color.glass_hi'), 0.0], ['#00FFFFFF', 0.62]]
+        })
+      SymbolGlyph(icon)
+        .fontSize(18)
+        .fontColor([tint])
+    }
+    .width(FLOAT_HIT)
+    .height(FLOAT_HIT)
+    .borderRadius(FLOAT_HIT / 2)
+    .backgroundEffect({ radius: 18, saturation: 1.6, brightness: 1.04, color: $r('app.color.glass_tint') })
+    .border({ width: 1, color: $r('app.color.glass_border') })
+    .clip(true)
+    .opacity(this.gateDim(gate) ? 0.38 : 1)
+    .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
+    .onClick(() => {
+      if (this.gateDim(gate)) {
+        return;
+      }
+      onTap();
+    })
+    .accessibilityText(label)
+  }
+
+  private gateDim(gate: number): boolean {
+    if (gate === GATE_UNDO) {
+      return !this.canUndo;
+    }
+    if (gate === GATE_REDO) {
+      return !this.canRedo;
+    }
+    return false;
   }
 
   /**

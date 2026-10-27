@@ -1,5 +1,6 @@
 import { systemDateTime } from '@kit.BasicServicesKit';
 import { CardSurface } from './CardSurface';
+import { Haptics } from '../common/Haptics';
 
 /**
  * `.background()` takes a typed options object: ArkTS rejects an inline object
@@ -32,14 +33,13 @@ export struct NoteCard {
   /** 强调色面上的文字色（勾选圈里的对勾）。 */
   @Param onAccentColor: string = '#FFFFFF';
   /**
-   * Card corner radius in vp, from 设置 › 卡片圆角.
+   * 卡片圆角（vp）。固定在 17，与筛选条 / 排序条那条胶囊的半径相同。
    *
-   * A `@Param` rather than a resource because the value is a runtime preference —
-   * ArkUI resolves `$r('app.*')` at build time, so a user-selectable radius can
-   * only travel as a number. The default matches `CARD_RADIUS_DEFAULT`; it is
-   * repeated literally here so `NoteCard` does not import the settings store.
+   * 仍然是一个 `@Param` 而不是资源：`NoteCard` 不该 import `SettingsStore`，而
+   * 资源 `$r('app.*')` 是构建期解析的，圆角一旦要跟着别的东西走（平板、无障碍
+   * 大字号），只能是运行期的数。默认值 17 重复写在这里，与 `CARD_CORNER` 对齐。
    */
-  @Param cornerRadius: number = 26;
+  @Param cornerRadius: number = 17;
   /**
    * Whether the card paints the platform 沉浸光感 material behind its surface.
    *
@@ -106,12 +106,42 @@ export struct NoteCard {
   @Local swipeOffset: number = 0;
 
   /**
+   * 震动去重标记。
+   *
+   * 触觉只能在**离散的状态切换**上响一次，不能在 `onActionUpdate` 里每帧响。所以
+   * 越过判定线不是「每次都响」，而是「第一次越过时响」：字段记住这一拖已经被确认
+   * 到哪一档。`onActionStart` 与 `settle()` 之后各清一次，保证连续两次滑动各响一次。
+   */
+  private buzzedLight: boolean = false;
+  private buzzedHeavy: boolean = false;
+
+  /**
    * 卡片实测宽高。操作层要用绝对尺寸，不能用 `'100%'`：
    * 百分比高度在内容驱动的 `Stack` 里按**可用**高度解析，每张卡会被撑成一屏
    * （这个坑在 `MaterialLayer` 上已经踩过一次）。
    */
   @Local cardW: number = 0;
   @Local cardH: number = 0;
+
+  /**
+   * 起步死区（vp）。手指横向位移不到这个值，卡片**完全不动**，也不露出底色。
+   *
+   * `PanGesture.distance` 只决定「手势何时成立」，成立那一刻 `offsetX` 已经不为 0；
+   * 若直接把 `offsetX` 写进位移，一次落指抖动就会让卡片闪一下。死区只丢弃这段起始
+   * 位移，越过之后仍然赋 `offsetX` 的**原始值**——减去死区会让卡片永远比手指慢
+   * 12 vp，看起来就是「追不上手指」。
+   */
+  private static readonly DEAD_ZONE: number = 12;
+
+  /**
+   * 轻档的判定线（vp）。
+   *
+   * 早先是 24 vp（约一指宽），实测一次快速轻扫 25 vp 就会归档一篇笔记——不是
+   * 「滑了」，只是手抖。56 vp 约等于双列卡片（198 vp 宽）的 28%，这个距离已经
+   * 不可能被误触出来，也不至于滑不到：重档线在窄卡上是 108 vp（198 × 0.55），
+   * 轻档只到它的一半。
+   */
+  private static readonly LIGHT_THRESHOLD: number = 56;
 
   /**
    * 第二档的判定线（vp）。
@@ -123,6 +153,11 @@ export struct NoteCard {
   private longThreshold(): number {
     const w: number = this.cardW > 0 ? this.cardW : 198;
     return Math.max(96, Math.min(150, w * 0.55));
+  }
+
+  /** 已越过轻档判定线（松手是轻动作，且应当已经响过一声 `soft`）。 */
+  private pastLight(): boolean {
+    return Math.abs(this.swipeOffset) >= NoteCard.LIGHT_THRESHOLD;
   }
 
   /**
@@ -148,6 +183,33 @@ export struct NoteCard {
     this.getUIContext().animateTo({ duration: 220, curve: Curve.Friction }, () => {
       this.swipeOffset = target;
     });
+    // 回弹结束后清标记（而不是在 `onActionEnd` 里立刻清）：`onActionCancel` 等路径
+    // 也会走到这里，而一次手势只可能有一次结束。放在这里保证「下一次拖动」从零开始
+    // 计数，连续两次滑动各响一次。
+    this.buzzedLight = false;
+    this.buzzedHeavy = false;
+  }
+
+  /**
+   * 按当前位移给出触觉反馈。
+   *
+   * 只在**跨线的那一下**响，靠两个标记去重。两条规则都是刻意的：
+   *  - 越线后只在轴向上比较，左右两侧共用同一组标记：一次手势只有一个方向，
+   *    中途反向越线（先过 +56 再过 -56）属于罕见操作，多响一声可以接受，漏响不行。
+   *  - 两档是**依次**响，不跳级：一次直接拖到重档时也会先响 `soft` 再响 `hard`，
+   *    因为轻档动作此刻也已经成立了，用户需要「到第一格」这一下确认，否则从没拖动
+   *    直接到删除档会没有任何中间感。
+   */
+  private buzzForSwipe(): void {
+    const dx: number = Math.abs(this.swipeOffset);
+    if (!this.buzzedLight && dx >= NoteCard.LIGHT_THRESHOLD) {
+      this.buzzedLight = true;
+      Haptics.soft();
+    }
+    if (!this.buzzedHeavy && dx >= this.longThreshold()) {
+      this.buzzedHeavy = true;
+      Haptics.hard();
+    }
   }
 
   /**
@@ -294,7 +356,13 @@ export struct NoteCard {
         }
       })
       .bindContextMenu(this.CardMenu(), ResponseType.LongPress, {
-        preview: MenuPreviewMode.NONE
+        preview: MenuPreviewMode.NONE,
+        // 菜单弹出时报一声。放在菜单自己的 `onAppear` 而不是某个 `MenuItem.onClick`：
+        // 后者会在「选中动作」时再响一次，与点击本身的反馈重复。`onAppear` 是
+        // `ContextMenuOptions` 的字段（自 API 12），这里 API 26。
+        onAppear: () => {
+          Haptics.hard();
+        }
       })
       // 横向拖动改由 `PanGesture` 接管；纵向滚动仍旧交给瀑布流。
       .translate({ x: this.swipeOffset })
@@ -314,9 +382,12 @@ export struct NoteCard {
       // 默认绑定走平台自己的竞争规则：手指移动超过 `distance` 即判定为滑动，
       // 长按随之取消；按住不动才轮到菜单。「按住不动 = 菜单，移动 = 滑动」。
       .gesture(
-        PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 6 })
+        PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 12 })
           .onActionStart(() => {
             this.swipeOffset = 0;
+            // 每一次手势都从「还没响过」开始。
+            this.buzzedLight = false;
+            this.buzzedHeavy = false;
           })
           .onActionUpdate((event: GestureEvent) => {
             // 多选态里左右滑动整块关掉：滑动在这里没有可执行的动作（归档 / 删除
@@ -327,17 +398,27 @@ export struct NoteCard {
             }
             // `offsetX` 是相对起手点的位移（vp，正值向右），不是逐帧增量，
             // 所以直接赋值，不累加。
+            //
+            // 死区内保持 0：手势在 `distance` 上刚成立时 `offsetX` 通常只有几 vp，
+            // 把它写进位移会让卡片「抖一下」并露出一条底色。越过后赋**原始值**，
+            // 不减死区——减了之后位移与手指就不再 1:1，视觉上追不上手指。
+            if (Math.abs(event.offsetX) < NoteCard.DEAD_ZONE) {
+              this.swipeOffset = 0;
+              return;
+            }
             const limit: number = this.cardW > 0 ? this.cardW : 198;
             this.swipeOffset = Math.max(-limit, Math.min(limit, event.offsetX));
+            this.buzzForSwipe();
           })
           .onActionEnd(() => {
             if (this.selecting) {
               return;
             }
             const dx: number = this.swipeOffset;
-            // 邮箱式分档：滑出去就要有结果，所以门槛放得很低（24 vp，约一指宽），
-            // 低于它才当误触回弹。松手永远回到 0——没有停住的按钮态。
-            if (Math.abs(dx) >= 24) {
+            // 邮箱式分档：滑出去就要有结果。轻档门槛 56 vp（约双列卡片的 28%）——
+            // 低于它一律当误触：回弹到 0，**不执行任何动作**。松手永远回到 0，
+            // 没有停住的按钮态。
+            if (Math.abs(dx) >= NoteCard.LIGHT_THRESHOLD) {
               this.commitSwipe(dx > 0, Math.abs(dx) >= this.longThreshold());
             }
             this.settle(0);

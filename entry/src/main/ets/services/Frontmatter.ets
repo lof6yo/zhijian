@@ -100,6 +100,13 @@ export class FrontmatterCodec {
 
   static excerptOf(body: string): string {
     let text = body;
+    // 标题行不进摘要：卡片标题就渲染在摘要正上方，摘要再从 `# 标题` 开始读，
+    // 一张卡上同一句话出现两次，第二行白白占掉两行高度。
+    //
+    // 只去掉**第一处** H1，且必须位于正文开头（允许前面有空行）——`# ` 出现在
+    // 正文中间是合法的一级标题，把它当标题重复删掉会改变摘要的语义顺序。
+    // 其它级别的 `#` 照旧只剥符号、保留文字：`## 小节` 是内容结构的一部分。
+    text = text.replace(/^\s*# [^\n]*(\n|$)/, '');
     text = text.replace(/```[\s\S]*?```/g, ' ');
     text = text.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ');
     text = text.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');

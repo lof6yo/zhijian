@@ -31,6 +31,11 @@ const KEY_SIMPLE_EDIT = 'simpleEditing';
 const KEY_FORMAT_BAR = 'formatBar';
 const KEY_AUTO_SYNC_MODE = 'autoSyncMode';
 const KEY_AUTO_SYNC_INTERVAL = 'autoSyncInterval';
+const KEY_AI_ENDPOINT = 'aiEndpoint';
+const KEY_AI_MODEL_INSIGHT = 'aiModelInsight';
+const KEY_AI_MODEL_TRANSLATE = 'aiModelTranslate';
+const KEY_AI_MODEL_POLISH = 'aiModelPolish';
+const KEY_SEARCH_HISTORY = 'searchHistory';
 
 export const FONT_SIZE_MIN = 14;
 export const FONT_SIZE_MAX = 22;
@@ -45,16 +50,22 @@ export const LINE_HEIGHT_MIN = 75;
 export const LINE_HEIGHT_MAX = 150;
 
 /**
- * Note-card corner radius, in vp.
+ * 卡片圆角（vp），**固定值，不再可调**。
  *
- * The range starts at 8 rather than 0 because a square card is not a "0 radius
- * card" in this layout — it reads as a broken card, and the press/hover effect
- * still draws a rounded highlight. 36 is the ceiling because the card is only
- * ~200 vp wide and a larger radius starts clipping the title's first line.
+ * 17 vp 不是随便取的：筛选条 / 排序条那条胶囊外壳就是 34 vp 高、17 vp 圆角，
+ * 选中项的 chip 是 28 vp 高、14 vp 圆角。卡片用同一个 17，两种控件才像同一套
+ * 形状语言；原来的 8–36 滑块让每张卡片的弧度都可能是另一个值，而滑块本身
+ * 只影响一件事——「这张卡有多圆」，这既不是密度也不是可读性，调它得不到任何
+ * 好处，只是让设置页多一行。
+ *
+ * 笔记卡片、设置页的分组卡片、搜索提示条共用这一个值（`CardSurface` 与
+ * `NoteCard.cornerRadius` 都从这里取），所以不存在「只改了一处」的可能。
+ *
+ * `SettingsStore` 里的 `cardRadius` 键**故意保留、但不再读取**：装过的机器偏好
+ * 文件里仍有值，Preferences 从不回收键，删掉名字只会让下一个人搜不到它，
+ * 从而又新建一个同义字段（与 `backgroundStyle` 同一个理由）。
  */
-export const CARD_RADIUS_MIN = 8;
-export const CARD_RADIUS_MAX = 36;
-export const CARD_RADIUS_DEFAULT = 26;
+export const CARD_CORNER = 17;
 
 /**
  * 沉浸光感挡位, following the platform's own vocabulary rather than an invented
@@ -140,20 +151,21 @@ export class SettingsStore {
   /** Epoch ms of the last successful sync, 0 when never synced. */
   syncFinishedAt: number = 0;
   /**
-   * Note-card corner radius in vp, `CARD_RADIUS_DEFAULT` when untouched.
+   * 卡片圆角不再是一个偏好项。
    *
-   * Applies to the 笔记卡片 grid cells only. The settings rows, chips and the
-   * floating surfaces keep their own radii — this is a card-density preference,
-   * not a global shape token.
-   */
-  cardRadius: number = CARD_RADIUS_DEFAULT;
-  /**
-   * 简单编辑体验（默认开）。
+   * 原来这里有 `cardRadius` 字段和 8–36 的滑块。滑块唯一能调的是「这张卡有多
+   * 圆」——它既不是密度也不是可读性，调它得不到任何东西，却让卡片的弧度成了
+   * 每台机器都可能不同的一个值，而筛选条 / 排序条那条胶囊始终是 17 vp，两种
+   * 控件因此永远对不齐。现在圆角是常量 `CARD_CORNER`（见 `Index.ets`），笔记
+   * 卡片、设置分组卡片、搜索提示条共用它。
    *
-   * 打开时笔记就是一张**整篇的输入框**：点哪儿都能写，没有分块、没有块级
-   * 工具栏、没有预览面板——像记事本。分块编辑（点哪块只改哪块，带实时预览）
-   * 是可选的高级模式，因为它对不熟 Markdown 的人多了一层「现在我在改什么」的
-   * 认知负担。
+   * `cardRadius` 这个键**故意留着不删**：装过的机器偏好里仍有值，Preferences
+   * 从不回收键，删掉名字只会让下一个人搜不到它、于是又建一个同义字段。
+   *
+   * 简单编辑体验（默认关）：打开时笔记就是一张**整篇的输入框**，点哪儿都能写，
+   * 没有分块、没有块级工具栏、没有预览面板——像记事本。分块编辑（点哪块只改
+   * 哪块，带实时预览）对不熟 Markdown 的人多了一层「现在我在改什么」的认知负担，
+   * 但它是默认值，因为阅读与书写上下文一致才是这一页的立意。
    */
   simpleEditing: boolean = false;
   /** 格式按钮条（默认关）。关掉时输入框就是纯文本，没有按钮干扰。 */
@@ -167,6 +179,33 @@ export class SettingsStore {
   autoSyncMode: number = 0;
   /** 自动同步的间隔（分钟）。 */
   autoSyncInterval: number = 15;
+  /**
+   * OpenAI-compatible endpoint, e.g. `https://api.openai.com/v1`.
+   *
+   * A full base URL rather than a hostname: the three call sites append their own
+   * path (`/chat/completions`), and an "OpenAI 兼容" service is defined by that
+   * shape. Stored in plain preferences because it is not a secret — the key is.
+   */
+  aiEndpoint: string = '';
+  /**
+   * Per-scenario model names.
+   *
+   * Three separate fields rather than one: a cheap fast model is right for
+   * 格式修正 (mechanical, runs on every note) while 洞见 wants the strongest
+   * model available, and they are billed differently. One shared field would force
+   * the user to downgrade the interesting case to keep the boring one affordable.
+   */
+  aiModelInsight: string = '';
+  aiModelTranslate: string = '';
+  aiModelPolish: string = '';
+  /**
+   * Recent search terms, newest first, `\n`-separated.
+   *
+   * Flat text for the same reason `syncBase` is: ArkTS forbids index signatures,
+   * and a `string[]` in preferences would need a JSON round trip whose result
+   * cannot be typed. The list is small and only ever read whole.
+   */
+  searchHistory: string = '';
 
   private prefs: preferences.Preferences | null = null;
   private initialized: boolean = false;
@@ -193,12 +232,15 @@ export class SettingsStore {
       this.syncBase = this.readString(KEY_SYNC_BASE, this.syncBase);
       this.syncBaseScope = this.readString(KEY_SYNC_SCOPE, this.syncBaseScope);
       this.syncFinishedAt = this.readNumber(KEY_SYNC_AT, this.syncFinishedAt);
-      this.cardRadius = this.clamp(this.readNumber(KEY_CARD_RADIUS, this.cardRadius),
-        CARD_RADIUS_MIN, CARD_RADIUS_MAX);
       this.simpleEditing = this.readBool(KEY_SIMPLE_EDIT, this.simpleEditing);
       this.formatBar = this.readBool(KEY_FORMAT_BAR, this.formatBar);
       this.autoSyncMode = this.readNumber(KEY_AUTO_SYNC_MODE, this.autoSyncMode);
       this.autoSyncInterval = this.readNumber(KEY_AUTO_SYNC_INTERVAL, this.autoSyncInterval);
+      this.aiEndpoint = this.readString(KEY_AI_ENDPOINT, this.aiEndpoint);
+      this.aiModelInsight = this.readString(KEY_AI_MODEL_INSIGHT, this.aiModelInsight);
+      this.aiModelTranslate = this.readString(KEY_AI_MODEL_TRANSLATE, this.aiModelTranslate);
+      this.aiModelPolish = this.readString(KEY_AI_MODEL_POLISH, this.aiModelPolish);
+      this.searchHistory = this.readString(KEY_SEARCH_HISTORY, this.searchHistory);
       this.initialized = true;
     } catch (error) {
       hilog.error(DOMAIN, 'SettingsStore', 'init failed: %{public}s', JSON.stringify(error));
@@ -230,11 +272,6 @@ export class SettingsStore {
     this.writeNumber(KEY_GLASS, this.glassLevel);
   }
 
-  setCardRadius(radius: number): void {
-    this.cardRadius = this.clamp(Math.round(radius), CARD_RADIUS_MIN, CARD_RADIUS_MAX);
-    this.writeNumber(KEY_CARD_RADIUS, this.cardRadius);
-  }
-
   setSimpleEditing(on: boolean): void {
     this.simpleEditing = on;
     this.writeBool(KEY_SIMPLE_EDIT, on);
@@ -253,6 +290,43 @@ export class SettingsStore {
   setAutoSyncInterval(minutes: number): void {
     this.autoSyncInterval = minutes;
     this.writeNumber(KEY_AUTO_SYNC_INTERVAL, minutes);
+  }
+
+  setAiEndpoint(endpoint: string): void {
+    this.aiEndpoint = endpoint;
+    this.writeString(KEY_AI_ENDPOINT, endpoint);
+  }
+
+  /** `scenario`: 0 = 洞见与格式, 1 = 翻译, 2 = 润色. */
+  setAiModel(scenario: number, model: string): void {
+    if (scenario === 1) {
+      this.aiModelTranslate = model;
+      this.writeString(KEY_AI_MODEL_TRANSLATE, model);
+      return;
+    }
+    if (scenario === 2) {
+      this.aiModelPolish = model;
+      this.writeString(KEY_AI_MODEL_POLISH, model);
+      return;
+    }
+    this.aiModelInsight = model;
+    this.writeString(KEY_AI_MODEL_INSIGHT, model);
+  }
+
+  /** `scenario`: 0 = 洞见与格式, 1 = 翻译, 2 = 润色. */
+  modelFor(scenario: number): string {
+    if (scenario === 1) {
+      return this.aiModelTranslate;
+    }
+    if (scenario === 2) {
+      return this.aiModelPolish;
+    }
+    return this.aiModelInsight;
+  }
+
+  setSearchHistory(history: string): void {
+    this.searchHistory = history;
+    this.writeString(KEY_SEARCH_HISTORY, history);
   }
 
   setDavUrl(url: string): void {

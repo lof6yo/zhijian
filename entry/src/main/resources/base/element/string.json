@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "纸见"
+    },
+    {
+      "name": "vibrate_reason",
+      "value": "滑动笔记卡片与长按菜单时提供触觉反馈"
     }
   ]
 }

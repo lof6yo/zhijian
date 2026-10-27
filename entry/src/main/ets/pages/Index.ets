@@ -19,10 +19,11 @@ import { Credentials } from '../services/Credentials';
 import { SyncEngine } from '../services/SyncEngine';
 import { AutoSync } from '../services/AutoSync';
 import { AccentScheme, Palette, TagHeat } from '../common/Palette';
-import { FONT_SIZE_MAX, FONT_SIZE_MIN, CARD_RADIUS_MAX, CARD_RADIUS_MIN, CARD_RADIUS_DEFAULT,
+import { FONT_SIZE_MAX, FONT_SIZE_MIN, CARD_CORNER,
   GEAR_ADAPTIVE, GEAR_HIGH, GEAR_LOW, GEAR_MEDIUM,
   GLASS_LEVEL_DEFAULT, GLASS_LEVEL_MAX, GLASS_LEVEL_MIN,
   LINE_HEIGHT_MAX, LINE_HEIGHT_MIN } from '../services/SettingsStore';
+import { AiKey } from '../services/AiKey';
 import {
   HdsNavigation,
   HdsNavigationTitleMode,
@@ -41,7 +42,8 @@ import {
   HdsTabsFloatingStyle,
   HdsBarWidthRangeOptions,
   HdsTabsBackgroundStyle,
-  HdsAnimationMode
+  HdsAnimationMode,
+  HideMode
 } from '@kit.UIDesignKit';
 
 /**
@@ -72,6 +74,22 @@ const SEG_EDIT: number = 2;
  * 字面量（`arkts-no-untyped-obj-literals`），而解析失败会连锁污染其后所有属性。
  */
 const CARD_BG_OPTIONS: BackgroundOptions = { align: Alignment.Center };
+
+/**
+ * 搜索查询里的一片：要匹配的文本，以及它是不是排除项（`-词`）。
+ *
+ * 用一个类而不是内联对象字面量，因为 ArkTS 不允许无类型对象字面量，而为一个
+ * 两字段的结构专门写 interface 在这里不划算——它是纯粹的内部数据。
+ */
+class SearchToken {
+  text: string = '';
+  negated: boolean = false;
+
+  constructor(text: string, negated: boolean) {
+    this.text = text;
+    this.negated = negated;
+  }
+}
 
 @Entry
 @ComponentV2
@@ -147,8 +165,6 @@ struct Index {
   @Local tagNameTarget: string = '';
   /** 输入框里的标签名。 */
   @Local tagNameInput: string = '';
-  /** Note-card corner radius in vp; mirrors `SettingsStore.cardRadius`. */
-  @Local cardRadius: number = CARD_RADIUS_DEFAULT;
   /**
    * Id of the note whose 标签 sheet is open, and the working copy of its tags.
    *
@@ -163,6 +179,32 @@ struct Index {
   @Local tagDraft: string = '';
   @Local tagSheetShown: boolean = false;
   @Local pathStack: NavPathStack = new NavPathStack();
+  /**
+   * 顶栏与悬浮页签栏是否已让位（内容向上滑动时收起，向下滑动时恢复）。
+   *
+   * 两条 chrome 由一个状态驱动，所以它们**同时**收起、同时回来：一半收一半
+   * 不收的界面看起来像卡住了。
+   */
+  @Local chromeHidden: boolean = false;
+  /** 上一次采样到的滚动位置（vp），用来算方向。 */
+  private lastScrollY: number = 0;
+  /** 同向滚动的累积量；抖一下就翻状态会让界面在滑动时闪烁。 */
+  private scrollAccum: number = 0;
+  /** 当前滚动方向：1 = 内容被往上推（看后面的内容），-1 = 往回翻。 */
+  private scrollDir: number = 1;
+  /** 搜索历史快照，新的在前。 */
+  @Local searchHistory: string[] = [];
+  /** AI 设置组的草稿：endpoint 与三个场景的模型名。 */
+  @Local aiEndpointDraft: string = '';
+  @Local aiModelDraft0: string = '';
+  @Local aiModelDraft1: string = '';
+  @Local aiModelDraft2: string = '';
+  /** 密钥输入框草稿。空串表示「不修改」，与 WebDAV 密码同一套约定。 */
+  @Local aiKeyDraft: string = '';
+  /** 是否已存过密钥。只用来决定占位文案，从不回填密钥本身。 */
+  @Local aiKeyPresent: boolean = false;
+  /** 导入 / 导出选择面板是否打开。 */
+  @Local transferSheetShown: boolean = false;
   /**
    * Snapshot of `syncFinishedAt`, and of the state word the 设置 › WebDAV 同步
    * row renders.
@@ -209,6 +251,27 @@ struct Index {
 
   private readonly SIDE_INSET: number = 16;
 
+  /**
+   * 顶栏让开之后，页面里那条筛选 / 排序胶囊距离窗口上沿的留白。
+   *
+   * 不能写 8：本页用 `ignoreLayoutSafeArea` 做沉浸，内容原点是**窗口顶端**，
+   * 顶栏收起后 8 vp 的位置正好压在状态栏的时间与电量上（实测「全部/收藏/归档」
+   * 与时钟重叠）。状态栏高度从 `WindowService` 读，再留 8 vp 呼吸。
+   */
+  private chromeTopInset(): number {
+    return WindowService.statusBarHeightVp() + 8;
+  }
+
+  /**
+   * 卡片、设置分组卡片与提示条共用的圆角（vp）。
+   *
+   * 与筛选条 / 排序条那条胶囊是**同一个数**：外壳 34 vp 高、半径 17；选中 chip
+   * 28 vp 高、半径 14。卡片也用 17，两种控件才是同一套形状语言。原来那档
+   * 8–36 的滑块只影响「卡片有多圆」——既不是密度也不是可读性，调它得不到任何
+   * 东西，却让卡片弧度在每台机器上都可能不同，永远对不上胶囊。
+   */
+  private readonly cardCorner: number = CARD_CORNER;
+
   aboutToAppear(): void {
     this.themeMode = SettingsStore.instance.themeMode;
     this.accentMode = SettingsStore.instance.accentMode;
@@ -217,8 +280,18 @@ struct Index {
     this.glassLevel = SettingsStore.instance.glassLevel;
     this.simpleEditing = SettingsStore.instance.simpleEditing;
     this.showFormatBar = SettingsStore.instance.formatBar;
-    this.cardRadius = SettingsStore.instance.cardRadius;
+    this.searchHistory = SettingsStore.instance.searchHistory
+      .split('\n')
+      .filter((item: string) => item.trim().length > 0);
+    this.aiEndpointDraft = SettingsStore.instance.aiEndpoint;
+    this.aiModelDraft0 = SettingsStore.instance.aiModelInsight;
+    this.aiModelDraft1 = SettingsStore.instance.aiModelTranslate;
+    this.aiModelDraft2 = SettingsStore.instance.aiModelPolish;
     this.refreshDavState();
+    // 密钥只探「在不在」，永不留存明文：设置页只需要知道占位文案该写什么。
+    AiKey.load().then((key: string) => {
+      this.aiKeyPresent = key.length > 0;
+    });
 
     this.hdsSupported = deviceInfo.sdkApiVersion >= HDS_MIN_API;
     if (this.hdsSupported) {
@@ -330,6 +403,126 @@ struct Index {
     this.listVersion++;
   }
 
+  // ------------------------------------------------------- chrome on scroll
+
+  /**
+   * 滚动时收起 / 恢复顶栏与悬浮页签栏。
+   *
+   * ## 为什么两条 chrome 共用一个状态
+   *
+   * 「向上翻的时候把界面让出来」是一次整体的动作。顶栏收起了、页签栏还在原地，
+   * 看起来不是让位，是卡住了。所以 `chromeHidden` 一个开关同时驱动三件事：
+   * HDS 标题栏（`hideTitleBar`）、笔记页顶部那条筛选 / 排序胶囊的让位、以及
+   * 悬浮页签栏（`applyHideAnimation` / `applyShowAnimation`）。
+   *
+   * ## 为什么不用 HDS 自己的 `dynamicHideTitleBar`
+   *
+   * 那个接口只认标题栏：它会把标题区收起来，但页面顶部那条胶囊是**内容**，
+   * 不在它的模型里。于是标题栏收起之后，胶囊会孤零零地悬在一片空白下沿 96 vp
+   * 的位置——比不收还难看。要么整套动，要么整套不动，所以方向由这一页自己判定。
+   *
+   * ## 方向与阈值
+   *
+   * 位移取自 `notesScroller.currentOffset()`，而不是 `onDidScroll` 的增量：增量的
+   * 正负号在不同容器上含义不同，而「yOffset 变大 = 内容被往上推」是没有歧义的。
+   * 同向累计 24 vp 才翻转状态——手指落下时的抖动与回弹都会产生反向的几 vp，直接
+   * 跟着翻会让界面在滑动过程中闪烁。
+   *
+   * 回到顶部（yOffset ≲ 4 vp）时无条件恢复：那是「我从头再看一遍」的位置，
+   * 顶栏不在就等于没有搜索框和新建按钮。
+   */
+  private handleNotesScroll(): void {
+    const y: number = this.notesScroller.currentOffset().yOffset;
+    const delta: number = y - this.lastScrollY;
+    this.lastScrollY = y;
+
+    if (y <= 4) {
+      this.scrollAccum = 0;
+      this.setChromeHidden(false);
+      return;
+    }
+    if (delta === 0) {
+      return;
+    }
+    const dir: number = delta > 0 ? 1 : -1;
+    if (dir !== this.scrollDir) {
+      this.scrollDir = dir;
+      this.scrollAccum = 0;
+    }
+    this.scrollAccum += Math.abs(delta);
+    if (this.scrollAccum < 24) {
+      return;
+    }
+    this.scrollAccum = 0;
+    this.setChromeHidden(dir > 0);
+  }
+
+  private setChromeHidden(hidden: boolean): void {
+    if (hidden === this.chromeHidden) {
+      return;
+    }
+    this.chromeHidden = hidden;
+    if (!this.hdsSupported) {
+      return;
+    }
+    // 页签栏的显隐是 HDS 控制的（`HdsTabsFloatingStyle` 没有可见性字段，栏本身
+    // 画在 HDS 里），所以只能请它播自己的收起 / 展开动效，而不是给自绘胶囊加
+    // `translate`——那条自绘胶囊在 HDS 外壳里根本不参与布局。
+    if (hidden) {
+      this.hdsTabs.applyHideAnimation(HdsAnimationMode.SCROLL_ANIMATION);
+    } else {
+      this.hdsTabs.applyShowAnimation(HdsAnimationMode.SCROLL_ANIMATION);
+    }
+  }
+
+  /** 切页签、进笔记页、清空搜索之后都回到「chrome 在位」的常态。 */
+  private restoreChrome(): void {
+    this.lastScrollY = 0;
+    this.scrollAccum = 0;
+    this.setChromeHidden(false);
+  }
+
+  // -------------------------------------------------------------- 搜索历史
+
+  /**
+   * 记一条搜索词。
+   *
+   * 只记**提交过**的词（回车），不记每一次按键：`onChange` 每敲一个字都会响，
+   * 记下来的是「微」「微信」「微信 群」三条残句，历史列表会立刻变成垃圾。
+   * 去重后放到最前，最多 8 条——超过一屏的历史需要滚动，而这一栏存在的意义
+   * 是「省一次输入」，不是归档。
+   */
+  private rememberSearch(term: string): void {
+    const cleaned: string = term.trim();
+    if (cleaned.length === 0) {
+      return;
+    }
+    const next: string[] = [cleaned];
+    for (const old of this.searchHistory) {
+      if (old !== cleaned && next.length < 8) {
+        next.push(old);
+      }
+    }
+    this.searchHistory = next;
+    SettingsStore.instance.setSearchHistory(next.join('\n'));
+  }
+
+  private clearSearchHistory(): void {
+    this.searchHistory = [];
+    SettingsStore.instance.setSearchHistory('');
+  }
+
+  /**
+   * 最近搜索要不要露出来。
+   *
+   * 三个条件缺一不可：搜索框展开着（否则这一栏会挂在正常浏览的笔记页上）、
+   * 查询是空的（一旦开始打字，用户要的是结果，历史会把第一屏结果挤下去）、
+   * 历史非空（第一次用这个应用的人看到的应该是笔记，不是一块空标题）。
+   */
+  private historyVisible(): boolean {
+    return this.searchExpanded && this.query.trim().length === 0 && this.searchHistory.length > 0;
+  }
+
   /**
    * 某一档筛选条允许哪些笔记通过。
    *
@@ -370,24 +563,26 @@ struct Index {
   }
 
   /**
-   * 命中搜索词、但因为归档而被挡在结果之外的笔记数。
+   * 是否有笔记命中搜索词、但因为归档被挡在结果之外。
    *
-   * 这个数字是提示条存在的理由：什么都不说的话，用户只会得出「搜不到」的结论，
-   * 然后去「已归档」里手动翻。这里必须复用 `matches()`，提示的数量才和点开之后
-   * 真正多出来的条数完全一致。
+   * 只说「有没有」，不说「有多少」：用户要的是一次「去已归档里看看」的入口，
+   * 不是一份统计。「还有 3 篇匹配」这种数字既占宽度，又暗示结果一共就那么几篇，
+   * 而真正需要的是「那边还有，去看吗」。
+   *
+   * 必须复用 `matches()`：点开之后多出来的那几条要和这个判断完全一致，
+   * 否则会出现「说有一篇、点开却一篇没多」。
    */
-  private archivedHitCount(): number {
+  private hasArchivedHits(): boolean {
     const q = this.query.trim().toLowerCase();
     if (q.length === 0 || this.filterMode !== 0) {
-      return 0;
+      return false;
     }
-    let count = 0;
     for (const note of this.notesSnapshot) {
       if (note.archived && this.matches(note, q)) {
-        count++;
+        return true;
       }
     }
-    return count;
+    return false;
   }
 
   /**
@@ -424,7 +619,54 @@ struct Index {
     return mode !== 1;
   }
 
-  private matches(note: Note, q: string): boolean {
+  /**
+   * 一个搜索词是否命中这条笔记。
+   *
+   * ## 空格分词 + `-` 排除
+   *
+   * 查询先按空白切成若干 token，**全部**正向 token 都要命中（AND），任一 `-词`
+   * 命中即淘汰。这是把「微信 群」写成两个词就只找同时含两者的笔记，而
+   * 「会议 -周报」排除掉一整个系列——在笔记库里，「同时出现」比「任一出现」
+   * 有用得多：后者用中文搜两个常见字就能返回半个库。
+   *
+   * 只有 `-` 后面还有字才算排除；一个孤立的 `-` 是用户在打「- [ ]」之类的东西，
+   * 当作普通字符处理，否则整个查询会被解析成「什么都不排除但也不匹配」。
+   *
+   * 每个 token 仍然是**子串**匹配而不是分词匹配：中文没有空格可切，用户输入的
+   * 一段连续汉字往往正是标题里的一段。
+   */
+  private matches(note: Note, query: string): boolean {
+    const tokens = Index.searchTokens(query);
+    if (tokens.length === 0) {
+      return true;
+    }
+    for (const token of tokens) {
+      const hit = Index.noteHits(note, token.text);
+      if (token.negated ? hit : !hit) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** 把查询拆成「要不要命中」的 token；空查询返回空数组。 */
+  private static searchTokens(query: string): SearchToken[] {
+    const out: SearchToken[] = [];
+    const parts = query.trim().toLowerCase().split(/\s+/);
+    for (const part of parts) {
+      if (part.length === 0) {
+        continue;
+      }
+      if (part.length > 1 && part.startsWith('-')) {
+        out.push(new SearchToken(part.substring(1), true));
+      } else {
+        out.push(new SearchToken(part, false));
+      }
+    }
+    return out;
+  }
+
+  private static noteHits(note: Note, q: string): boolean {
     if (note.title.toLowerCase().indexOf(q) >= 0) {
       return true;
     }
@@ -459,6 +701,9 @@ struct Index {
         this.store.reload();
         this.refreshList();
         this.refreshDavState();
+        // 从笔记页 / 回收站 / WebDAV 回来时把顶栏与页签栏请回来：它们是页面的
+        // 常驻控制，不该因为「在详情页之前滑过一下」而一直缺席。
+        this.restoreChrome();
       }
     });
   }
@@ -711,6 +956,9 @@ struct Index {
     this.searchExpanded = false;
     this.query = '';
     this.includeArchived = false;
+    // 另一个页签是另一条滚动轴：上一个页签里「往上滑到一半」的状态带过来，
+    // 会让新页签的顶栏一开始就是收起的，而用户根本没滑过它。
+    this.restoreChrome();
   }
 
   /**
@@ -830,6 +1078,9 @@ struct Index {
 
   /** 展开标题栏里的搜索框。搜索词是共享的，作用在当前页签上。 */
   private openSearch(): void {
+    // 搜索框在标题栏里，而标题栏可能是收起的（用户滑到一半点了放大镜）。
+    // 先把 chrome 复位，输入框才不会一开始就挂在一条让开的空带子上。
+    this.restoreChrome();
     this.searchExpanded = true;
     setTimeout(() => {
       this.getUIContext().getFocusController().requestFocus(SEARCH_INPUT_ID);
@@ -1188,6 +1439,10 @@ struct Index {
     // The root of the stack has nothing to go back to.
     .hideBackButton(true)
     .titleBar(this.titleBarOptions())
+    // 顶栏让位：只在整个标题栏都没有正在用的控件时收起。搜索框展开时标题栏就是
+    // 输入框本身，把它藏起来等于把用户手上的东西抽走——所以那种情况下不 hide，
+    // 否则「滚动时收起顶栏」会变成「搜索时丢失输入框」。
+    .hideTitleBar(this.chromeHidden && !this.searchExpanded, true)
     .bindToScrollable([this.notesScroller])
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
     .width('100%')
@@ -1345,7 +1600,21 @@ struct Index {
   @Builder
   NotesPage() {
     Column() {
+      // 最近搜索贴在搜索框下面（搜索框在标题栏里）。它只在「搜索框展开且查询为
+      // 空」时出现，所以顶栏那 96 vp 的留白由它来顶——`NotesHeader` 在它出现时
+      // 只留 8 vp，两行不会叠出一条空白带。
+      if (this.historyVisible()) {
+        this.SearchHistory()
+      }
+
       this.NotesHeader()
+
+      // 归档提示贴着筛选条放，**不进滚动区、也不放页底**：页底在键盘弹起时会
+      // 被顶出去，而这条提示恰恰是搜索时（键盘在位）才需要看见的。
+      // `WaterFlow` 的 `FlowItem` 不能跨列，所以它也不能塞进网格里。
+      if (this.hasArchivedHits()) {
+        this.ArchivedSearchHint()
+      }
 
       if (this.visibleNotes().length === 0) {
         this.EmptyState()
@@ -1370,7 +1639,7 @@ struct Index {
                     accentColor: this.accentColor(),
                     accentChipColor: this.accentChipColor(),
                     onAccentColor: this.onAccentColor(),
-                    cornerRadius: this.cardRadius,
+                    cornerRadius: this.cardCorner,
                     glassOn: this.glassOn(),
                     glassGear: this.glassLevel,
                     glassTint: this.glassTint(),
@@ -1455,12 +1724,13 @@ struct Index {
         .layoutWeight(1)
         // Clears the floating capsule so the last row stays reachable.
         .contentEndOffset(130)
-      }
-
-      // 搜索命中但被归档挡住时的提示。放在网格**下面**、不进滚动区：
-      // `WaterFlow` 的 `FlowItem` 不能跨列，一整条横贯的提示塞进去会被压成一列宽。
-      if (this.archivedHitCount() > 0) {
-        this.ArchivedSearchHint()
+        // 顶栏 / 页签栏让位的方向判定。`WaterFlow` 有 `onDidScroll`（经
+        // `ScrollableCommonMethod`），但回调里的 `scrollOffset` 正负号在容器之间
+        // 含义不一致，所以只把它当「发生了一次滚动」的节拍器，位置从
+        // `currentOffset()` 读。
+        .onDidScroll(() => {
+          this.handleNotesScroll();
+        })
       }
     }
     .width('100%')
@@ -1662,7 +1932,17 @@ struct Index {
       // bottom edge (285 px / 3), so a filter row pinned at 96 sat flush against
       // the bar with zero air — reported as 「离顶部按钮过近」. The clearance must
       // keep meaning "the bar ends here", so the gap is added separately.
-      .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET, top: this.TITLE_BAR_CLEARANCE + 8, bottom: 10 })
+      //
+      // 顶栏收起时这段留白必须一起收掉：标题栏让开了，胶囊却还钉在 96 vp 的位置，
+      // 中间空出一条什么也没有的带子——比不收还难看。收起时留的是**状态栏下沿**
+      // + 8 vp，不能是 8 vp：内容原点是窗口顶端，8 vp 会压在时钟上。
+      //
+      // 搜索历史出现时只留 8：那一块自己已经从 96 vp 之下开始排（搜索框展开时
+      // 顶栏一定在位），再补一次 96 就是两道留白叠成一条空带。
+      .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET,
+        top: this.historyVisible() ? 8 : (this.chromeHidden ? this.chromeTopInset() : this.TITLE_BAR_CLEARANCE + 8),
+        bottom: 10 })
+      .animation({ duration: 200, curve: Curve.FastOutSlowIn })
     }
   }
 
@@ -1714,7 +1994,9 @@ struct Index {
       .clip(true)
     }
     .width('100%')
-    .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET, top: this.TITLE_BAR_CLEARANCE + 8, bottom: 10 })
+    .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET,
+      top: this.chromeHidden ? this.chromeTopInset() : this.TITLE_BAR_CLEARANCE + 8, bottom: 10 })
+    .animation({ duration: 200, curve: Curve.FastOutSlowIn })
   }
 
   @Builder
@@ -1989,15 +2271,23 @@ struct Index {
           .placeholderColor($r('app.color.text_secondary'))
           .fontColor($r('app.color.text_primary'))
           .caretColor($r('app.color.text_primary'))
+          .enterKeyType(EnterKeyType.Search)
           .onChange((value: string) => {
             this.query = value;
             // 搜索词改了就是另一次搜索：上一轮的「含归档」不能自动延续。
             this.includeArchived = false;
           })
+          .onSubmit(() => {
+            // 只有**提交过**的词才进历史。`onChange` 每敲一个字都会响，记下来
+            // 的是「微」「微信」「微信 群」三条残句，历史会立刻变成垃圾。
+            this.rememberSearch(this.query);
+          })
         Button() {
-          SymbolGlyph($r('sys.symbol.xmark'))
-            .fontSize(16)
-            .fontColor([$r('app.color.text_secondary')])
+          if (this.query.length > 0) {
+            SymbolGlyph($r('sys.symbol.xmark'))
+              .fontSize(16)
+              .fontColor([$r('app.color.text_secondary')])
+          }
         }
         .width(28)
         .height(28)
@@ -2005,11 +2295,18 @@ struct Index {
         .padding(0)
         .backgroundColor(Color.Transparent)
         .onClick(() => {
+          if (this.query.length > 0) {
+            // 有词时这个按钮只清词，不收起搜索框：用户多半是想换一个词再搜，
+            // 收起来就要重新点一次放大镜。
+            this.query = '';
+            this.includeArchived = false;
+            return;
+          }
           // Collapsing clears the query so the list returns to its full state.
-          this.query = '';
           this.searchExpanded = false;
+          this.restoreChrome();
         })
-        .accessibilityText('关闭搜索')
+        .accessibilityText(this.query.length > 0 ? '清空搜索' : '关闭搜索')
       }
       .width('100%')
       .height(44)
@@ -2028,6 +2325,62 @@ struct Index {
       ? { width: 0 }
       : { width: this.glassRimWidth(), color: $r('app.color.glass_border') })
     .backgroundEffect(this.immersiveSupported ? undefined : this.glassEffect())
+  }
+
+  /**
+   * 最近搜索，挂在搜索框下面。
+   *
+   * 只在「查询为空」时出现：一旦开始打字，用户要的是结果，不是历史——列表在
+   * 打字时还赖在页面上，会把第一屏结果挤下去。
+   *
+   * 点一条直接填进输入框，**不是**直接「用旧词搜一次」：填进去之后用户还能改，
+   * 一次误触的代价只是清掉两个字。
+   */
+  @Builder
+  SearchHistory() {
+    Column({ space: 8 }) {
+      Row() {
+        Text('最近搜索')
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+        Blank()
+        Text('清空')
+          .fontSize(12)
+          .fontColor(this.accentColor())
+          .padding({ left: 8, right: 2, top: 4, bottom: 4 })
+          .onClick(() => {
+            this.clearSearchHistory();
+          })
+          .accessibilityText('清空搜索历史')
+      }
+      .width('100%')
+
+      Flex({ wrap: FlexWrap.Wrap }) {
+        ForEach(this.searchHistory, (term: string) => {
+          Text(term)
+            .fontSize(12)
+            .fontColor($r('app.color.text_primary'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .borderRadius(14)
+            .backgroundColor(this.accentChipColor())
+            .margin({ right: 8, bottom: 8 })
+            .onClick(() => {
+              this.query = term;
+              this.includeArchived = false;
+            })
+        }, (term: string) => `hist-${term}`)
+      }
+      .width('100%')
+    }
+    .width('100%')
+    // 它是这一页的第一块内容，所以要自己顶开标题栏那道带子（96 vp 是标题栏的
+    // 下沿，见 `TITLE_BAR_CLEARANCE`）。搜索框展开时顶栏一定在位——`hideTitleBar`
+    // 的条件里有 `!searchExpanded`——所以这里不需要判断 `chromeHidden`。
+    .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET,
+      top: this.TITLE_BAR_CLEARANCE + 4, bottom: 0 })
+    .alignItems(HorizontalAlign.Start)
   }
 
   /**
@@ -2098,50 +2451,56 @@ struct Index {
   }
 
   /**
-   * 搜索结果的底部提示：命中的笔记里有 N 篇被归档了。
+   * 搜索结果的提示：命中的笔记里有被归档的，那些默认不出现在结果里。
    *
-   * 两件事必须成立：
+   * 三件事必须成立：
    *
    *  1. **默认不混进来。** 归档是用户主动做的分类动作，一次搜索就把收起来的东西
    *     全倒出来，等于归档没生效。
    *  2. **不能只说「没找到」。** 用户记得那条笔记存在，静默地搜不到只会让人以为
-   *     笔记丢了。所以给出数量，并把「去已归档里搜」做成一次点击。
+   *     笔记丢了。
+   *  3. **必须窄、必须让开键盘。** 这一条原来是一整张卡片：横贯两列、两行字、
+   *     带图标和按钮，在键盘弹起时被顶出屏幕，等于没有。现在是一行文字 +
+   *     一个动词，贴在**筛选条下面**（见 `NotesPage`），那是键盘永远碰不到的
+   *     位置——页底会随键盘上移，而页顶不会。
    *
-   * 位置在滚动区**外面**（见 `NotesPage`）：`WaterFlow` 的 `FlowItem` 不能跨列，
-   * 一条横贯两列的提示塞进去会被压成一列宽，读起来像第三张卡片。
+   * 位置在滚动区**外面**：`WaterFlow` 的 `FlowItem` 不能跨列，一条横贯两列的
+   * 提示塞进去会被压成一列宽。
+   *
    * `includeArchived` 打开后这一条变成「收起」——否则用户被留在全量结果里，
    * 没有任何地方能回到默认视图。
    */
   @Builder
   ArchivedSearchHint() {
-    Row({ space: 8 }) {
-      SymbolGlyph($r('sys.symbol.archivebox'))
-        .fontSize(15)
-        .fontColor([this.accentColor()])
-      Text(this.includeArchived
-        ? `${this.archivedHitCount()} 篇已归档的笔记也已列出`
-        : `已归档中还有 ${this.archivedHitCount()} 篇匹配`)
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-        .layoutWeight(1)
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-      Text(this.includeArchived ? '收起' : '全量搜索')
-        .fontSize(12)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.accentColor())
-        .padding({ left: 8, right: 2, top: 4, bottom: 4 })
+    Row() {
+      Row({ space: 6 }) {
+        SymbolGlyph($r('sys.symbol.archivebox'))
+          .fontSize(12)
+          .fontColor([$r('app.color.text_secondary')])
+        Text(this.includeArchived ? '已含归档' : '已归档中还有匹配')
+          .fontSize(12)
+          .fontColor($r('app.color.text_secondary'))
+          .maxLines(1)
+        Text(this.includeArchived ? '收起' : '查看')
+          .fontSize(12)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.accentColor())
+          .maxLines(1)
+      }
+      .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+      .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+      .borderRadius(this.cardCorner)
+      .onClick(() => {
+        this.includeArchived = !this.includeArchived;
+      })
+      .accessibilityText(this.includeArchived ? '收起已归档的搜索结果' : '在已归档中搜索')
     }
+    // 宽度撑满只为了居中；胶囊本身是内容宽的——一条横贯全屏的窄带仍然会被
+    // 读成「一条横幅」，而它其实只是一句补充说明。
     .width('100%')
-    .padding({ left: 14, right: 10, top: 10, bottom: 10 })
-    .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
-    .borderRadius(this.cardRadius)
-    // 底边留出浮动页签栏的高度：它是浮层，会盖住页面底部这一条。
-    .margin({ left: this.SIDE_INSET, right: this.SIDE_INSET, bottom: 96 })
-    .onClick(() => {
-      this.includeArchived = !this.includeArchived;
-    })
-    .accessibilityText(this.includeArchived ? '收起已归档的搜索结果' : '在已归档中搜索')
+    .justifyContent(FlexAlign.Center)
+    // 与下面的网格之间留一点气，否则胶囊会贴着第一排卡片。
+    .padding({ bottom: 8 })
   }
 
   /**
@@ -2769,41 +3128,16 @@ struct Index {
             }
             .width('100%')
 
-            // 卡片圆角属于**外观**：它决定卡片长什么样，不是写作参数。放在这里
-            // 也因为设置页的分组卡片自己就用这个值画圆角。
-            Row({ space: 10 }) {
-              Text('卡片圆角')
-                .fontSize(14)
-                .fontColor($r('app.color.text_primary'))
-                .width(58)
-              Slider({
-                value: this.cardRadius,
-                min: CARD_RADIUS_MIN,
-                max: CARD_RADIUS_MAX,
-                step: 2,
-                style: SliderStyle.OutSet
-              })
-                .layoutWeight(1)
-                .selectedColor(this.accentColor())
-                .blockColor(this.accentColor())
-                .trackColor($r('app.color.divider'))
-                .onChange((value: number) => {
-                  this.cardRadius = Math.round(value);
-                  SettingsStore.instance.setCardRadius(this.cardRadius);
-                })
-              Text(`${this.cardRadius} vp`)
-                .fontSize(12)
-                .fontColor($r('app.color.text_secondary'))
-                .width(48)
-                .textAlign(TextAlign.End)
-            }
-            .width('100%')
+            // 卡片圆角那一行滑块已移除。它只影响「卡片有多圆」，既不是密度也不是
+            // 可读性；而它存在时，卡片的弧度是一台机器一个值，筛选条 / 排序条那条
+            // 胶囊却始终 17 vp——两种控件永远对不齐。现在圆角是常量 `CARD_CORNER`，
+            // 卡片、设置分组卡片、搜索提示条与胶囊外壳共用同一个数。
           }
           .width('100%')
           .padding(14)
           .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
           .backgroundColor(Color.Transparent)
-          .borderRadius(this.cardRadius)
+          .borderRadius(this.cardCorner)
         }
 
         ListItem() {
@@ -2929,7 +3263,7 @@ struct Index {
           .padding(14)
           .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
           .backgroundColor(Color.Transparent)
-          .borderRadius(this.cardRadius)
+          .borderRadius(this.cardCorner)
         }
 
         ListItem() {
@@ -2961,7 +3295,64 @@ struct Index {
           .padding(14)
           .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
           .backgroundColor(Color.Transparent)
-          .borderRadius(this.cardRadius)
+          .borderRadius(this.cardCorner)
+        }
+
+        ListItem() {
+          this.SectionLabel('AI')
+        }
+
+        ListItem() {
+          // AI 是**一个主题**：endpoint、密钥与三个场景的模型必须一起配好才有
+          // 意义（缺 endpoint 或 key 时整组都跑不通），所以它们同处一张卡片，
+          // 而不是拆成五行各自为政的开关。
+          Column({ space: 12 }) {
+            Row() {
+              Column({ space: 2 }) {
+                Text('AI 服务')
+                  .fontSize(16)
+                  .fontColor($r('app.color.text_primary'))
+                Text('OpenAI 兼容接口 · 密钥存于系统密钥库')
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Text(this.aiKeyPresent ? '已保存密钥' : '未保存密钥')
+                .fontSize(12)
+                .fontColor($r('app.color.text_secondary'))
+            }
+            .width('100%')
+
+            this.AiField('接口地址', 'https://api.example.com/v1', 0)
+            this.AiField('API 密钥', '可留空（本机 / 内网节点）', 4)
+            this.AiField('洞见与格式', '模型名，例如 gpt-4o', 1)
+            this.AiField('翻译', '模型名，例如 gpt-4o-mini', 2)
+            this.AiField('润色', '模型名，例如 gpt-4o', 3)
+
+            Row() {
+              Text('凭据只写入系统密钥库，不随笔记同步，也不会出现在导出里。')
+                .fontSize(11)
+                .fontColor($r('app.color.text_secondary'))
+                .layoutWeight(1)
+              Text('保存')
+                .fontSize(14)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.accentColor())
+                .padding({ left: 12, right: 4, top: 6, bottom: 6 })
+                .onClick(() => {
+                  this.saveAiSettings();
+                })
+                .accessibilityText('保存 AI 设置')
+            }
+            .width('100%')
+          }
+          .width('100%')
+          .padding(14)
+          .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+          .backgroundColor(Color.Transparent)
+          .borderRadius(this.cardCorner)
         }
 
         ListItem() {
@@ -2976,7 +3367,7 @@ struct Index {
         })
         .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
         .backgroundColor(Color.Transparent)
-        .borderRadius(this.cardRadius)
+        .borderRadius(this.cardCorner)
 
         ListItem() {
           this.SectionLabel('关于')
@@ -2987,7 +3378,7 @@ struct Index {
         }
         .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
         .backgroundColor(Color.Transparent)
-        .borderRadius(this.cardRadius)
+        .borderRadius(this.cardCorner)
       }
       .width('100%')
       .layoutWeight(1)
@@ -2998,6 +3389,15 @@ struct Index {
     .height('100%')
     // Same band reserve as the other tabs: the HDS title bar owns the 大标题.
     .padding({ top: this.TITLE_BAR_CLEARANCE })
+    .bindSheet(this.transferSheetShown, this.TransferSheet(), {
+      height: SheetSize.FIT_CONTENT,
+      dragBar: true,
+      showClose: false,
+      backgroundColor: $r('app.color.page_bg'),
+      onDisappear: () => {
+        this.transferSheetShown = false;
+      }
+    })
   }
 
   @Builder
@@ -3090,11 +3490,115 @@ struct Index {
   @Builder
   SettingsCardSurface() {
     CardSurface({
-      radius: this.cardRadius,
+      radius: this.cardCorner,
       glassOn: this.glassOn(),
       glassGear: this.glassLevel,
       glassTint: this.glassTint()
     })
+  }
+
+  /**
+   * 一行 AI 配置：左侧标签，右侧输入框。
+   *
+   * `field` 是数字而不是字符串键，因为 ArkTS 不允许索引签名——`drafts[field]`
+   * 这种写法编译不过，而三处开关 + 一个 endpoint 写四遍 `if` 又会分叉。
+   *
+   * 值**在构建体内部读**（`this.aiFieldValue(field)`），不通过参数传进来：`@Builder`
+   * 的参数是按值比较的，传进来的字符串一旦没变，框架就跳过这棵子树——这条在
+   * 设置页 WebDAV 行上已经踩过一次（见 `WebDavRow`）。
+   */
+  @Builder
+  AiField(label: string, hint: string, field: number) {
+    Row({ space: 10 }) {
+      Text(label)
+        .fontSize(13)
+        .fontColor($r('app.color.text_primary'))
+        .width(84)
+        .maxLines(1)
+      TextInput({
+        text: this.aiFieldValue(field),
+        placeholder: field === 4 && this.aiKeyPresent ? '已保存，留空则不修改' : hint
+      })
+        .layoutWeight(1)
+        .height(38)
+        .type(field === 4 ? InputType.Password : InputType.Normal)
+        .backgroundColor($r('app.color.page_bg'))
+        .borderRadius(10)
+        .padding({ left: 10, right: 10 })
+        .fontSize(13)
+        .fontColor($r('app.color.text_primary'))
+        .placeholderColor($r('app.color.text_secondary'))
+        .caretColor(this.accentColor())
+        .onChange((value: string) => {
+          this.setAiField(field, value);
+        })
+    }
+    .width('100%')
+  }
+
+  private aiFieldValue(field: number): string {
+    if (field === 0) {
+      return this.aiEndpointDraft;
+    }
+    if (field === 4) {
+      return this.aiKeyDraft;
+    }
+    if (field === 1) {
+      return this.aiModelDraft0;
+    }
+    if (field === 2) {
+      return this.aiModelDraft1;
+    }
+    return this.aiModelDraft2;
+  }
+
+  private setAiField(field: number, value: string): void {
+    if (field === 0) {
+      this.aiEndpointDraft = value;
+      return;
+    }
+    if (field === 4) {
+      this.aiKeyDraft = value;
+      return;
+    }
+    if (field === 1) {
+      this.aiModelDraft0 = value;
+      return;
+    }
+    if (field === 2) {
+      this.aiModelDraft1 = value;
+      return;
+    }
+    this.aiModelDraft2 = value;
+  }
+
+  /**
+   * 保存 AI 设置。
+   *
+   * endpoint 与模型名进 `preferences`（不是秘密），密钥进 Asset Store。密钥输入框
+   * **永远不回填**：留空表示「不修改已经存好的那一把」，与 WebDAV 密码同一套约定
+   * ——一个每次打开设置页都要重新输入的密钥，用户只会把它写在便签上。
+   */
+  private saveAiSettings(): void {
+    const settings = SettingsStore.instance;
+    settings.setAiEndpoint(this.aiEndpointDraft.trim());
+    settings.setAiModel(0, this.aiModelDraft0.trim());
+    settings.setAiModel(1, this.aiModelDraft1.trim());
+    settings.setAiModel(2, this.aiModelDraft2.trim());
+
+    const key: string = this.aiKeyDraft.trim();
+    if (key.length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: 'AI 设置已保存' });
+      return;
+    }
+    AiKey.save(key).then((ok: boolean) => {
+      if (ok) {
+        // 草稿里不留明文：保存成功之后这个输入框的价值已经用完了。
+        this.aiKeyDraft = '';
+        this.aiKeyPresent = true;
+      }
+      this.getUIContext().getPromptAction().showToast({ message: ok ? 'AI 设置已保存' : '密钥保存失败' });
+    });
   }
 
   @Builder
@@ -3212,37 +3716,116 @@ struct Index {
   }
 
   private showTransferSheet(): void {
-    const ui = this.getUIContext();
-    ui.showActionSheet({
-      title: '导入 / 导出',
-      message: 'Markdown 与 ZIP（含附件）',
-      autoCancel: true,
-      confirm: {
-        value: '取消',
-        action: () => {}
-      },
-      sheets: [
-        {
-          title: '导出为 ZIP',
-          action: () => {
-            const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-            NoteTransfer.exportZip(context).then((result: TransferResult) => {
-              this.getUIContext().getPromptAction().showToast({ message: result.message });
-            });
+    this.transferSheetShown = true;
+  }
+
+  /**
+   * 导入 / 导出选择面板。
+   *
+   * 原来是 `getUIContext().showActionSheet()`——那是系统级的底部动作表：白底、
+   * 系统字体、系统圆角、一排蓝色文字，与这一页的卡片、材质、强调色毫无关系。
+   * 它出现在最深的一层设置里，却看起来像另一个应用的控件。
+   *
+   * 现在走 `bindSheet` + 本页自己的卡片语言：同样的 `CardSurface`、同样的
+   * `cardCorner`、同样的强调色动作文字，与 标签 / 标签重命名 两个面板一致。
+   */
+  @Builder
+  TransferSheet() {
+    Column({ space: 14 }) {
+      Row() {
+        Text('导入 / 导出')
+          .fontSize(20)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_primary'))
+        Blank()
+        Text('取消')
+          .fontSize(16)
+          .fontColor(this.accentColor())
+          .padding({ left: 12, right: 4, top: 6, bottom: 6 })
+          .onClick(() => {
+            this.transferSheetShown = false;
+          })
+          .accessibilityText('关闭导入导出面板')
+      }
+      .width('100%')
+
+      Text('Markdown 单篇，或整库 ZIP（含附件）')
+        .fontSize(12)
+        .fontColor($r('app.color.text_secondary'))
+        .width('100%')
+
+      Column({ space: 10 }) {
+        Row({ space: 12 }) {
+          SymbolGlyph($r('sys.symbol.arrow_up_to_line'))
+            .fontSize(20)
+            .fontColor([this.accentColor()])
+          Column({ space: 2 }) {
+            Text('导出为 ZIP')
+              .fontSize(15)
+              .fontColor($r('app.color.text_primary'))
+            Text('打包全部笔记与附件')
+              .fontSize(11)
+              .fontColor($r('app.color.text_secondary'))
           }
-        },
-        {
-          title: '导入 Markdown / ZIP',
-          action: () => {
-            const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-            NoteTransfer.importFiles(context).then((result: TransferResult) => {
-              this.store.reload();
-              this.refreshList();
-              this.getUIContext().getPromptAction().showToast({ message: result.message });
-            });
-          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([$r('app.color.text_secondary')])
         }
-      ]
-    });
+        .width('100%')
+        .padding(12)
+        .borderRadius(14)
+        .backgroundColor($r('app.color.page_bg'))
+        .onClick(() => {
+          this.transferSheetShown = false;
+          const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+          NoteTransfer.exportZip(context).then((result: TransferResult) => {
+            this.getUIContext().getPromptAction().showToast({ message: result.message });
+          });
+        })
+        .accessibilityText('导出为 ZIP')
+
+        Row({ space: 12 }) {
+          SymbolGlyph($r('sys.symbol.square_and_arrow_down'))
+            .fontSize(20)
+            .fontColor([this.accentColor()])
+          Column({ space: 2 }) {
+            Text('导入 Markdown / ZIP')
+              .fontSize(15)
+              .fontColor($r('app.color.text_primary'))
+            Text('同名笔记会新增一份')
+              .fontSize(11)
+              .fontColor($r('app.color.text_secondary'))
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([$r('app.color.text_secondary')])
+        }
+        .width('100%')
+        .padding(12)
+        .borderRadius(14)
+        .backgroundColor($r('app.color.page_bg'))
+        .onClick(() => {
+          this.transferSheetShown = false;
+          const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+          NoteTransfer.importFiles(context).then((result: TransferResult) => {
+            this.store.reload();
+            this.refreshList();
+            this.getUIContext().getPromptAction().showToast({ message: result.message });
+          });
+        })
+        .accessibilityText('导入 Markdown 或 ZIP')
+      }
+      .width('100%')
+
+      Blank()
+    }
+    .width('100%')
+    .height('100%')
+    .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET, top: 12 })
+    .alignItems(HorizontalAlign.Start)
   }
 }

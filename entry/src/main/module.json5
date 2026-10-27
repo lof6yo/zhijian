@@ -13,6 +13,18 @@
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET"
+      },
+      // 滑动跨档与长按菜单的触觉反馈。`system_grant`（normal）级权限，安装即授予，
+      // 不需要 `abilityAccessCtrl` 运行时申请；没有它 `startVibration` 会静默失败。
+      {
+        "name": "ohos.permission.VIBRATE",
+        "reason": "$string:vibrate_reason",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility"
+          ],
+          "when": "inuse"
+        }
       }
     ],
     "metadata": [

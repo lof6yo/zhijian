@@ -1,6 +1,6 @@
 import { MdBlock, emptyBlock } from './MdTypes';
 import { MdBlockView, listNumberAt, tightTopAt } from './MdView';
-import { EditResult } from './MarkdownEdits';
+import { EditResult, MarkdownEdits } from './MarkdownEdits';
 import { FormatBar } from './FormatBar';
 
 /**
@@ -56,6 +56,14 @@ export struct LiveBlockEditor {
   @Event onDelete: () => void = () => {};
 
   private controller: TextAreaController = new TextAreaController();
+  /**
+   * 上一次的草稿文本，仅供回车续写做差分。
+   *
+   * 这个组件会被**复用**（从「编辑某一块」切到「文末追加」时结构位置没变），
+   * 所以播种时必须一起重置：否则上一块的文本会留作新块的比较基线，
+   * 第一个回车就会被算成「长度差不是 1」，续写直接失效。
+   */
+  private prevDraft: string = '';
 
   aboutToAppear(): void {
     this.seed();
@@ -91,6 +99,7 @@ export struct LiveBlockEditor {
     }
     this.seeded = this.initialSource;
     this.draft = this.initialSource;
+    this.prevDraft = this.initialSource;
     this.selStart = this.initialSource.length;
     this.selEnd = this.initialSource.length;
   }
@@ -110,6 +119,7 @@ export struct LiveBlockEditor {
 
   private applyResult(result: EditResult): void {
     this.draft = result.text;
+    this.prevDraft = result.text;
     this.onDraftChange(result.text);
     setTimeout(() => {
       try {
@@ -118,6 +128,33 @@ export struct LiveBlockEditor {
         // 定位失败不影响内容。
       }
     }, 0);
+  }
+
+  /**
+   * 回车续写：列表 / 待办 / 引用里敲回车时带上下一项的前缀。
+   *
+   * 与整篇输入共用 `MarkdownEdits.autoContinue`——两条编辑路径必须产出同一段
+   * 源码，规则留在各自组件里就会分叉。判定只看「新旧文本只差一个换行」，
+   * 所以输入法组词、粘贴多行都不受影响。
+   */
+  private onDraftEdited(value: string): void {
+    const cont: EditResult | null = MarkdownEdits.autoContinue(this.prevDraft, value);
+    if (cont !== null) {
+      this.draft = cont.text;
+      this.prevDraft = cont.text;
+      this.onDraftChange(cont.text);
+      setTimeout(() => {
+        try {
+          this.controller.caretPosition(cont.caret);
+        } catch (e) {
+          // 定位失败不影响内容。
+        }
+      }, 0);
+      return;
+    }
+    this.draft = value;
+    this.prevDraft = value;
+    this.onDraftChange(value);
   }
 
   private kindLabel(): string {
@@ -218,8 +255,7 @@ export struct LiveBlockEditor {
           this.selEnd = end;
         })
         .onChange((value: string) => {
-          this.draft = value;
-          this.onDraftChange(value);
+          this.onDraftEdited(value);
         })
 
       if (this.previewBlocks.length > 0) {
