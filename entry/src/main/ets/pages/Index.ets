@@ -3336,6 +3336,19 @@ struct Index {
                 .fontSize(11)
                 .fontColor($r('app.color.text_secondary'))
                 .layoutWeight(1)
+              // 密钥存了就必须能删。没有这条，「换成一个不需要密钥的本机节点」
+              // 会让旧 key 一直跟着发出去——服务端要么忽略、要么直接 401，
+              // 而用户手上没有任何地方可以撤销它。
+              if (this.aiKeyPresent) {
+                Text('清除密钥')
+                  .fontSize(12)
+                  .fontColor($r('app.color.danger'))
+                  .padding({ left: 10, right: 6, top: 6, bottom: 6 })
+                  .onClick(() => {
+                    this.clearAiKey();
+                  })
+                  .accessibilityText('清除已保存的 AI 密钥')
+              }
               Text('保存')
                 .fontSize(14)
                 .fontWeight(FontWeight.Medium)
@@ -3534,6 +3547,21 @@ struct Index {
         })
     }
     .width('100%')
+  }
+
+  /**
+   * 清掉已保存的密钥。
+   *
+   * 存在的理由：本机 / 内网节点不需要鉴权，而一个存过的 key 会跟着每个请求发
+   * 出去。没有这条，「把 endpoint 换成本机节点」这件事就做不干净——用户手上
+   * 没有任何地方能撤销那把旧 key。
+   */
+  private clearAiKey(): void {
+    AiKey.remove().then(() => {
+      this.aiKeyPresent = false;
+      this.aiKeyDraft = '';
+      this.getUIContext().getPromptAction().showToast({ message: '密钥已清除' });
+    });
   }
 
   private aiFieldValue(field: number): string {
