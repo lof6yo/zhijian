@@ -1,4 +1,4 @@
-Add-Type -AssemblyName System.Drawing
+﻿Add-Type -AssemblyName System.Drawing
 
 # ---------------------------------------------------------------------------
 # 纸见 (ZhiJian) 应用图标生成器

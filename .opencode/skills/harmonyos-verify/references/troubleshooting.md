@@ -14,7 +14,7 @@ This machine has CLT 26.0.0, not DevEco Studio. Do not set
 
 ### `devecocli` not found
 It is installed globally at
-`C:\Users\Huangly\AppData\Roaming\npm\devecocli.cmd`. Ensure
+`%APPDATA%\npm\devecocli.cmd`. Ensure
 `%APPDATA%\npm` is on PATH, or reinstall:
 
 ```powershell
@@ -95,7 +95,7 @@ server commands. Killing hdc processes alone will not free 8710.
 ### Emulator starts but no window / no boot
 - Check free disk/memory; the image needs several GB.
 - Try `--boot-mode coldboot` or `--no-window` for diagnosis.
-- Look at `C:\Users\Huangly\AppData\Local\Huawei\Emulator\deployed\puraxview\Log\Emulator.log`
+- Look at `%LOCALAPPDATA%\Huawei\Emulator\deployed\puraxview\Log\Emulator.log`
   and `qemu.log`.
 
 ## Signing / install

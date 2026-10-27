@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$SkipBuild,
     [switch]$NoLaunch,
     [string]$Device = '127.0.0.1:15000',
@@ -17,6 +17,9 @@ $signed = Join-Path $root 'signing\hmstart-signed.hap'
 $chain = Join-Path $root 'signing\app-chain.cer'
 $profile = Join-Path $root 'signing\hmstart-debug.p7b'
 $keystore = Join-Path $lib 'OpenHarmony.p12'
+# `123456` below is the password of the OpenHarmony SDK's **public test**
+# keystore, shipped identically with every SDK install. It is a shared test
+# fixture, not a project secret; a HAP signed with it is emulator-only.
 $signTool = Join-Path $lib 'hap-sign-tool.jar'
 $bundle = 'com.hmprojects.hmstart'
 $ability = 'EntryAbility'

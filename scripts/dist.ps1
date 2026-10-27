@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$Clean,
     [switch]$Release,
     [switch]$Sign,
@@ -157,7 +157,13 @@ function Invoke-Timed([string]$label, [string]$command) {
         return $state
     }
     $out = if (Test-Path $buildLog) { Get-Content $buildLog -Raw } else { '' }
-    if ($proc.ExitCode -ne 0) {
+    # `ExitCode` can read back $null here: Start-Process closes the child handle
+    # once it has started, so the polled Process object has no code to report even
+    # though the build finished. Treating that as a non-zero exit marked a
+    # successful build as failed and burned two more full rebuilds. When the code
+    # is unavailable, the `BUILD SUCCESSFUL` marker below is the authority —
+    # hvigor does not print it on a failed task.
+    if ($null -ne $proc.ExitCode -and $proc.ExitCode -ne 0) {
         Write-Host "  $label exited $($proc.ExitCode)" -ForegroundColor Yellow
         Show-Tail $buildLog 40
         Show-Tail $buildErr 20
@@ -321,6 +327,8 @@ if ($Sign) {
     $chain = Join-Path $root 'signing\app-chain.cer'
     $profile = Join-Path $root 'signing\hmstart-debug.p7b'
     $keystore = Join-Path $lib 'OpenHarmony.p12'
+    # `123456` below is the OpenHarmony SDK's public test-keystore password
+    # (identical on every install), not a project secret.
     $signTool = Join-Path $lib 'hap-sign-tool.jar'
     foreach ($f in @($chain, $profile, $keystore, $signTool)) {
         if (-not (Test-Path $f)) { Fail "Missing signing input: $f" }

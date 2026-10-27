@@ -59,7 +59,7 @@ If `device list` is empty or hdc hangs:
 4. Start the alternate server: `hdc -s 127.0.0.1:18710 start`;
    `hdc -s 127.0.0.1:18710 tconn 127.0.0.1:15000`;
    `hdc list targets -v`.
-5. Read `C:\Users\Huangly\AppData\Local\Huawei\Emulator\deployed\puraxview\Log\Emulator.log`
+5. Read `%LOCALAPPDATA%\Huawei\Emulator\deployed\puraxview\Log\Emulator.log`
    for `Guest OS Boot Completed` / `hdc is not connected`.
 6. Cold boot if the guest is stuck:
    `devecocli emulator stop puraxview`;

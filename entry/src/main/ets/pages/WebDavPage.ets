@@ -160,7 +160,7 @@ export struct WebDavPage {
                     .fontSize(12)
                     .fontColor($r('app.color.text_secondary'))
                     .width('100%')
-                  TextInput({ text: this.dnsIp, placeholder: '例如 203.93.118.56，留空则用系统 DNS' })
+                  TextInput({ text: this.dnsIp, placeholder: '例如 192.0.2.1，留空则用系统 DNS' })
                     .type(InputType.Normal)
                     .fontSize(14)
                     .fontColor($r('app.color.text_primary'))

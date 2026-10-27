@@ -17,9 +17,15 @@ Huawei developer account. **Never ship these materials or commit them.**
 | `hmstart-signed.hap` | Output of the last `scripts/sign-and-install.ps1` run. |
 
 The keystore is the SDK's public test keystore:
-`D:\deveco\command-line-tools\sdk\default\openharmony\toolchains\lib\OpenHarmony.p12`
+`<SDK>\default\openharmony\toolchains\lib\OpenHarmony.p12`
 (password `123456`). It contains the app release key and the debug profile key.
 Do not copy it into the repo.
+
+> Both the keystore and its `123456` password ship **inside the public
+> OpenHarmony SDK** and are identical on every machine that installs it. They are
+> a shared test fixture, not a secret of this project — which is exactly why a
+> HAP signed with this chain is emulator-only and must never be distributed.
+
 
 ## How it was generated
 
