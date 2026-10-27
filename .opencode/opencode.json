@@ -95,7 +95,11 @@
     "servers": {
       "deveco": {
         "type": "local",
-        "command": ["cmd", "/c", "scripts\\mcp-deveco.cmd"],
+        "command": [
+          "cmd",
+          "/c",
+          "scripts\\mcp-deveco.cmd"
+        ],
         "cwd": ".",
         "disabled": true,
         "timeout": {
@@ -106,7 +110,11 @@
       },
       "harmonyos": {
         "type": "local",
-        "command": ["cmd", "/c", "scripts\\mcp-harmonyos.cmd"],
+        "command": [
+          "cmd",
+          "/c",
+          "scripts\\mcp-harmonyos.cmd"
+        ],
         "cwd": ".",
         "timeout": {
           "startup": 60000,
@@ -124,6 +132,10 @@
           "catalog": 30000,
           "execution": 120000
         }
+      },
+      "lance": {
+        "type": "remote",
+        "url": "https://api.lance.app/mcp"
       }
     }
   }
