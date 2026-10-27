@@ -1,5 +1,6 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
+import { TextSelectionClearPolicy } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { MdBlock, MdParseResult, MdSrcRange } from '../markdown/MdTypes';
 import { MdParser } from '../markdown/MdParser';
@@ -61,7 +62,7 @@ const AI_ACTIONS: AiAction[] = [
       '只输出译文本身，保留原有的 Markdown 结构与代码块，不要加任何解释。'
   },
   {
-    label: '格式修正',
+    label: '格式',
     icon: $r('sys.symbol.doc_text_badge_checkmark'),
     scenario: 0,
     system: '整理下面这篇 Markdown 笔记的格式：统一标题层级、列表符号、空行与代码块围栏。' +
@@ -881,6 +882,14 @@ export struct ReaderPage {
       return true;
     })
     .onReady((context: NavDestinationContext) => {
+      // 点正文之外就收起选区与手柄。默认策略是「保留选中文本」，于是长按选中一段
+      // 之后再点别的段落，旧选区的高亮还挂在那儿，看起来像卡住了。
+      try {
+        this.getUIContext().setTextSelectionClearPolicy(
+          TextSelectionClearPolicy.CLEAR_SELECTED_TEXT_ON_EXTERNAL_TOUCH);
+      } catch (err) {
+        // 26 以下没有这个接口；收起选区只是体验问题，不能因此让整页起不来。
+      }
       const param = context.pathInfo.param as ReaderParam;
       this.createdHere = param.created;
       this.load(param.id);
@@ -948,13 +957,10 @@ export struct ReaderPage {
         this.redo();
       }, GATE_REDO, $r('sys.color.ohos_id_color_text_primary'))
 
-      // 图标与颜色都反映**当前模式**：分块时用强调色（这个模式更需要「被看见」，
-      // 因为它决定点正文之后发生什么），简单时用普通正文色（默认档不必强调）。
-      this.GlassButton($r('sys.symbol.doc_plaintext'),
-        this.simpleEditing ? '编辑模式：简单，点按切换为分块' : '编辑模式：分块，点按切换为简单',
-        () => {
-          this.toggleEditingMode();
-        }, GATE_NONE, this.simpleEditing ? $r('sys.color.ohos_id_color_text_primary') : this.accentColor)
+      // 模式按钮是**状态**，不是动作：它显示当前激活的是哪一档，所以做成一个
+      // 带文字的胶囊（强调色浅底 + 强调色文字），而不是和撤销/重做一样的圆钮。
+      // 圆钮在这里会被读成「点一下执行某个动作」，用户看不出自己现在在哪一档。
+      this.ModeButton()
 
       this.GlassButton($r('sys.symbol.wand_and_stars'),
         this.aiPanelOpen ? 'AI 功能，已展开' : 'AI 功能', () => {
@@ -971,6 +977,42 @@ export struct ReaderPage {
     .margin({ top: FLOAT_TOP })
     // 只有按钮本身要接点击，整条空白带不该挡住正文。
     .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  /**
+   * 模式切换：一个显示**当前档位**的胶囊（而不是一个圆钮）。
+   *
+   * 圆钮的问题不是「看不出来能不能点」，而是看不出**现在在哪一档**：图标与底色
+   * 都在强调色和正文色之间切换，两种状态的差别只有一个字的色相，用户点完只
+   * 得到「好像亮了一下」。这里直接写上档位名（分块 / 简单），并把当前档位画成
+   * 强调色浅底 + 强调色文字——这是本应用里「已选中」的固定说法（筛选条、
+   * 分段控件、标签胶囊都用同一套），不需要再学一遍。
+   *
+   * 名字是**当前档位**而不是「点一下会变成什么」：按钮读的是状态，不是动作。
+   */
+  @Builder
+  ModeButton() {
+    Row({ space: 5 }) {
+      SymbolGlyph(this.simpleEditing ? $r('sys.symbol.doc_plaintext') : $r('sys.symbol.square_grid_2x2'))
+        .fontSize(15)
+        .fontColor([this.accentColor])
+      Text(this.simpleEditing ? '简单' : '分块')
+        .fontSize(12)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.accentColor)
+        .maxLines(1)
+    }
+    .height(FLOAT_HIT)
+    .padding({ left: 12, right: 12 })
+    .borderRadius(FLOAT_HIT / 2)
+    .backgroundColor(this.accentChipColor())
+    .backgroundEffect({ radius: 18, saturation: 1.6, brightness: 1.04, color: $r('app.color.glass_tint') })
+    .border({ width: 1, color: $r('app.color.glass_border') })
+    .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
+    .onClick(() => {
+      this.toggleEditingMode();
+    })
+    .accessibilityText(this.simpleEditing ? '编辑模式：简单，点按切换为分块' : '编辑模式：分块，点按切换为简单')
   }
 
   /**

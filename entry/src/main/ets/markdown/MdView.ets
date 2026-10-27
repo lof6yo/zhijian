@@ -11,6 +11,8 @@
  */
 
 import { LengthMetrics } from '@kit.ArkUI';
+import { pasteboard } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   MdBlock,
   MdBlockKind,
@@ -262,9 +264,9 @@ export struct MdBlockView {
             // 代码也要能复制：一条 `npm i` 抄不出来就得手打。
             // 代码块的外层 `Scroll` 与逐行的 `Span` 都不消费长按，所以这里加
             // 选择不会和任何「点一下进编辑」抢事件——那一层在 `EditableDocument`
-            // 的容器上。
+            // 的容器上。同样必须是 `SELECTABLE_FOCUSABLE`，否则只出选区、不出菜单。
             .copyOption(CopyOptions.LocalDevice)
-            .textSelectable(TextSelectableMode.SELECTABLE_UNFOCUSABLE)
+            .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
           }, (line: CodeToken[], index: number) => `${index}`)
         }
         .width('auto')
@@ -656,6 +658,16 @@ struct MdInlineText {
   @Event onTextTap: () => void = () => {};
 
   /**
+   * 当前选区（由 `onTextSelectionChange` 维护）。
+   *
+   * 存在的理由：**长按选中之后，抬手这一下仍会走 `Span.onClick`**。用户拖出一段
+   * 选区、松手，本意是「我要复制」，结果却进入了编辑态——编辑框一起来，系统那个
+   * 复制/全选菜单连同选区一起消失。所以点之前必须先看有没有选区。
+   */
+  @Local selStart: number = -1;
+  @Local selEnd: number = -1;
+
+  /**
    * 正文可以**选中并复制**，即使此刻它同时是「点一下就编辑」的入口。
    *
    * 这两个属性是一组的：`copyOption` 决定长按要不要弹「复制 / 全选」菜单，
@@ -668,8 +680,15 @@ struct MdInlineText {
    * 与点击无关）。代价是长按会先经过一段时间才判定，但此前这一页根本拿不到任何
    * 选区——能选中一段话去发消息，比长按快几十毫秒重要得多。
    *
-   * 取 `SELECTABLE_UNFOCUSABLE` 而不是 `..._FOCUSABLE`：正文若可获得焦点，
-   * 每次点正文都会抢走输入框的焦点，正在编辑的那一块会被迫收起键盘。
+   * 取 `SELECTABLE_FOCUSABLE` 而不是 `..._UNFOCUSABLE`：**只有可聚焦的 `Text` 才会
+   * 弹出系统的「复制 / 全选」菜单**。`enums.d.ts` 对 `SELECTABLE_UNFOCUSABLE` 的
+   * 原话是「text is selectable, but not focusable. Setting the **selection**,
+   * **bindSelectionMenu**, or **copyOption** attribute does not affect the
+   * behavior」——也就是选区手柄能拖出来，但菜单与 `copyOption` 全部不生效，实测
+   * 就是「能选中、松手什么也没有」。
+   *
+   * 代价是点正文会让它拿焦点；这一页点正文本来就是进编辑（`tapToEdit`），
+   * 焦点随即交给那块的输入框，所以没有可见的副作用。
    */
   build() {
     if (this.quoteMode) {
@@ -684,7 +703,10 @@ struct MdInlineText {
       .borderColor(this.accentColor)
       .width('100%')
       .copyOption(CopyOptions.LocalDevice)
-      .textSelectable(TextSelectableMode.SELECTABLE_UNFOCUSABLE)
+      .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
+      .onTextSelectionChange((start: number, end: number) => {
+        this.onSelection(start, end);
+      })
     } else {
       Text() {
         this.SpanBody()
@@ -694,8 +716,22 @@ struct MdInlineText {
       .lineHeight(this.baseLineHeight())
       .width('100%')
       .copyOption(CopyOptions.LocalDevice)
-      .textSelectable(TextSelectableMode.SELECTABLE_UNFOCUSABLE)
+      .textSelectable(TextSelectableMode.SELECTABLE_FOCUSABLE)
+      .onTextSelectionChange((start: number, end: number) => {
+        this.onSelection(start, end);
+      })
     }
+  }
+
+  /**
+   * 选区变化只记区间：有选区时不再把「抬手」当成「进编辑」。
+   *
+   * 系统菜单本身不需要这里做任何事——`copyOption` + `SELECTABLE_FOCUSABLE` 就够了，
+   * 真正压掉它的是 `EditableDocument` 里那层容器的 `clickEffect`（见那里的注释）。
+   */
+  private onSelection(start: number, end: number): void {
+    this.selStart = start;
+    this.selEnd = end;
   }
 
   @Builder
@@ -711,8 +747,11 @@ struct MdInlineText {
         .textBackgroundStyle(this.backgroundFor(item))
         .baselineOffset(this.baselineFor(item))
         .onClick(() => {
+          // 有选区时这一下是「收起选区」，不是「进编辑」。
+          if (this.selEnd > this.selStart) {
+            return;
+          }
           if (this.tapToEdit) {
-            // 编辑态优先：这一下是「我要改这块」，不是「我要打开这个链接」。
             this.onTextTap();
             return;
           }
@@ -721,6 +760,10 @@ struct MdInlineText {
           }
         })
     }, (item: MdInline, index: number) => `${item.kind}-${item.text}-${index}`)
+  }
+
+  private baseFontSize(): number {
+    return this.overrideSize > 0 ? this.overrideSize : this.bodySize;
   }
 
   /**
@@ -736,10 +779,6 @@ struct MdInlineText {
       return MathLite.linearize(item.text);
     }
     return item.text;
-  }
-
-  private baseFontSize(): number {
-    return this.overrideSize > 0 ? this.overrideSize : this.bodySize;
   }
 
   private baseLineHeight(): number {

@@ -125,10 +125,12 @@ export struct EditableDocument {
           }
           .width('100%')
           .padding({ top: 2, bottom: 2 })
+          // 点空白处也要能进编辑，但**不能带 `clickEffect`**：实测给这一层加
+          // `clickEffect` 会让长按不再弹系统文本菜单（只出选区手柄）。
+          // 单看 `onClick` 是否也压制还没有单独验证——见下面那条注释。
           .onClick(() => {
             this.onBlockTap(index);
           })
-          .clickEffect({ level: ClickEffectLevel.LIGHT })
           .accessibilityText('点按编辑这一块')
         }
       }, (block: MdBlock, index: number) => `${block.id}-${this.epoch}-${index === this.editingIndex && !this.appending ? 'e' : 'r'}`)

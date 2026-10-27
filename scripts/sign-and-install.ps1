@@ -1,7 +1,8 @@
 param(
     [switch]$SkipBuild,
     [switch]$NoLaunch,
-    [string]$Device = '127.0.0.1:15000'
+    [string]$Device = '127.0.0.1:15000',
+    [int]$StallSec = 45
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,12 +26,56 @@ foreach ($f in @($chain, $profile, $keystore, $signTool)) {
 }
 
 if (-not $SkipBuild) {
-    Push-Location $root
-    try {
-        & devecocli build
-        if ($LASTEXITCODE -ne 0) { throw "Build failed (exit $LASTEXITCODE)" }
-    } finally {
-        Pop-Location
+    # 这一段是**唯一**会让这个脚本「卡住」的地方，两个坑都在这里：
+    #
+    # 1. **`devecocli build` 会起 hvigor 常驻守护进程。** 上一次被超时打断的构建
+    #    会留下一个仍握着构建目录的 `node`，下一次构建就静静坐着、一行输出都没有
+    #    （实测：两次都停在 ~2 % CPU，杀掉那两个进程后同一命令 17 s 跑完）。
+    #    所以先把**本次启动之前**的 hvigor node 清掉。只清命令行里带 `hvigor` 的，
+    #    绝不 `Stop-Process node` 全杀——MCP 服务也是 node。
+    # 2. **`devecocli build` 比 `hvigorw --no-daemon` 慢一个数量级**（114 s vs 17 s，
+    #    见 AGENTS.md）。这里直接走 no-daemon 路径，和 `scripts\dist.ps1` 一致。
+    #
+    # 顺带加一个看门狗：45 s 没有新输出就判定为死锁，杀掉重试一次。
+    $started = Get-Date
+    Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+        Where-Object { $_.CommandLine -match 'hvigor' -and $_.CreationDate -lt $started.AddSeconds(-5) } |
+        ForEach-Object {
+            Write-Host "  reaping stale hvigor node $($_.ProcessId) ($($_.CreationDate))"
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+
+    $hvigor = Join-Path $env:DEVECO_CLI_CLT_PATH 'bin\hvigorw.bat'
+    $args_ = @('--mode', 'module', '-p', 'module=entry@default', '-p', 'product=default',
+        'assembleHap', '--no-daemon')
+    $log = Join-Path $env:TEMP 'hmstart-build.log'
+    Remove-Item $log, "$log.err" -ErrorAction SilentlyContinue
+
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        Write-Host "Building entry (attempt $attempt) ..."
+        $proc = Start-Process -FilePath $hvigor -ArgumentList $args_ -WorkingDirectory $root `
+            -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+        $lastSize = -1
+        $lastChange = Get-Date
+        while (-not $proc.HasExited) {
+            Start-Sleep -Milliseconds 700
+            $size = if (Test-Path $log) { (Get-Item $log).Length } else { 0 }
+            if ($size -ne $lastSize) {
+                $lastSize = $size
+                $lastChange = Get-Date
+            } elseif (((Get-Date) - $lastChange).TotalSeconds -ge $StallSec) {
+                Write-Warning "no build output for ${StallSec}s (lines so far: $((Get-Content $log -ErrorAction SilentlyContinue | Measure-Object -Line).Lines)) - treating as deadlock"
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                break
+            }
+        }
+        $proc.WaitForExit()
+        if ($proc.ExitCode -eq 0) { break }
+        if ($attempt -eq 2) {
+            if (Test-Path $log) { Get-Content $log -Tail 20 }
+            throw "Build failed (exit $($proc.ExitCode))"
+        }
+        Write-Warning "build exited $($proc.ExitCode); retrying once"
     }
 }
 

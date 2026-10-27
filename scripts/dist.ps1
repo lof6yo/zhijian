@@ -13,10 +13,17 @@ param(
     # three times the worst healthy gap — there is nothing to wait for beyond
     # that, and the earlier 120 s default meant one silent hang cost two minutes
     # before the retry even started.
-    [int]$StallSec = 45,
+    # -1 = pick by mode: a release build recompiles ArkTS in one long task and
+    # prints nothing for 50-70 s, so the 45 s bound tuned for incremental debug
+    # builds kills a perfectly healthy release compile (measured: three retries
+    # in a row, each stopped mid-CompileArkTS, then the same command finished
+    # given more time).
+    [int]$StallSec = -1,
     # Absolute ceiling, for a genuinely slow first build on a cold cache.
     [int]$TimeoutSec = 900
 )
+
+if ($StallSec -le 0) { $StallSec = if ($Release) { 90 } else { 45 } }
 
 # Build the entry HAP and publish it into `dist/`.
 #

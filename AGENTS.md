@@ -127,30 +127,50 @@ $env:PATH = "D:\deveco\command-line-tools\bin;D:\deveco\command-line-tools\sdk\d
 | Environment doctor | `scripts\doctor.ps1` |
 
 App icon (`scripts/gen-icon.ps1`): the mark is **authored raster**, not drawn in
-code — `design/icon/app-icon-master.png` (1024², generated with the Lance MCP
-`generate_assets`, `gpt-image-2`). The script adapts that artwork to the
+code — `design/icon/app-icon-master.png` (1024², a glass `#` generated from a
+prompt, kept as the single source). The script adapts that artwork to the
 HarmonyOS layering contract and writes `foreground.png`, `background.png` and
 the 216² `startIcon.png`. Run it only when the artwork changes, then rebuild.
 
 HarmonyOS rules baked into the script: foreground and background are both
 **1024×1024**; the foreground is a **transparent** PNG; the background is a
 **pure solid colour** (no gradient, no graphics, no transparency); nothing
-self-clips a rounded corner; nothing adds inner padding; the mark is scaled
-about the canvas centre so its outer corner stays inside the launcher mask
-circle. The **entry** copy of `foreground/background.png` wins over `AppScope`,
-so the script writes both — editing only one leaves the launcher showing the
-old icon.
+self-clips a rounded corner; nothing adds inner padding. The **entry** copy of
+`foreground.png/background.png` wins over `AppScope`, so the script writes both
+— editing only one leaves the launcher showing the old icon.
 
-Two traps specific to raster artwork:
-- **The master's plate is a diagonal gradient, and a background layer may not
-  carry one.** The script keys the sheet out of the master (red channel
-  separates it cleanly) and replaces the plate with its own ink `#021A64`;
-  painting the gradient into the background gets rejected by the icon spec, and
-  putting it in the foreground makes the foreground opaque, which the spec also
-  forbids. Rebuild the depth (glow + contact shadow) on the transparent layer.
-- **The Lance pack's `android/adaptive-foreground.png` is a hard square crop of
-  the full artwork**, not a transparent mark — corners go from alpha 0 to 255 in
-  one pixel. Do not wire it in as `foreground.png`; it renders as a square patch.
+What the script does to the art, and why:
+
+- **Keys the glyph per pixel on the red channel**, then a 2 px morphological
+  close. A `#` has real holes (the four gaps between the bars, plus the counter),
+  so the older "fill each row between its first and last lit pixel" trick would
+  turn the two verticals into a slab — it only suits a convex silhouette.
+- **Levels the artwork** (`$TILT`, degrees). The generator ships the glyph a few
+  degrees off vertical; nothing else in the pipeline corrects that, and a
+  crooked `#` reads as an error rather than as a physical object.
+- **Fits the alpha bounds to a SQUARE** (`$SQUARE`), not to the long axis. A `#`
+  is taller than it is wide (705×772 here), so scaling uniformly leaves the
+  left/right margins wider than the top/bottom ones — the "间距不协调" look.
+  Squaring the box costs ~9% of horizontal stretch and buys equal margins
+  (measured 174/173/174/174 px).
+- **Replaces the plate with `$PLATE`.** The master's own plate is a near-black
+  navy; on a home screen it reads as a black square, so the layer uses `#0B4FA8`
+  instead. The byte-level rule is the reason this is a flat fill and not the
+  artwork's gradient: a background layer may not carry one.
+- **Rebuilds the depth on the transparent layer**: a blurred silhouette as a
+  contact shadow plus a pale-blue light spill. Both are part of the foreground,
+  so the background stays one flat colour.
+
+Two traps worth remembering:
+- **The Lance/asset-pack `android/adaptive-foreground.png` is a hard square crop
+  of the full artwork**, not a transparent mark — corners go from alpha 0 to 255
+  in one pixel. Do not wire it in as `foreground.png`; it renders as a square
+  patch.
+- **GDI+ matrices are row-vector**: `Matrix.Scale` then `Translate` with
+  `MatrixOrder.Append` applies scale-then-translate. Using `Prepend` puts the
+  translation through the scale, and the mark lands ~20 px off centre — which is
+  exactly the kind of "margins look wrong" defect this icon has already been
+  through once.
 
 Direct fallbacks (only when DevEco CLI is unavailable):
 
@@ -508,9 +528,14 @@ button.
   list full of untitled notes opened straight into an editor — the reader stopped
   being a reader. Existing notes now always open rendered; the keyboard only appears
   when the user taps the body.
-- **设置 is grouped by purpose**, in this order: 外观 / 阅读与编辑 / 同步与备份 / AI /
-  回收站 / 关于. Each group is a `SectionLabel` plus its cards; keep a new row inside
+- **设置 is grouped by purpose**, in this order: 外观 / 阅读与编辑 / AI / 同步与备份 /
+  回收站 / 关于. AI 排在同步之前：两者都是「对外连接」的配置，而 AI 是写作时随时要用
+  的，同步是装好之后就不动的。 Each group is a `SectionLabel` plus its cards; keep a new row inside
   the group it belongs to rather than appending it to the end of the list.
+- **导入与导出是两个同级配置项，没有「导入 / 导出」这个中间页。** 它们和
+  WebDAV 同步同处「同步与备份」卡片，各自一行、点一下直接进系统文件选择器。
+  曾经是一个「导入 / 导出」行 + `showActionSheet` 的系统底部动作表：白底、
+  系统字体、一排蓝色文字，与这一页的卡片语言毫无关系，而且为「二选一」多花一屏。
 - **卡片圆角是常量，不是设置项。** `CARD_CORNER = 17`（`SettingsStore.ets`），
   笔记卡片、设置分组卡片、搜索提示条与筛选条 / 排序条那条胶囊共用同一个数。
   原来那档 8–36 的滑块只影响「卡片有多圆」——既不是密度也不是可读性，却让卡片
@@ -616,6 +641,13 @@ button.
   顶端**，不是状态栏下沿。
 - **搜索框展开时不收顶栏**（`hideTitleBar(chromeHidden && !searchExpanded)`）：
   搜索框就是标题栏本身，收起来等于把用户手上的输入框抽走。
+- **胶囊的位移与标题栏的显隐必须由同一次 `animateTo` 驱动。** 原来是
+  `chromeHidden = …` 加两处 `.animation({duration: 200})`：标题栏按 HDS 自己的
+  时长收缩，胶囊 200 ms 就走完了，于是「顶栏还没收起，筛选和排序控件已经上移」。
+  现在 `setChromeHidden()` 用 `animateTo({ duration: hidden ? 300 : 220, delay:
+  hidden ? 60 : 0, curve: FastOutSlowIn }, () => { this.chromeHidden = hidden; })`，
+  并且在 `NotesHeader` / `SelectionHeader` 上**不再**挂 `.animation()`——两套动画
+  叠在一起就是两条曲线各走各的。收起比展开长、并且延迟一点：先让标题栏动，胶囊跟上。
 - 切页签、进详情页、清空搜索之后都调 `restoreChrome()` 复位。
 
 ### AI（OpenAI 兼容）
@@ -665,9 +697,19 @@ button.
 - **发请求前必须先 `commitPending()`**：AI 读的是 `note.body`，正在编辑的那一块
   还没写回，不提交的话润色结果里缺着刚打的那段，替换回去就真丢了。
 - **AI 面板展开时给一次重档震动**（`Haptics.hard()`）；收起不给——那是「算了」。
+- **AI 三项的文案是两个字：翻译 / 格式 / 润色。** 与筛选项、排序项同一套字数规则
+  （见 §6 UI 词汇）；「格式修正」四个字在一条右对齐的胶囊列表里比另外两项长一截。
+- **模式切换是一个写着当前档位的胶囊（分块 / 简单），不是一个圆钮。** 圆钮只能
+  表达「点一下会发生什么」，表达不了「现在在哪一档」——图标与底色在强调色和正文色
+  之间来回，用户点完只得到「好像亮了一下」。胶囊用本应用统一的「已选中」说法：
+  强调色浅底 + 强调色文字 + 档位名。
+- **正文可以长按选中、并弹出系统的复制 / 全选菜单。** 前提有三条，缺一条就只剩
+  选区手柄：`copyOption(LocalDevice)`、`textSelectable(SELECTABLE_FOCUSABLE)`
+  （`..._UNFOCUSABLE` 下 `copyOption` 与 `bindSelectionMenu` 明确不生效），
+  以及**包住这一块的容器不能带 `clickEffect`**（见下一节，这是最容易踩的一条）。
 - **请求在飞时面板里显示「正在<动作>…」**，而不是一个转圈：这一步可能等十几秒，
   用户需要知道「它在做」和「做的是哪一步」。
-- **正文与代码块都开了 `copyOption` + `textSelectable(SELECTABLE_UNFOCUSABLE)`**，
+- **正文与代码块都开了 `copyOption` + `textSelectable(SELECTABLE_FOCUSABLE)`**，
   长按可选中复制。`Span` 只能接 `onClick`，选区能力来自父 `Text` 的属性。
 - **列表回车自动续写**（`MarkdownEdits.autoContinue`）：`- ` / `1. ` / `- [ ] ` /
   `> ` 四种，长的在前匹配（`- [ ] ` 先于 `- `）。判据是「长度差恰为 1、插入点是
@@ -1560,12 +1602,28 @@ commit message.
   `component-config: { 'Remote Communication Kit': true }`; otherwise every
   request fails with `Failure when receiving data from the peer`
   (`1007900056`) and looks like a server bug.
+- **`clickEffect` on a text block's wrapper silently disables the system text
+  selection menu.** Measured: `Text` with `copyOption(LocalDevice)` +
+  `SELECTABLE_FOCUSABLE` inside a `Stack`/`Column` that also had
+  `.onClick(...).clickEffect({ level: LIGHT })` produced selection handles but no
+  复制/全选 menu — and `bindSelectionMenu`, `TextController.setTextSelection(...,
+  { menuPolicy: SHOW })` plus `requestFocus` all failed to bring it back. Removing
+  **only** `.clickEffect` (keeping the `onClick`) restored the menu immediately.
+  So: never put `clickEffect` on a container that wraps selectable text; if press
+  feedback is needed, put it on a non-text affordance.
+- **Long-press selection leaves the selection behind by default.** The platform
+  policy is `KEEP_SELECTED_TEXT_ON_EXTERNAL_TOUCH`; after selecting a paragraph
+  and tapping another block, the old highlight stays and looks stuck. Call
+  `getUIContext().setTextSelectionClearPolicy(CLEAR_SELECTED_TEXT_ON_EXTERNAL_TOUCH)`
+  (API 26) once from the page.
+- **A tap on a link/paragraph must not enter editing while a selection exists.**
+  After long-press-drag the release still fires `Span.onClick`; guard it with
+  `onTextSelectionChange` (keep `selStart`/`selEnd`, return early when
+  `selEnd > selStart`) or the editor opens and the just-shown menu disappears.
 - **`TextInput.onSubmit` is the only right place to record a search term.**
   `onChange` fires per keystroke; a history built from it is a list of prefixes.
-- **Long-pressing a `Text` with `copyOption` + `textSelectable` shows selection
-  handles but does not open the copy menu on the first press** — the menu needs
-  a follow-up tap on the selection. Verify by the handles appearing, not by
-  looking for a popup.
+- **验证选区菜单要看「松手之后」**：长按起手时只出选区手柄，复制/全选菜单在
+  抬手后由平台弹出；截图抓在按住那一刻会误判成「没有菜单」。
 - **`WaterFlow` width**: a `FlowItem`'s child is measured against the whole flow,
   so percentage widths bleed into the neighbouring column. Give cells an explicit
   computed width, and never put a full-width header inside a multi-column flow.

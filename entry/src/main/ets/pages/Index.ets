@@ -203,8 +203,6 @@ struct Index {
   @Local aiKeyDraft: string = '';
   /** 是否已存过密钥。只用来决定占位文案，从不回填密钥本身。 */
   @Local aiKeyPresent: boolean = false;
-  /** 导入 / 导出选择面板是否打开。 */
-  @Local transferSheetShown: boolean = false;
   /**
    * Snapshot of `syncFinishedAt`, and of the state word the 设置 › WebDAV 同步
    * row renders.
@@ -461,7 +459,22 @@ struct Index {
     if (hidden === this.chromeHidden) {
       return;
     }
-    this.chromeHidden = hidden;
+    // 顶栏与筛选条**必须同一条时间线**。
+    //
+    // 这里曾经是 `chromeHidden = hidden` + 各处 `.animation({duration:200})`：
+    // 标题栏由 HDS 按自己的时长收缩，而胶囊在 200 ms 就走完了，于是「顶栏还没
+    // 收起，筛选和排序控件已经上移」——两条曲线各走各的，中间那一下就是顿挫。
+    //
+    // 现在由这一处统一驱动：`animateTo` 把胶囊的 `top` 与标题栏的显隐放进同一次
+    // 状态变更里。收起的时长长于展开，并且延迟一小段——先让标题栏动起来，胶囊
+    // 再跟上，看起来是「让位」而不是「抢位」。
+    animateTo({
+      duration: hidden ? 300 : 220,
+      curve: Curve.FastOutSlowIn,
+      delay: hidden ? 60 : 0
+    }, () => {
+      this.chromeHidden = hidden;
+    });
     if (!this.hdsSupported) {
       return;
     }
@@ -1942,7 +1955,8 @@ struct Index {
       .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET,
         top: this.historyVisible() ? 8 : (this.chromeHidden ? this.chromeTopInset() : this.TITLE_BAR_CLEARANCE + 8),
         bottom: 10 })
-      .animation({ duration: 200, curve: Curve.FastOutSlowIn })
+      // 不给 `.animation()`：这条 `top` 的过渡由 `setChromeHidden()` 里的
+      // `animateTo` 统一驱动，两套动画叠在一起就是「两条曲线各走各的」。
     }
   }
 
@@ -1996,7 +2010,7 @@ struct Index {
     .width('100%')
     .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET,
       top: this.chromeHidden ? this.chromeTopInset() : this.TITLE_BAR_CLEARANCE + 8, bottom: 10 })
-    .animation({ duration: 200, curve: Curve.FastOutSlowIn })
+    // 同上：过渡统一由 `setChromeHidden()` 的 `animateTo` 驱动。
   }
 
   @Builder
@@ -3267,44 +3281,12 @@ struct Index {
         }
 
         ListItem() {
-          this.SectionLabel('同步与备份')
-        }
-
-        ListItem() {
-          // 同步与备份是一个主题，两项合成**一张卡片**——与其它分组一致，
-          // 免得页面上出现两张互不相干的单行卡片。
-          Column({ space: 12 }) {
-            // `@Builder` 的调用返回 void，不能直接链 `.onClick`——所以外面再包一层
-            // Row 来承接点击。行本身负责外观，包装只负责命中。
-            Row() {
-              this.WebDavRow(false)
-            }
-              .width('100%')
-              .onClick(() => {
-                this.openWebDav();
-              })
-            Row() {
-              this.SettingRow('导入 / 导出', 'Markdown + ZIP', '', false)
-            }
-              .width('100%')
-              .onClick(() => {
-                this.showTransferSheet();
-              })
-          }
-          .width('100%')
-          .padding(14)
-          .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
-          .backgroundColor(Color.Transparent)
-          .borderRadius(this.cardCorner)
-        }
-
-        ListItem() {
           this.SectionLabel('AI')
         }
 
         ListItem() {
           // AI 是**一个主题**：endpoint、密钥与三个场景的模型必须一起配好才有
-          // 意义（缺 endpoint 或 key 时整组都跑不通），所以它们同处一张卡片，
+          // 意义（缺 endpoint 时整组都跑不通），所以它们同处一张卡片，
           // 而不是拆成五行各自为政的开关。
           Column({ space: 12 }) {
             Row() {
@@ -3369,6 +3351,49 @@ struct Index {
         }
 
         ListItem() {
+          this.SectionLabel('同步与备份')
+        }
+
+        ListItem() {
+          // 同步与备份是一个主题，三项合成**一张卡片**——与其它分组一致，
+          // 免得页面上出现三张互不相干的单行卡片。
+          //
+          // 导入与导出是**两个同级配置项**，不是一个「导入 / 导出」再加一层
+          // 动作表：那个动作表是系统样式的底部弹窗，与这一页的卡片语言毫无关系，
+          // 而且一次点击只为了选两件事之一，等于多花一屏去问「你要哪个」。
+          Column({ space: 4 }) {
+            // `@Builder` 的调用返回 void，不能直接链 `.onClick`——所以外面再包一层
+            // Row 来承接点击。行本身负责外观，包装只负责命中。
+            Row() {
+              this.WebDavRow(false)
+            }
+              .width('100%')
+              .onClick(() => {
+                this.openWebDav();
+              })
+            Row() {
+              this.SettingRow('导出为 ZIP', '打包全部笔记与附件', '', false)
+            }
+              .width('100%')
+              .onClick(() => {
+                this.exportZip();
+              })
+            Row() {
+              this.SettingRow('导入 Markdown / ZIP', '同名笔记会新增一份', '', false)
+            }
+              .width('100%')
+              .onClick(() => {
+                this.importNotes();
+              })
+          }
+          .width('100%')
+          .padding(14)
+          .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+          .backgroundColor(Color.Transparent)
+          .borderRadius(this.cardCorner)
+        }
+
+        ListItem() {
           this.SectionLabel('回收站')
         }
 
@@ -3402,15 +3427,6 @@ struct Index {
     .height('100%')
     // Same band reserve as the other tabs: the HDS title bar owns the 大标题.
     .padding({ top: this.TITLE_BAR_CLEARANCE })
-    .bindSheet(this.transferSheetShown, this.TransferSheet(), {
-      height: SheetSize.FIT_CONTENT,
-      dragBar: true,
-      showClose: false,
-      backgroundColor: $r('app.color.page_bg'),
-      onDisappear: () => {
-        this.transferSheetShown = false;
-      }
-    })
   }
 
   @Builder
@@ -3743,117 +3759,26 @@ struct Index {
     this.pathStack.pushPath({ name: 'webdav' });
   }
 
-  private showTransferSheet(): void {
-    this.transferSheetShown = true;
+  /**
+   * 导入 / 导出是**两个同级配置项**（`同步与备份` 卡片里的两行），不再是
+   * 「导入 / 导出」+ 一层系统动作表。
+   *
+   * 系统动作表（`showActionSheet`）是白底、系统字体、一排蓝色文字的底部弹窗，
+   * 与这一页的卡片、材质、强调色毫无关系；为「二选一」专门占掉一屏，也不值得。
+   */
+  private exportZip(): void {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    NoteTransfer.exportZip(context).then((result: TransferResult) => {
+      this.getUIContext().getPromptAction().showToast({ message: result.message });
+    });
   }
 
-  /**
-   * 导入 / 导出选择面板。
-   *
-   * 原来是 `getUIContext().showActionSheet()`——那是系统级的底部动作表：白底、
-   * 系统字体、系统圆角、一排蓝色文字，与这一页的卡片、材质、强调色毫无关系。
-   * 它出现在最深的一层设置里，却看起来像另一个应用的控件。
-   *
-   * 现在走 `bindSheet` + 本页自己的卡片语言：同样的 `CardSurface`、同样的
-   * `cardCorner`、同样的强调色动作文字，与 标签 / 标签重命名 两个面板一致。
-   */
-  @Builder
-  TransferSheet() {
-    Column({ space: 14 }) {
-      Row() {
-        Text('导入 / 导出')
-          .fontSize(20)
-          .fontWeight(FontWeight.Medium)
-          .fontColor($r('app.color.text_primary'))
-        Blank()
-        Text('取消')
-          .fontSize(16)
-          .fontColor(this.accentColor())
-          .padding({ left: 12, right: 4, top: 6, bottom: 6 })
-          .onClick(() => {
-            this.transferSheetShown = false;
-          })
-          .accessibilityText('关闭导入导出面板')
-      }
-      .width('100%')
-
-      Text('Markdown 单篇，或整库 ZIP（含附件）')
-        .fontSize(12)
-        .fontColor($r('app.color.text_secondary'))
-        .width('100%')
-
-      Column({ space: 10 }) {
-        Row({ space: 12 }) {
-          SymbolGlyph($r('sys.symbol.arrow_up_to_line'))
-            .fontSize(20)
-            .fontColor([this.accentColor()])
-          Column({ space: 2 }) {
-            Text('导出为 ZIP')
-              .fontSize(15)
-              .fontColor($r('app.color.text_primary'))
-            Text('打包全部笔记与附件')
-              .fontSize(11)
-              .fontColor($r('app.color.text_secondary'))
-          }
-          .alignItems(HorizontalAlign.Start)
-          .layoutWeight(1)
-          SymbolGlyph($r('sys.symbol.chevron_right'))
-            .fontSize(16)
-            .fontColor([$r('app.color.text_secondary')])
-        }
-        .width('100%')
-        .padding(12)
-        .borderRadius(14)
-        .backgroundColor($r('app.color.page_bg'))
-        .onClick(() => {
-          this.transferSheetShown = false;
-          const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-          NoteTransfer.exportZip(context).then((result: TransferResult) => {
-            this.getUIContext().getPromptAction().showToast({ message: result.message });
-          });
-        })
-        .accessibilityText('导出为 ZIP')
-
-        Row({ space: 12 }) {
-          SymbolGlyph($r('sys.symbol.square_and_arrow_down'))
-            .fontSize(20)
-            .fontColor([this.accentColor()])
-          Column({ space: 2 }) {
-            Text('导入 Markdown / ZIP')
-              .fontSize(15)
-              .fontColor($r('app.color.text_primary'))
-            Text('同名笔记会新增一份')
-              .fontSize(11)
-              .fontColor($r('app.color.text_secondary'))
-          }
-          .alignItems(HorizontalAlign.Start)
-          .layoutWeight(1)
-          SymbolGlyph($r('sys.symbol.chevron_right'))
-            .fontSize(16)
-            .fontColor([$r('app.color.text_secondary')])
-        }
-        .width('100%')
-        .padding(12)
-        .borderRadius(14)
-        .backgroundColor($r('app.color.page_bg'))
-        .onClick(() => {
-          this.transferSheetShown = false;
-          const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-          NoteTransfer.importFiles(context).then((result: TransferResult) => {
-            this.store.reload();
-            this.refreshList();
-            this.getUIContext().getPromptAction().showToast({ message: result.message });
-          });
-        })
-        .accessibilityText('导入 Markdown 或 ZIP')
-      }
-      .width('100%')
-
-      Blank()
-    }
-    .width('100%')
-    .height('100%')
-    .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET, top: 12 })
-    .alignItems(HorizontalAlign.Start)
+  private importNotes(): void {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    NoteTransfer.importFiles(context).then((result: TransferResult) => {
+      this.store.reload();
+      this.refreshList();
+      this.getUIContext().getPromptAction().showToast({ message: result.message });
+    });
   }
 }
