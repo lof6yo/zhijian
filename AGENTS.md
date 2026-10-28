@@ -1273,6 +1273,37 @@ an older device degrades instead of crashing. The HDS libraries live in the
   looked like an error. 「按」carries no information in a row that *is* the sort
   bar, so `修改 / 标题 / 创建` aligns with the filter group's density. The active
   sort chip is the only one that carries an extra `↑` / `↓`.
+- **选中态是一块会滑动的指示器，不是每个 chip 自己的底色.** The selected state is
+  one rounded slab (`ChipIndicator` / `TagChipIndicator`) that translates between
+  slots; `FilterChip` / `TagChip` are permanently `backgroundColor(Transparent)`.
+  Per-chip fills made a switch two independent cross-fades — read as a blink, not
+  as movement. A slab that travels carries "from → to" in the displacement itself.
+  Four constraints, each one learned by breaking it:
+  - **The grid index is computed inside the builder, never passed in.** Same trap
+    as `chipText`: an argument is evaluated once at the call site, so the slab
+    would never move.
+  - **The stack must be `Alignment.TopStart`.** `offset(x, y)` is resolved against
+    the stack's alignment point; centred, the slab sits half a slot off.
+  - **The offset is absolute vp, never a percentage.** `offset` percentages are
+    relative to the node's **own** width, so `33%` moved the slab a third of
+    itself and it looked frozen. Slot width comes from
+    `chipSlotWidth()` (display width − `SIDE_INSET` ×2 − the 8 vp gutter, split in
+    two, minus the capsule's 3 vp padding and the 2 vp inter-chip gap), so it
+    tracks the screen instead of a constant. The tag page reuses the same function
+    with `count = 2` — two pages, one control, one feel.
+  - **No `fontWeight` change.** Weight is discrete; it has no intermediate frame,
+    so it re-introduces exactly the jump the slab removes, and Medium is slightly
+    wider so a centred label shifts sideways. Accent text + a slab under it is
+    already enough signal.
+- **排序方向是一个常驻节点 + 旋转，不是两个字形.** One `↓` rotated 180° for
+  ascending; the node always exists and only `opacity` toggles (0 when its chip is
+  not the active sort). Swapping `↑`/`↓` strings changes the glyph advance, so the
+  label gets shoved sideways the instant the arrow appears — a jolt that is far
+  louder than the colour change. The visual `Text` no longer renders the arrow
+  (it stays only in `.accessibilityText()`, since a screen reader cannot rotate).
+- Timings: slab 260 ms `FastOutSlowIn`, text colour and arrow 200–220 ms. The
+  words land first, the slab settles on the tail — closer to "one thing was
+  pushed over" than two things stopping together.
 - **All floating surfaces share one inset.** The title row, the chip row and the
   bar are full width minus `SIDE_INSET` (16 vp). Never combine `width('100%')`
   with horizontal `margin`: width wins and the node stays full-bleed (the filter

@@ -2486,8 +2486,13 @@ struct Index {
    */
   @Builder
   ChipGroup(base: number) {
-    Stack({ alignContent: Alignment.Center }) {
+    // `TopStart` 而不是 `Center`：滑块靠 `offset(x, y)` 定位，它需要一个从**左上角**
+    // 起算的原点。居中栈里的 offset 是相对居中点算的，格号一换就偏半块板。
+    // 三个子节点都是 100% 尺寸（或显式尺寸），改对齐不会挪动它们。
+    Stack({ alignContent: Alignment.TopStart }) {
       this.CapsuleSurface(17)
+      // 选中态那块会走的板子，压在材质之上、文字之下。
+      this.ChipIndicator(base)
       Row({ space: 2 }) {
         if (base === 0) {
           // 三个筛选项统一 **2 字**（全部 / 收藏 / 归档）。三个 chip 是等分宽度的，
@@ -2680,38 +2685,64 @@ struct Index {
    */
   @Builder
   FilterChip(label: string, mode: number) {
-    Text(this.chipText(label, mode))
-      .fontSize(12)
-      .fontWeight(this.chipSelected(mode) ? FontWeight.Medium : FontWeight.Normal)
-      .fontColor(this.chipSelected(mode) ? this.accentColor() : $r('app.color.text_secondary'))
-      .textAlign(TextAlign.Center)
-      .layoutWeight(1)
-      .height(28)
-      .borderRadius(14)
-      .backgroundColor(this.chipSelected(mode) ? this.accentChipColor() : Color.Transparent)
-      .maxLines(1)
-      .textOverflow({ overflow: TextOverflow.Ellipsis })
-      .animation({ duration: 160, curve: Curve.EaseOut })
-      .onClick(() => {
-        if (mode < 10) {
-          this.filterMode = mode;
-          // 换筛选档 = 换一个问题，「含归档」是上一个问题上的决定。
-          this.includeArchived = false;
-        } else {
-          this.onSortChipTap(mode - 10);
-        }
-      })
-      .accessibilityText(this.chipText(label, mode))
+    Row({ space: 2 }) {
+      Text(label)
+        .fontSize(12)
+        // **不变字重。** `fontWeight` 是离散属性，本来就没有中间帧——保留它等于
+        // 在 260 ms 的滑动途中插一个瞬间的跳变，而且 Medium 的字宽比 Normal 略大，
+        // 居中的标签会横向挪半个像素。选中的强调已经由「滑过来的板子 + 强调色文字」
+        // 承担，再叠一个字重只会在切换的那一帧里出戏。
+        // 颜色与位置的变化跟着板子一起走：少了这行 `animation`，板子滑过去了、
+        // 文字却已经是新颜色，看起来像先点了再补动画。
+        .fontColor(this.chipSelected(mode) ? this.accentColor() : $r('app.color.text_secondary'))
+        .animation({ duration: 200, curve: Curve.FastOutSlowIn })
+        .textAlign(TextAlign.Center)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      // 排序方向：**一个字形 + 旋转**，不是两个字形来回替换。
+      //
+      // 换字形会改字宽——箭头一出现标签就被推开一格，这一下跳动比颜色变化显眼得多。
+      // 旋转同一个 `↓`（升序转到 180° 就是 `↑`）宽度恒定，中途经过 `→` 也读得懂。
+      //
+      // 节点**始终存在**（未选中时 `opacity(0)`），不是 `if` 包起来：排序组三个
+      // chip 都留出同样的箭头位，未选中项的文字才和选中项对齐在同一条中轴上。
+      if (mode >= 10) {
+        Text('↓')
+          .fontSize(12)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.accentColor())
+          .rotate({ angle: this.sortDesc ? 0 : 180 })
+          .opacity(this.sortMode === mode - 10 ? 1 : 0)
+          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+      }
+    }
+    .layoutWeight(1)
+    .height(28)
+    .borderRadius(14)
+    .justifyContent(FlexAlign.Center)
+    // 选中底色由 `ChipIndicator` 那一条会滑动的板子承担，这里永远透明——
+    // 两边都画的话，滑动途中会出现「两块板」的鬼影。
+    .backgroundColor(Color.Transparent)
+    .onClick(() => {
+      if (mode < 10) {
+        this.filterMode = mode;
+        // 换筛选档 = 换一个问题，「含归档」是上一个问题上的决定。
+        this.includeArchived = false;
+      } else {
+        this.onSortChipTap(mode - 10);
+      }
+    })
+    .accessibilityText(this.chipText(label, mode))
   }
 
   /**
-   * 药丸的文字：排序档在选中时带上方向箭头。
+   * 药丸的**无障碍文字**。屏幕上不再拼接箭头——箭头是一个常驻的旋转节点
+   * （见 `FilterChip`），但读屏没有旋转，所以这里把方向说全。
    *
-   * 读的是 `this.sortMode` / `this.sortDesc`，而调用点在 `Text(...)` 里——
-   * 也就是 `@Builder` 的构建体内部。这一点是必须的，不是风格问题：把结果当参数
-   * 传进来（`this.FilterChip(this.sortLabel(...), 10)`）只在调用处求值一次，
-   * `@Local` 读的不是被构建节点的依赖，于是列表换成了标题序、标签却还写着
-   * 「修改 ↓」（实测）。
+   * 读的是 `this.sortMode` / `this.sortDesc`，调用点是 `.accessibilityText(...)`
+   * ——`@Builder` 的构建体内部。把结果当参数传进来
+   * （`this.FilterChip(this.sortLabel(...), 10)`）只在调用处求值一次，`@Local`
+   * 读的不是被构建节点的依赖，于是列表换成了标题序、标签却还说「修改 ↓」（实测）。
    */
   private chipText(label: string, mode: number): string {
     if (mode < 10 || this.sortMode !== mode - 10) {
@@ -2737,6 +2768,120 @@ struct Index {
 
   private chipSelected(mode: number): boolean {
     return mode < 10 ? this.filterMode === mode : this.sortMode === mode - 10;
+  }
+
+  // ------------------------------------------------------------ chip metrics
+  //
+  // 滑动指示器要落在「某一格」上，所以必须知道格子的真实宽度——**不能用百分比
+  // 位移**。`offset` 的百分比是相对**自身**宽度，不是相对父容器（第一次改就是这么
+  // 错的：33.33% 位移等于把板子挪三分之一块板，看起来像卡住不动）。
+  //
+  // 几何与 `TitleBottom` 的布局一一对应：整宽减去两侧 `SIDE_INSET`，两条胶囊之间
+  // 一道 8 vp 的缝，各占一半。
+
+  /** 页面可用宽度（vp），与 `columnWidth()` 取自同一个 display。 */
+  private contentWidthVp(): number {
+    const d = display.getDefaultDisplaySync();
+    return d.width / d.densityPixels;
+  }
+
+  /** 一条胶囊的外宽：`(可用宽 − 两侧内缩 − 中间那道 8)` 的一半。 */
+  private capsuleWidth(): number {
+    return (this.contentWidthVp() - this.SIDE_INSET * 2 - 8) / 2;
+  }
+
+  /** 胶囊内一格的宽度：先扣 3 vp 内边距（两侧），再按 chip 间距 2 vp 均分。 */
+  private chipSlotWidth(count: number): number {
+    const inner: number = this.capsuleWidth() - 6;
+    return (inner - 2 * (count - 1)) / count;
+  }
+
+  /** 第 `index` 格的左沿（相对胶囊左上角）。 */
+  private chipOffsetX(index: number, count: number): number {
+    return 3 + index * (this.chipSlotWidth(count) + 2);
+  }
+
+  /**
+   * 当前选中的是第几格（视觉顺序，不是 `mode`）。
+   *
+   * 筛选项的 `mode` 是 `filterMode` 的语义值：0 全部 / 2 收藏 / 1 归档，而屏幕上
+   * 的顺序是 全部(0) 收藏(2) 归档(1)——所以这里是一张映射表，不是恒等。
+   */
+  private chipIndex(base: number): number {
+    if (base === 0) {
+      if (this.filterMode === 0) {
+        return 0;
+      }
+      return this.filterMode === 2 ? 1 : 2;
+    }
+    return this.sortMode;
+  }
+
+  private chipCount(base: number): number {
+    return 3;
+  }
+
+  /**
+   * 选中态的那块板子：**一个**圆角块在三格之间平移。
+   *
+   * 这是「切换生硬」的真正解法。从前选中态由每个 chip 自己的 `backgroundColor`
+   * 承担，切换就是两块板各自淡入淡出——两个互不相干的 160 ms 交叉淡入，读起来
+   * 只能像「闪一下」。换成一块会走的板之后，切换是「移过去」，位移本身携带了
+   * 「从哪到哪」的信息，这是淡入淡出给不了的。
+   *
+   * 三个约束：
+   *  - **`base` 是唯一入参，格号在构建体内部算。** 传 `this.chipIndex(base)` 进来
+   *    只在调用处求值一次，`@Local` 的读取不构成被构建节点的依赖，板子就不会动
+   *    （与 `chipText` 同一个坑，实测过）。
+   *  - **chip 自己不带底色**，否则滑动途中会看到两块板。
+   *  - **位移量必须是绝对值，不能是百分比。** `offset` 的百分比是相对**自身**宽度
+   *    算的，一格 33% 的位移只把板子挪三分之一块板自己，看起来像卡住不动（第一版
+   *    就是这么错的）。格宽由 `chipSlotWidth()` 从 display 反推，屏宽一变就跟着变，
+   *    所以平板/折叠屏也不用另设一套。
+   *  - 时长 260 ms 比文字的 200 ms 略长：文字先到位、板子压着尾音落下，比两者同时
+   *    停住更像一件东西被推过去。
+   */
+  @Builder
+  ChipIndicator(base: number) {
+    Column()
+      .width(this.chipSlotWidth(this.chipCount(base)))
+      .height(28)
+      .borderRadius(14)
+      .backgroundColor(this.accentChipColor())
+      .offset({ x: this.chipOffsetX(this.chipIndex(base), this.chipCount(base)), y: 3 })
+      .animation({ duration: 260, curve: Curve.FastOutSlowIn })
+  }
+
+  /**
+   * Active chip index within a TagChipGroup (0..1).
+   */
+  private tagChipIndex(kind: number): number {
+    if (kind === 0) {
+      return this.tagSortKey;
+    }
+    return this.tagFilter;
+  }
+
+  /**
+   * 标签页的滑块。
+   *
+   * 标签页的每条胶囊只有 **2 格**（名称/数量、全部/在用），格宽与笔记页同源
+   * （`chipSlotWidth(2)`），所以两个页面的板子一样宽、一样高、走同一条曲线。
+   * 页面切换时不能换手感——这是同一套控件。
+   */
+  @Builder
+  TagChipIndicator(kind: number) {
+    Column()
+      .width(this.chipSlotWidth(this.tagChipCount()))
+      .height(28)
+      .borderRadius(14)
+      .backgroundColor(this.accentChipColor())
+      .offset({ x: this.chipOffsetX(this.tagChipIndex(kind), this.tagChipCount()), y: 3 })
+      .animation({ duration: 260, curve: Curve.FastOutSlowIn })
+  }
+
+  private tagChipCount(): number {
+    return 2;
   }
 
   /**
@@ -3074,8 +3219,10 @@ struct Index {
    */
   @Builder
   TagChipGroup(kind: number) {
-    Stack({ alignContent: Alignment.Center }) {
+    // 与 `ChipGroup` 同一个理由用 `TopStart`：滑块按左上角 + offset 定位。
+    Stack({ alignContent: Alignment.TopStart }) {
       this.CapsuleSurface(17)
+      this.TagChipIndicator(kind)
       Row({ space: 2 }) {
         if (kind === 0) {
           // 只传基础文字，箭头在 `TagChip` 的构建体内算（同 `FilterChip.chipText`）：
@@ -3099,7 +3246,6 @@ struct Index {
     .layoutWeight(1)
     .height(34)
     .borderRadius(17)
-    .clip(true)
   }
 
   /**
@@ -3111,29 +3257,45 @@ struct Index {
    */
   @Builder
   TagChip(label: string, group: number, index: number) {
-    Text(this.tagChipText(label, group, index))
-      .fontSize(12)
-      .fontWeight(this.tagChipSelected(group, index) ? FontWeight.Medium : FontWeight.Normal)
-      .fontColor(this.tagChipSelected(group, index) ? this.accentColor() : $r('app.color.text_secondary'))
-      .textAlign(TextAlign.Center)
-      .layoutWeight(1)
-      .height(28)
-      .borderRadius(14)
-      .backgroundColor(this.tagChipSelected(group, index) ? this.accentChipColor() : Color.Transparent)
-      .maxLines(1)
-      .textOverflow({ overflow: TextOverflow.Ellipsis })
-      .animation({ duration: 160, curve: Curve.EaseOut })
-      .onClick(() => {
-        this.onTagChipTap(group, index);
-      })
-      .accessibilityText(this.tagChipText(label, group, index))
+    Row({ space: 2 }) {
+      Text(label)
+        .fontSize(12)
+        // 与 `FilterChip` 同一条规则：不动字重。`fontWeight` 没有中间帧，在滑动
+        // 途中插一个瞬间跳变，还会因为 Medium 略宽而让居中标签横向挪一下。
+        .fontColor(this.tagChipSelected(group, index) ? this.accentColor() : $r('app.color.text_secondary'))
+        .animation({ duration: 200, curve: Curve.FastOutSlowIn })
+        .textAlign(TextAlign.Center)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      // 与 `FilterChip` 同一条规则：一个字形 + 旋转，节点常驻、未选中时透明。
+      // 换字形会改字宽，标签被推开一格；宽度恒定才谈得上「不跳」。
+      if (group === 0) {
+        Text('↓')
+          .fontSize(12)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.accentColor())
+          .rotate({ angle: this.tagSortDesc ? 0 : 180 })
+          .opacity(this.tagSortKey === index ? 1 : 0)
+          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+      }
+    }
+    .layoutWeight(1)
+    .height(28)
+    .borderRadius(14)
+    .justifyContent(FlexAlign.Center)
+    // 选中底色由 `TagChipIndicator` 那块会走的板子承担，chip 自己永远透明。
+    .backgroundColor(Color.Transparent)
+    .onClick(() => {
+      this.onTagChipTap(group, index);
+    })
+    .accessibilityText(this.tagChipText(label, group, index))
   }
 
   /**
-   * 标签页药丸的文字：排序档在选中时带上方向箭头。
+   * 标签页药丸的**无障碍文字**：未选中时只是标签，选中时带上方向。
    *
    * 必须在 `TagChip` 的构建体内调用——与 `chipText` 同一个理由：`@Builder` 的
-   * 参数按值传，箭头在外面算出来就不会随排序状态重绘。
+   * 参数按值传，方向在外面算出来就不会随排序状态重绘。
    */
   private tagChipText(label: string, group: number, index: number): string {
     if (group !== 0 || this.tagSortKey !== index) {
