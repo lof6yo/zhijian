@@ -70,6 +70,15 @@ const BOTTOM_BUILDER_HEIGHT: number = 50;
 /** Height of the `stackBuilder` row (title + 搜索 / 新建 buttons). */
 const TITLE_ROW_HEIGHT: number = 56;
 
+/**
+ * 滚动内容在图顶边缘的渐隐长度（vp）。
+ *
+ * 顶栏收起后网格的上边界就在状态栏下沿，滚到那里的卡片会被裁成一条直线（实测
+ * 格边一次跳 20 个色阶）。40 vp 够让一整排卡片的高光边缘消掉——默认的 32 仍读
+ * 得出边界，而再长就开始吃掉卡片标题。
+ */
+const CHROME_FADE: number = 40;
+
 const DOMAIN: number = 0x0000;
 const TAG: string = 'HMStart';
 
@@ -1894,6 +1903,14 @@ struct Index {
         .layoutWeight(1)
         // Clears the floating capsule so the last row stays reachable.
         .contentEndOffset(130)
+        // 顶栏收起后网格的上边界就在状态栏下沿，卡片滚到那里会被裁成一条直线
+        // （实测格边一次跳 20 个色阶）。`fadingEdge` 是平台为这件事给的能力：它在
+        // 容器边缘把内容按 alpha 渐隐到背景，所以「被切」变成「淡出」，视觉上与卡片
+        // 横滑时格边的 `EdgeFade()` 是同一套语言。
+        //
+        // 长度取 `CHROME_FADE`（40 vp）而不是默认的 32：这一条要让一整排卡片的高光
+        // 边缘都消掉，太短就仍然读得出边界。
+        .fadingEdge(true, { fadingEdgeLength: LengthMetrics.vp(CHROME_FADE) })
         // 顶栏 / 页签栏让位的方向判定。`WaterFlow` 有 `onDidScroll`（经
         // `ScrollableCommonMethod`），但回调里的 `scrollOffset` 正负号在容器之间
         // 含义不一致，所以只把它当「发生了一次滚动」的节拍器，位置从
