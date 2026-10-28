@@ -423,6 +423,11 @@ export struct NoteCard {
             }
             this.settle(0);
           })
+          // 手势被打断（多指、系统手势、切页签）也必须回弹。少了这一条，卡片会
+          // 停在半路——`onActionEnd` 是唯一回弹的地方，而它不会在被打断时触发。
+          .onActionCancel(() => {
+            this.settle(0);
+          })
       )
     }
     // 卡片根节点自己声明宽度：`FlowItem` 的子节点是按**整条流**测量的，

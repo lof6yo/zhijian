@@ -1749,7 +1749,18 @@ struct Index {
     const density = display.getDefaultDisplaySync().densityPixels;
     const widthVp = widthPx / density;
     // 泳道宽 = (可用宽 - 左右内边距 - 缝) / 2
-    return (widthVp - this.SIDE_INSET * 2 - 12) / 2;
+    return (widthVp - this.SIDE_INSET * 2 - this.columnsGapVp()) / 2;
+  }
+
+  /**
+   * 双列网格的列间距（vp）。
+   *
+   * 单独提出来是因为它有**第二个读者**：卡片滑动时的裁剪框要向外扩一个列间距，
+   * 才能把切口推到邻列卡片的边缘上。两处各写一个 12 就会静默漂移——某天调了
+   * 间距，切口又开始落在视口中间，而 `columnWidth()` 那边完全正常，很难定位。
+   */
+  private columnsGapVp(): number {
+    return 12;
   }
 
   @Builder
@@ -1863,15 +1874,40 @@ struct Index {
                     }
                   })
               }
-              .width(this.columnWidth())
-              // 卡片滑动时会 `translate` 出去，越过的部分要裁掉，否则会盖在
-              // 相邻那一列上，两张卡看起来叠在一起。
+              // 卡片滑动时 `translate` 出去的那一段要裁，否则会盖住邻列的卡片。
+              //
+              // **裁剪边界不是单元格边界，而是邻列卡片的边缘。** 这一条改了几版才
+              // 成立，前三版都错在同一个前提上：
+              //  1. `.clip(true)` 裁在单元格边界 —— 切口是一条直角竖线，而且切口
+              //     旁边还留着 12 vp 的列间距空白。视口正中间出现「一张卡悬空被
+              //     切断」，这就是「截断得很突然」。全宽列表里看不出这个问题，因为
+              //     切口正好落在屏幕边缘。
+              //  2. 裁剪框加 `borderRadius` —— 弧是以单元格角为圆心算的，落在卡片
+              //     身体内部，凭空多出一个凸角，文字照样被拦腰切断。
+              //  3. 不裁、靠 `zIndex` 让卡片从邻居底下穿过 —— 遮挡关系对了，但卡面是
+              //     82% 的毛玻璃，被挡住的那段会淡淡透出来（实测能读到「昨天」浮在
+              //     邻居卡上），像渲染错误。
+              //
+              // 真正的差别只在**切口落在哪条线上**。裁在单元格边界时，那条线与任何
+              // 可见边缘都不重合，于是被读成「剪断」；把裁剪框向外扩一个列间距之后，
+              // 切口正好压在邻列那张卡自己的边缘上，眼睛把它归因为遮挡——同一个像素
+              // 动作，两种完全不同的解释。
+              //
+              // 实现要点：**扩张靠 `padding`，不靠加宽。** 宽度多出的 `2 × gap` 全部
+              // 变成左右内边距，内容盒仍然是 `columnWidth()`，所以卡面尺寸一点没变；
+              // 而 `clip(true)` 裁的是含内边距的外框，切口因此落在卡片外面一个列间距
+              // 处。`offset` 再把整个框拉回原位，`FlowItem` 测到的仍是单元格宽，双列
+              // 不会被撑开。两个方向都成立：左滑时切口落在左邻卡片的右边缘，右滑时
+              // 落在右邻卡片的左边缘。
+              .width(this.columnWidth() + this.columnsGapVp() * 2)
+              .padding({ left: this.columnsGapVp(), right: this.columnsGapVp() })
+              .offset({ x: -this.columnsGapVp() })
               .clip(true)
             }
           }, (note: Note) => `${note.id}-${note.updatedAt}`)
         }
         .columnsTemplate('1fr 1fr')
-        .columnsGap(12)
+        .columnsGap(this.columnsGapVp())
         .rowsGap(12)
         .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
         .width('100%')
