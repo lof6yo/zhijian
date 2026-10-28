@@ -1135,10 +1135,11 @@ struct Index {
       // 展开状态下主动作就是退出搜索，而「新建」此时是一个会把人从搜索里拽走的
       // 动作——点了它不是放弃搜索，是带着半个词去开一篇空白笔记。
       //
-      // 图标用 `chevron_down` 而不是 `xmark`：清空搜索词的那颗 × 就在输入框右端，
-      // 两颗 × 并排会读成同一次重复的清除。收起是「把这一行放回去」，向下折。
+      // 用它而不是在输入框里再放一颗 ×：退出搜索只有一个出口。输入框里那颗 ×
+      // 只清词、不收起，于是「干净地退出」要先清词再点一次、还要先收键盘；两颗
+      // 一样大的 × 并排更是同一次动作读了两遍。
       if (this.searchExpanded) {
-        this.CircleAction($r('sys.symbol.chevron_down'), () => {
+        this.CircleAction($r('sys.symbol.xmark'), () => {
           this.closeSearch();
         }, '收起搜索')
       } else if (this.selectedTab === 0) {
@@ -1214,9 +1215,9 @@ struct Index {
   /**
    * 收起搜索框，回到标题 + 放大镜 + 新建。
    *
-   * 两个入口共用这一处：输入框右端的 ×（查询为空时）与标题行右侧那颗圆钮。
-   * 之前只有 × 一个入口，而它在有词时只清词——**干净地退出搜索需要先清词再点
-   * 一次**，还要先收起键盘。圆钮把这个动作提到了一击。
+   * 唯一入口是标题行右侧那颗 ×（展开时它取代新建按钮）。从前这里有两颗按钮：
+   * 输入框右端一颗只清词的 ×，右侧一颗新建——于是「干净地退出搜索」要先清词、
+   * 再点一次、还得先收键盘，而两颗一样大的 × 并排把同一次动作读了两遍。
    *
    * 查询一并清空：收起的语义是「这一轮搜索结束了」，留下一个看不见的过滤条件
    * 会让网格继续少一半卡片，而屏幕上没有任何东西解释为什么。
@@ -2638,29 +2639,6 @@ struct Index {
             // 的是「微」「微信」「微信 群」三条残句，历史会立刻变成垃圾。
             this.rememberSearch(this.query);
           })
-        Button() {
-          if (this.query.length > 0) {
-            SymbolGlyph($r('sys.symbol.xmark'))
-              .fontSize(16)
-              .fontColor([$r('app.color.text_secondary')])
-          }
-        }
-        .width(28)
-        .height(28)
-        .borderRadius(14)
-        .padding(0)
-        .backgroundColor(Color.Transparent)
-        .onClick(() => {
-          if (this.query.length > 0) {
-            // 有词时这个按钮只清词，不收起搜索框：用户多半是想换一个词再搜，
-            // 收起来就要重新点一次放大镜。要退出搜索，右侧那颗圆钮一击就到。
-            this.query = '';
-            this.includeArchived = false;
-            return;
-          }
-          this.closeSearch();
-        })
-        .accessibilityText(this.query.length > 0 ? '清空搜索' : '关闭搜索')
       }
       .width('100%')
       .height(44)
