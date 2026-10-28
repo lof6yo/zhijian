@@ -1131,7 +1131,17 @@ struct Index {
         }, this.selectedTab === 1 ? '搜索标签' : '搜索')
       }
 
-      if (this.selectedTab === 0) {
+      // 搜索框展开时右侧那颗圆钮换成「收起搜索」。这一格是标题行的主动作位：
+      // 展开状态下主动作就是退出搜索，而「新建」此时是一个会把人从搜索里拽走的
+      // 动作——点了它不是放弃搜索，是带着半个词去开一篇空白笔记。
+      //
+      // 图标用 `chevron_down` 而不是 `xmark`：清空搜索词的那颗 × 就在输入框右端，
+      // 两颗 × 并排会读成同一次重复的清除。收起是「把这一行放回去」，向下折。
+      if (this.searchExpanded) {
+        this.CircleAction($r('sys.symbol.chevron_down'), () => {
+          this.closeSearch();
+        }, '收起搜索')
+      } else if (this.selectedTab === 0) {
         this.CircleAction($r('sys.symbol.plus'), () => {
           this.newNote();
         }, '新建笔记')
@@ -1199,6 +1209,25 @@ struct Index {
     setTimeout(() => {
       this.getUIContext().getFocusController().requestFocus(SEARCH_INPUT_ID);
     }, 80);
+  }
+
+  /**
+   * 收起搜索框，回到标题 + 放大镜 + 新建。
+   *
+   * 两个入口共用这一处：输入框右端的 ×（查询为空时）与标题行右侧那颗圆钮。
+   * 之前只有 × 一个入口，而它在有词时只清词——**干净地退出搜索需要先清词再点
+   * 一次**，还要先收起键盘。圆钮把这个动作提到了一击。
+   *
+   * 查询一并清空：收起的语义是「这一轮搜索结束了」，留下一个看不见的过滤条件
+   * 会让网格继续少一半卡片，而屏幕上没有任何东西解释为什么。
+   */
+  private closeSearch(): void {
+    this.query = '';
+    this.includeArchived = false;
+    this.searchExpanded = false;
+    // 键盘得自己收：输入框被移出组件树时软键盘不会立刻跟着走，它会悬在列表上。
+    this.getUIContext().getFocusController().clearFocus();
+    this.restoreChrome();
   }
 
   /**
@@ -2624,14 +2653,12 @@ struct Index {
         .onClick(() => {
           if (this.query.length > 0) {
             // 有词时这个按钮只清词，不收起搜索框：用户多半是想换一个词再搜，
-            // 收起来就要重新点一次放大镜。
+            // 收起来就要重新点一次放大镜。要退出搜索，右侧那颗圆钮一击就到。
             this.query = '';
             this.includeArchived = false;
             return;
           }
-          // Collapsing clears the query so the list returns to its full state.
-          this.searchExpanded = false;
-          this.restoreChrome();
+          this.closeSearch();
         })
         .accessibilityText(this.query.length > 0 ? '清空搜索' : '关闭搜索')
       }
