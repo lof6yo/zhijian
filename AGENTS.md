@@ -625,9 +625,11 @@ button.
 
 - **两条 chrome 共用一个 `chromeHidden` 状态**，同时收起、同时回来。一半收一半
   不收的界面看起来像卡住了，不像让位。
-- **不用 HDS 的 `dynamicHideTitleBar`**：它只收标题栏，页面顶部那条筛选胶囊是
-  内容、不在它的模型里，标题栏让开之后胶囊会孤零零地悬在 96 vp 的位置。方向由
-  这一页自己判。
+- **筛选条 / 排序条住在标题栏的 `bottomBuilder` 里，不是页面内容区。** 这是
+  `systemMaterial` 的作用域决定的（理由见「沉浸光感」一节），副作用是它们跟着
+  标题栏一起显隐——`hideTitleBar()` 收的是**整个** `HdsTitleBar`，`bottomBuilder`
+  在它内部，所以不需要 `dynamicHideTitleBar({ hideBottomBuilder })`，也不再有人
+  手工算「胶囊的 `top` 该收多少」。
 - **页签栏的显隐只能走 `hdsTabs.applyHideAnimation/applyShowAnimation`**
   （`HdsAnimationMode.SCROLL_ANIMATION`）。`HdsTabsFloatingStyle` 没有可见性
   字段，栏本身画在 HDS 里；给自绘胶囊加 `translate` 不参与布局，等于没做。
@@ -637,19 +639,20 @@ button.
   直接跟着翻会让界面在滑动中闪烁。
 - **`yOffset ≤ 4` 无条件恢复**：那是「我从头再看一遍」的位置，顶栏不在就等于
   没有搜索框和新建按钮。
-- **筛选胶囊的 `top` 跟着一起收**：`chromeHidden` 时从 `TITLE_BAR_CLEARANCE + 8`
-  收到 `statusBarHeightVp() + 8`。收到 8 会压在状态栏的时钟上（实测「全部/收藏/
-  归档」与时间重叠）——本页用 `ignoreLayoutSafeArea` 做沉浸，内容原点是**窗口
-  顶端**，不是状态栏下沿。
+- **内容区的顶部留白只剩一档，而它必须含状态栏高度**：`pageTopInset()` = 展开时
+  `titleBandHeight() + 8`，收起时 `chromeTopInset()`（= `statusBarHeightVp() + 8`）。
+  **`padding` 按窗口坐标解析，不是按内容根节点**——即使根节点自己从状态栏下沿
+  开始（`ui_dump`：`root` 在 `[0,117]`）。`ignoreLayoutSafeArea` 把布局铺进安全区
+  之后这一点更绕：看起来「已经让过了」，实际没有。去掉状态栏项，网格从 459 px
+  掉到 342 px（正好 117 px = 39 vp），第一排卡片钻到胶囊底下。这条判据要在
+  **收起态**抓图，展开态两个公式都像是对的。
 - **搜索框展开时不收顶栏**（`hideTitleBar(chromeHidden && !searchExpanded)`）：
   搜索框就是标题栏本身，收起来等于把用户手上的输入框抽走。
-- **胶囊的位移与标题栏的显隐必须由同一次 `animateTo` 驱动。** 原来是
-  `chromeHidden = …` 加两处 `.animation({duration: 200})`：标题栏按 HDS 自己的
-  时长收缩，胶囊 200 ms 就走完了，于是「顶栏还没收起，筛选和排序控件已经上移」。
-  现在 `setChromeHidden()` 用 `animateTo({ duration: hidden ? 300 : 220, delay:
+- **标题栏的显隐与页面留白的位移必须由同一次 `animateTo` 驱动。**
+  `setChromeHidden()` 用 `animateTo({ duration: hidden ? 300 : 220, delay:
   hidden ? 60 : 0, curve: FastOutSlowIn }, () => { this.chromeHidden = hidden; })`，
-  并且在 `NotesHeader` / `SelectionHeader` 上**不再**挂 `.animation()`——两套动画
-  叠在一起就是两条曲线各走各的。收起比展开长、并且延迟一点：先让标题栏动，胶囊跟上。
+  并且在 `NotesHeader` 上**不**挂 `.animation()`——标题栏按 HDS 自己的时长动，
+  再叠一条曲线就是两条各走各的。收起比展开长、并且延迟一点：先让标题栏动。
 - 切页签、进详情页、清空搜索之后都调 `restoreChrome()` 复位。
 
 ### AI（OpenAI 兼容）
@@ -993,8 +996,8 @@ an older device degrades instead of crashing. The HDS libraries live in the
     sized to the unexpanded box, so the bands still show through. Expand the
     painting node.
   - Expanding the **shell/root `Stack`** is wrong: it moves `Navigation` with it
-    and re-invalidates `TITLE_BAR_CLEARANCE`. Only the `HitTestMode.None`
-    decorative layer may expand.
+    and re-invalidates the title-bar band that each tab root reserves. Only the
+    `HitTestMode.None` decorative layer may expand.
   Full-bleed pages (`ReaderPage`, `TrashPage`, `WebDavPage`) need the same
   treatment, on **both** edges, in a two-layer `Stack`:
   ```
@@ -1028,13 +1031,17 @@ an older device degrades instead of crashing. The HDS libraries live in the
   (measured `Column` ending at 2148 px inside a 2232 px window).
 - **The page must reserve the title-bar band itself.** HDS draws `NavBarContent`
   at the *same origin* as the title bar, so content flows under it. Every tab
-  root carries `padding({ top: TITLE_BAR_CLEARANCE })` — measured **96 vp** in
-  MINI mode with `.hideBackButton(true)`. Put that clearance in `padding`, **not**
-  in a `Blank()` child: `Blank` expands to consume free space and silently
-  ignores `height()`, which cleared only 69 vp and let the header overlap the bar.
-  Note the origin: with `ignoreLayoutSafeArea` the padding resolves from
-  **window y = 0**, not from the content top, so the value is the bar's absolute
-  bottom edge in vp (285 px / 3), not a delta.
+  root carries `padding({ top: this.titleBandHeight() })` — no constant any more,
+  because the band depends on whether the bottom builder is mounted
+  (`statusBarHeightVp() + 标题行 56 + titleBottomHeight()`, i.e. 145 vp on 笔记页
+  with the chips, 95 vp on 设置页). Put that clearance in `padding`, **not** in a
+  `Blank()` child: `Blank` expands to consume free space and silently ignores
+  `height()`, which cleared only 69 vp and let the header overlap the bar.
+  **The status-bar term is required** even though the content root starts at the
+  status-bar bottom (`ui_dump`: `root` at `[0,117]`, `HdsTitleBar` at
+  `[0,117][1320,435]`): under `ignoreLayoutSafeArea` a `padding` still resolves
+  from **window y = 0**. Dropping the term moved the grid from 459 px to 342 px —
+  exactly the 117 px status bar — and the first card row slid under the capsule.
 - **Use `HdsNavigationTitleMode.MINI`, not `FULL`, and build the whole title row
   in `stackBuilder`.** FULL reserves a separate large-title band *below* the
   `stackBuilder` row (measured: bar 117…453 px, rows at 117…285 and the title at
@@ -1096,20 +1103,30 @@ an older device degrades instead of crashing. The HDS libraries live in the
   `uiMaterial.isImmersiveMaterialSupported()` then `getGlobalMaterialLevel()` and
   the settings row renders `本机高算力 · 自适应优先`, so the 自适应 gear is
   verifiable rather than a black box. Do not use it to drive layout.
-- **Immersive material (`systemMaterial`) has a hard scope limit — but a `Toggle`
-  carrier is the way around it.** Per `@ohos.arkui.uiMaterial` it only takes effect
-  inside a `Navigation` / `NavDestination` title bar, a `barPosition(End)`
-  horizontal bottom tab bar, or the listed dialog/Slider/Toggle/Select cases —
-  "在其他区域中设置沉浸光感效果不生效". **Verified on device**: a chip capsule in the
-  page content with `.backgroundColor(Color.Red).systemMaterial(...)` kept the red
-  fill, proving the material never applied. `Toggle` *is* in the documented list,
-  so `components/MaterialLayer.ets` paints the material from an invisible
-  `Toggle({ type: ToggleType.Button, isOn: false })` and the real content draws on
-  top of it. Every content-area surface (笔记卡片, the 筛选条/排序条 capsules) now
-  goes through that carrier instead of the hand-built `glassEffect()` stack.
-  `titleBar.content.bottomBuilder` exists and *would* move the chips into scope,
-  but it grows the title bar and invalidates `TITLE_BAR_CLEARANCE`, so it is not
-  worth it for two chips.
+- **Immersive material (`systemMaterial`) has a hard scope limit — and the fix is to
+  move the control into scope, not to imitate it.** Per `@ohos.arkui.uiMaterial` it
+  only takes effect inside a `Navigation` / `NavDestination` title bar, a
+  `barPosition(End)` horizontal bottom tab bar, or the listed
+  dialog/Slider/Toggle/Select cases — "在其他区域中设置沉浸光感效果不生效".
+  **Verified on device**: a chip capsule in the page content with
+  `.backgroundColor(Color.Red).systemMaterial(...)` kept the red fill, proving the
+  material never applied.
+  The 筛选条 / 排序条 used to live in the content area and therefore had to be
+  faked: `components/MaterialLayer.ets` paints the material from an invisible
+  `Toggle({ type: ToggleType.Button, isOn: false })`, and every *content-area*
+  surface (笔记卡片, 标签药丸) still needs that carrier.
+  `titleBar.content.bottomBuilder` puts a container **inside** the title bar, so
+  the chips moved there and now get the real material on their own node
+  (`CapsuleSurface` uses `.systemMaterial(this.immersiveMaterial(false))`). The
+  cost — a taller title bar and a derived `titleBandHeight()` — was accepted:
+  two hand-carried Toggle layers is a worse bill. `MaterialLayer` stays for the
+  card/pill family; do not reintroduce it on the capsules.
+  **How to prove it is really rendering:** capture two frames, one with the
+  `.systemMaterial(...)` line commented out, and diff the band's pixels. Measured
+  in dark mode: 2287 of ~4000 samples in the 300–420 px band differ, max channel
+  delta 98 (rim highlight `#303F56` → `#7D91AC`), while the content area below is
+  **bit-identical** (0 differing samples). A material that silently no-ops looks
+  exactly like a working one in a screenshot — the diff is the evidence.
 - **The carrier must be mounted through `.background()`, not as a `Stack` sibling.**
   This one cost a broken build on device. `MaterialLayer` sizes itself with
   `LayoutPolicy.matchParent`, which inside a `Stack` resolves against the *flow's
@@ -1582,14 +1599,16 @@ commit message.
   showing the window background unless the node that *paints* the background
   expands. Expanding the wrapper `Stack` leaves the gradient child at its
   unexpanded size, so nothing changes; expanding the shell/root `Stack` drags
-  `Navigation` with it and breaks `TITLE_BAR_CLEARANCE`. Put
+  `Navigation` with it and breaks the band each tab root reserves. Put
   `.expandSafeArea([SYSTEM], [TOP, BOTTOM])` on the decorative background layer
   (and on a `NavDestination`'s own coloured `Column`), never on a layout container.
-- **Double status-bar inset in `NavDestination`**: the content root already starts
-  at the status-bar bottom, so adding `padding({ top: 40 })` (as the removed
-  `EditorPage` did with `height(96)`) only pushes the header down — the "header
-  下沉" defect. `TrashPage` had the same bug with `top: 48`. A page header is a
-  plain 56 vp row.
+- **Double status-bar inset in `NavDestination`**: a `NavDestination`'s content
+  begins at the status-bar bottom, so adding `padding({ top: 40 })` (as the
+  removed `EditorPage` did with `height(96)`) only pushes the header down — the
+  "header 下沉" defect. `TrashPage` had the same bug with `top: 48`. A page header
+  is a plain 56 vp row. (This is about a *page* header; a tab root's
+  `titleBandHeight()` padding is a different box and **does** need the status-bar
+  term — see the title-bar section.)
 - **Half-immersed `NavDestination`**: a page that sets `backgroundColor(page_bg)`
   but expands only `SafeAreaEdge.BOTTOM` still shows the window background in the
   status-bar band. In light mode this is nearly invisible (`#F5F6F8` vs a

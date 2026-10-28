@@ -50,11 +50,12 @@
 | 规范名 | 代码 | 定义 |
 |---|---|---|
 | 背景层 | `Index.PageBackdrop()` | 全屏底色 / 渐变 / 光晕，三个 tab 共用 |
-| 标题栏 | HDS `titleBar()`（`titleBarOptions()`） | 只装一行：页面标题 + 两个圆形玻璃按钮，由 `HdsNavigation` 拥有（MINI 模式） |
-| 标题行 | `Index.TitleRow()` | 标题栏内唯一的 Row：页面标题（或展开后的搜索框）+ 搜索按钮 + 新建按钮 |
-| 页头 | `Index.NotesHeader()` | 只有一行筛选条 / 排序条，通栏固定，**不含**页面标题、**不含**搜索框 |
-| 筛选区 | 页头 `ChipGroup(0)` | 只含筛选项（全部 / 收藏 / 归档），三项同为 2 字 |
-| 排序区 | 页头 `ChipGroup(10)` | 只含排序项（修改 / 标题 / 创建），三项同为 2 字，与筛选条同一行 |
+| 标题栏 | HDS `titleBar()`（`titleBarOptions()`） | 两带：**标题行**（页面标题 + 两个圆形玻璃按钮）+ **筛选带**（`bottomBuilder`，装筛选条 / 排序条或动作条）。由 `HdsNavigation` 拥有（MINI 模式） |
+| 标题行 | `Index.TitleRow()` | 标题栏内的第一行：页面标题（或展开后的搜索框）+ 搜索按钮 + 新建按钮 |
+| 筛选带 | 标题栏 `bottomBuilder` → `Index.TitleBottom()` | 标题栏底部的第二带，高 50 vp；装筛选条 + 排序条，多选时整条换成动作条。设置页、无标签的标签页**没有这一带** |
+| 页头 | `Index.NotesHeader()` | 只是筛选带之下的呼吸空带（一个显式高度的空 `Column`），**不含任何控件**；API < 23 没有 HDS 标题栏时，筛选条退回这里 |
+| 筛选区 | `TitleBottom()` 内的 `ChipGroup(0)` | 只含筛选项（全部 / 收藏 / 归档），三项同为 2 字 |
+| 排序区 | `TitleBottom()` 内的 `ChipGroup(10)` | 只含排序项（修改 / 标题 / 创建），三项同为 2 字，与筛选条同一行 |
 | 列表区 | `WaterFlow` / `List` | 可滚动内容 |
 | 页签栏 | HDS `HdsTabs` 的 `TabBar` | 底部悬浮胶囊，内容从其下方滚过 |
 
@@ -66,9 +67,13 @@
 > `.hideBackButton(true)`。
 >
 > 标题栏在页面内容之上绘制（`NavBarContent` 与标题栏同源），因此每个 tab 的根节点
-> 都用 `TITLE_BAR_CLEARANCE`（实测 96 vp）的上内边距让出标题栏高度。
-> 注意原点：`ignoreLayoutSafeArea` 下这个内边距从**窗口 y = 0** 起算，
-> 所以它是标题栏下边缘的绝对高度，不是相对内容顶部的差值。
+> 都用 `titleBandHeight()` 的上内边距让出标题栏高度：`statusBarHeightVp()`（39）+
+> `标题行 56` + `titleBottomHeight()`（有筛选带时 50）。它**不是常量**了，因为筛选带只有
+> 笔记页（与有标签时的标签页）才有；设置页只有 95 vp。
+> 注意原点：这个内边距按**窗口坐标**解析，不是按内容根节点——即使根节点本身已经
+> 在状态栏之下（`ui_dump`：`root` 从 y = 117 px 起）。所以公式里**必须**含
+> `statusBarHeightVp()`（本机 39 vp）；去掉它的实测后果是网格起点从 459 px 掉到
+> 342 px，第一排卡片钻到筛选带底下。
 
 ---
 
@@ -206,12 +211,14 @@
 | 玻璃描边 | `glass_border` | 发丝边，粗细随 `glassLevel`；**仅手绘玻璃用**，官方材质会自动清掉 `borderWidth` |
 | 玻璃阴影 | `glass_shadow` | 已降到 ~10%/30%；**卡片不用**——笔记卡片与设置卡片都是平铺的纸，没有 `.shadow()` |
 | 玻璃挡位 | `glassLevel` = 0/1/2/3 | 自适应 / 高 / 中 / 低；设置 › 外观 › 沉浸光感挡位 |
-| 沉浸材质 | `uiMaterial.ImmersiveMaterial` | 官方材质，只用于标题行内的圆按钮与搜索框（`stackBuilder` 内才生效） |
+| 沉浸材质 | `uiMaterial.ImmersiveMaterial` | 官方材质，用于标题行内的圆按钮 / 搜索框，以及标题栏 `bottomBuilder` 里的筛选条胶囊（`CapsuleSurface`） |
 | 页面底色 | `page_bg` | 纯色背景 / 编辑器页 |
 | 页面渐变 | `page_grad_top/mid/bottom` | 渐变背景三停 |
 | 光晕 | `glow_blue/purple/cyan` | 光感背景装饰，必须 `hitTestBehavior(None)` |
 | 侧内缩 | `SIDE_INSET` = 16 | 标题行/筛选条/页签栏统一左右缩进 |
-| 标题栏避让 | `TITLE_BAR_CLEARANCE` = 96 | 各 tab 根节点的上内边距，实测 MINI 标题栏下边缘（285 px / 3）；从窗口 y = 0 起算 |
+| 标题栏避让 | `titleBandHeight()` | 各 tab 根节点的上内边距 = `statusBarHeightVp() + 标题行 56 + titleBottomHeight()`（50 / 0）；**按窗口坐标**解析，含状态栏 |
+| 筛选带高 | `BOTTOM_BUILDER_HEIGHT` = 50 | 34 vp 胶囊 + 上下各 8；`titleBarOptions().bottomBuilder.height` 与页面留白共用这一个数 |
+| 顶栏收起留白 | `chromeTopInset()` | `statusBarHeightVp() + 8`；收起态内容从哪开始，与 `titleBandHeight()` 同一个状态栏项 |
 | 页签栏高 | `BAR_HEIGHT` = 56 | |
 | 页签栏底距 | `BAR_BOTTOM_MARGIN` = 32 | |
 | 卡片底 | `sys.color.ohos_id_color_card_bg` | 笔记卡片 / 设置行，随系统明暗解析 |
@@ -234,15 +241,26 @@
 >
 > **沉浸材质（`systemMaterial`）有硬性生效范围**：只在 `Navigation` /
 > `NavDestination` 标题栏、`barPosition(End)` 的横向底部页签栏，以及文档列出的弹窗
-> / Slider / Toggle / Select 生效，「在其他区域中设置沉浸光感效果不生效」。筛选条与
-> 排序条在内容区，永远用不了，这正是整个手绘玻璃家族共用 `glassEffect()` 的原因。
+> / Slider / Toggle / Select 生效，「在其他区域中设置沉浸光感效果不生效」。
 > 已实测：内容区的胶囊加 `.backgroundColor(Color.Red).systemMaterial(...)` 后红色
 > 完整保留，证明材质从未生效。
 >
+> **所以筛选条 / 排序条搬进了标题栏的 `bottomBuilder`（筛选带）。** 那里在生效
+> 范围内，胶囊（`CapsuleSurface`）直接用 `.systemMaterial()` 拿到真材质，
+> 不再靠 `MaterialLayer` 的不可见 `Toggle` 载体。代价是标题栏变高、
+> `titleBandHeight()` 必须跟着推导——已接受：两条手抬的 Toggle 层更贵。
+> `MaterialLayer` 仍服务**内容区**那些面（笔记卡片、标签药丸），别把它从胶囊上
+> 重新加回来，也别因为胶囊不用了就删掉这个文件。
+>
 > **标题行里的圆按钮和搜索框用的是真材质。** 它们在 `stackBuilder` 内，属于生效
-> 范围，走 `.systemMaterial(immersiveMaterial())`；`immersiveSupported` 为假时回退到
-> 手绘三层玻璃。三个连带约束：`backgroundColor` 必须是 `Color.Transparent`、
-> **绝对不要设 `border`**、圆形靠 `clipShape(CircleShape)` 而不是 `borderRadius`。
+> 范围，走 `.systemMaterial(immersiveMaterial(true))`（`interactive` 传给圆钮，
+> 按压有形变）与 `immersiveMaterial(false)`（搜索框）；`immersiveSupported` 为假时
+> 回退到手绘三层玻璃。三个连带约束：`backgroundColor` 必须是 `Color.Transparent`、
+> **绝对不要设 `border`**、圆形靠 `borderRadius(22)` 而不是 `clipShape`（`clipShape`
+> 会让材质矩形的四条直边露成 12/3/6/9 点钟的亮弧）。
+>
+> **胶囊上的 `systemMaterial` 必须 `interactive: false`。** 在卡片式节点上开
+> `interactive` 会让材质完全不渲染（实测）；圆钮/搜索框那种小控件才可以开。
 >
 > **整个 shell 只有一张背景。** `build()` 是 `PageBackdrop()` + `Navigation` 的
 > `Stack`，`HdsShell`/`PlainShell` 自己不再画背景。以前每个 `TabContent` 各画一份，

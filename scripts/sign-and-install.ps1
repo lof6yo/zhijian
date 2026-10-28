@@ -86,12 +86,17 @@ if (-not $SkipBuild) {
             }
         }
         $proc.WaitForExit()
-        if ($proc.ExitCode -eq 0) { break }
+        # `$proc.ExitCode` is $null in PS 5.1 after `Start-Process -PassThru` with
+        # redirects (the handle is released before the exit code is read), so the
+        # success marker is the only reliable signal. Same bug fixed in dist.ps1.
+        $succeeded = (Test-Path $log) -and
+            ((Get-Content $log -ErrorAction SilentlyContinue) -match 'BUILD SUCCESSFUL').Count -gt 0
+        if ($succeeded) { break }
         if ($attempt -eq 2) {
             if (Test-Path $log) { Get-Content $log -Tail 20 }
-            throw "Build failed (exit $($proc.ExitCode))"
+            throw "Build failed (no 'BUILD SUCCESSFUL' in $log)"
         }
-        Write-Warning "build exited $($proc.ExitCode); retrying once"
+        Write-Warning "build did not report success; retrying once"
     }
 }
 

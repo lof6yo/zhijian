@@ -57,6 +57,19 @@ const HDS_MIN_API: number = 23;
 /** Stable id for the notes search field so the title-bar action can focus it. */
 const SEARCH_INPUT_ID: string = 'notesSearchInput';
 
+/**
+ * Height of the HDS title bar's bottom band — the home of 筛选条 / 排序条.
+ *
+ * 34 vp capsule + 8 vp air above and below. It is a **fixed** number rather than
+ * content-derived because the same value has to be added to the page's top
+ * inset (`titleBandHeight`), and the two must never drift: HDS sizes the band
+ * from this option, the page reserves the same amount itself.
+ */
+const BOTTOM_BUILDER_HEIGHT: number = 50;
+
+/** Height of the `stackBuilder` row (title + 搜索 / 新建 buttons). */
+const TITLE_ROW_HEIGHT: number = 56;
+
 const DOMAIN: number = 0x0000;
 const TAG: string = 'HMStart';
 
@@ -261,11 +274,16 @@ struct Index {
   private readonly SIDE_INSET: number = 16;
 
   /**
-   * 顶栏让开之后，页面里那条筛选 / 排序胶囊距离窗口上沿的留白。
+   * 顶栏让开之后页面内容的顶部留白 = 状态栏 + 8 vp。
    *
-   * 不能写 8：本页用 `ignoreLayoutSafeArea` 做沉浸，内容原点是**窗口顶端**，
-   * 顶栏收起后 8 vp 的位置正好压在状态栏的时间与电量上（实测「全部/收藏/归档」
-   * 与时钟重叠）。状态栏高度从 `WindowService` 读，再留 8 vp 呼吸。
+   * **`padding` 从窗口顶端起算，尽管内容根节点自己是从状态栏下沿开始的**
+   * （`ui_dump`：`root` 在 `[0,117]`）。`ignoreLayoutSafeArea` 把布局铺进安全区
+   * 之后，安全区内的内边距按窗口坐标解析，所以只留 8 vp 会让内容压在时钟上——
+   * 实测过「全部/收藏/归档」与时间重叠。
+   *
+   * 与 `titleBandHeight()` 里的状态栏项是同一个道理、同一个数（39 vp），不是重复
+   * 计算：那个算「标题栏下沿在哪」，这个算「收起后内容从哪开始」。
+   * 反证：`titleBandHeight()` 去掉该项后网格从 459 px 掉到 342 px，正好 117 px。
    */
   private chromeTopInset(): number {
     return WindowService.statusBarHeightVp() + 8;
@@ -420,15 +438,17 @@ struct Index {
    * ## 为什么两条 chrome 共用一个状态
    *
    * 「向上翻的时候把界面让出来」是一次整体的动作。顶栏收起了、页签栏还在原地，
-   * 看起来不是让位，是卡住了。所以 `chromeHidden` 一个开关同时驱动三件事：
-   * HDS 标题栏（`hideTitleBar`）、笔记页顶部那条筛选 / 排序胶囊的让位、以及
-   * 悬浮页签栏（`applyHideAnimation` / `applyShowAnimation`）。
+   * 看起来不是让位，是卡住了。所以 `chromeHidden` 一个开关同时驱动两件事：
+   * HDS 标题栏（`hideTitleBar`，筛选条 / 排序条在它的 `bottomBuilder` 里，跟着一起
+   * 收起）与悬浮页签栏（`applyHideAnimation` / `applyShowAnimation`）。
    *
    * ## 为什么不用 HDS 自己的 `dynamicHideTitleBar`
    *
-   * 那个接口只认标题栏：它会把标题区收起来，但页面顶部那条胶囊是**内容**，
-   * 不在它的模型里。于是标题栏收起之后，胶囊会孤零零地悬在一片空白下沿 96 vp
-   * 的位置——比不收还难看。要么整套动，要么整套不动，所以方向由这一页自己判定。
+   * 那个接口按**滚动事件**自己判方向（`dynamicHideTitleBar({ hideTitleArea,
+   * hideBottomBuilder, hideStatusBar })`），而这页要让的是「顶栏 + 页签栏」两件
+   * 事、并且由同一个开关驱动。用它就得把页签栏另挂一套判定，两套阈值必然错拍，
+   * 于是出现「标题栏走了、页签栏还赖着」的半截状态。要么整套动，要么整套不动，
+   * 所以方向由这一页自己判定。
    *
    * ## 方向与阈值
    *
@@ -1025,11 +1045,29 @@ struct Index {
    * large-title band was consuming.
    */
   private titleBarOptions(): HdsNavigationTitleBarOptions {
+    // 筛选条 / 排序条住在标题栏的**底部区域**里。这不是排版偏好：`systemMaterial`
+    // 只在 Navigation/NavDestination 标题栏、以及 `barPosition(End)` 的底部页签栏
+    // 里生效，页面内容区一律不生效（官方功耗优化文档：「在其他区域中设置沉浸光感
+    // 效果不生效」）。从前它们留在内容区，只能靠 `MaterialLayer` 用不可见 `Toggle`
+    // 当载体；搬进这里之后材质由控件自己画，那个载体在本页就不需要了。
+    //
+    // `height` 随页签变化：设置页没有这两条，标签页在没有标签时也没有——
+    // 那两处**整块不给** `bottomBuilder`，而不是给一条高度 0 的空带（后者仍会
+    // 参与标题栏布局，只是看不见）。
     const content: TitleBarContentOptions = {
       stackBuilder: () => {
         this.TitleRow();
       }
     };
+    const band: number = this.titleBottomHeight();
+    if (band > 0) {
+      content.bottomBuilder = {
+        builder: (): void => {
+          this.TitleBottom();
+        },
+        height: band
+      };
+    }
     const scroll: ScrollEffectOptions = {
       enableScrollEffect: true,
       scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
@@ -1095,8 +1133,51 @@ struct Index {
       }
     }
     .width('100%')
-    .height(56)
+    .height(TITLE_ROW_HEIGHT)
     .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
+    .alignItems(VerticalAlign.Center)
+  }
+
+  /**
+   * 标题栏底部那一带：筛选条 / 排序条，或（多选时）动作条。
+   *
+   * ## 为什么在这里，而不是页面内容区
+   *
+   * `systemMaterial` 只在 Navigation/NavDestination 标题栏与 `barPosition(End)`
+   * 的底部页签栏里生效；页面内容区「设置沉浸光感效果不生效」（官方功耗优化
+   * 文档明文）。所以筛选条以前只能靠 `MaterialLayer` 用一个不可见的 `Toggle`
+   * 当载体去画材质。搬进标题栏之后，材质由这个容器自己画——这正是官方给的正例
+   * （在标题栏里为**局部容器**设置沉浸式系统材质）。
+   *
+   * 高度由 `titleBarOptions().bottomBuilder.height` 决定，必须与这里一致：
+   * `BOTTOM_BUILDER_HEIGHT` 是唯一的数，页面顶部留白也由它推算
+   * （`titleBandHeight()`）。
+   *
+   * 页签变化时这一带会整条换内容而不是叠加：设置页没有筛选，标签页在没有标签时
+   * 也没有——两处 `titleBottomHeight()` 返回 0，HDS 直接不留这一带。
+   */
+  @Builder
+  TitleBottom() {
+    Row({ space: 8 }) {
+      if (this.selecting && this.selectedTab === 0) {
+        // 多选态：整条换成动作条。高度与筛选条完全相同（34 vp），所以进出多选
+        // 网格不会上下一跳。
+        this.SelectionCapsule()
+      } else if (this.selectedTab === 0) {
+        this.ChipGroup(0)
+        this.ChipGroup(10)
+      } else {
+        // 标签页的顺序与笔记页一致：**先筛选、后排序**。
+        this.TagChipGroup(1)
+        this.TagChipGroup(0)
+      }
+    }
+    .width('100%')
+    .height(BOTTOM_BUILDER_HEIGHT)
+    .padding({
+      left: this.SIDE_INSET, right: this.SIDE_INSET,
+      top: (BOTTOM_BUILDER_HEIGHT - 34) / 2, bottom: (BOTTOM_BUILDER_HEIGHT - 34) / 2
+    })
     .alignItems(VerticalAlign.Center)
   }
 
@@ -1159,7 +1240,7 @@ struct Index {
       // material rasterises, so the rim follows the disc exactly.
       .borderRadius(22)
       .backgroundColor(Color.Transparent)
-      .systemMaterial(this.immersiveMaterial())
+      .systemMaterial(this.immersiveMaterial(true))
       .onClick(onTap)
       .accessibilityText(label)
     } else {
@@ -1214,7 +1295,7 @@ struct Index {
    * near-white backdrop is exactly the second half of the "异常" complaint — there
    * was no visible response to a press, just a static pale disc.
    */
-  private immersiveMaterial(): uiMaterial.ImmersiveMaterial {
+  private immersiveMaterial(interactive: boolean): uiMaterial.ImmersiveMaterial {
     const styles: uiMaterial.ImmersiveStyle[] = [
       uiMaterial.ImmersiveStyle.REGULAR,     // 自适应 — 官方默认
       uiMaterial.ImmersiveStyle.ULTRA_THICK, // 高
@@ -1224,7 +1305,7 @@ struct Index {
     const light: uiMaterial.LightEffectOptions = { color: this.accentColor() };
     const options: uiMaterial.ImmersiveOptions = {
       style: styles[this.glassIndex()],
-      interactive: true,
+      interactive: interactive,
       applyShadow: false,
       lightEffect: light
     };
@@ -1602,17 +1683,61 @@ struct Index {
   // ---------------------------------------------------------------- notes
 
   /**
-   * Clearance for the title bar band. HDS draws `NavBarContent` at the same
-   * origin as the title bar, so each tab root must reserve that band itself.
+   * Clearance for the title bar band: `状态栏 + 标题行 + 筛选带`.
    *
-   * Measured on device in MINI mode with `.hideBackButton(true)`:
-   * `HdsTitleBar` spans y 0…285 px at density 3, i.e. 95 vp from the window
-   * origin (immersion is done with `ignoreLayoutSafeArea`, so the content
-   * origin is the window top, not below the status bar). 96 vp clears it with a
-   * 1 vp hairline of slack; anything less pushes the filter row up into the
-   * title bar.
+   * HDS draws `NavBarContent` at the same origin as the title bar, so each tab
+   * root must reserve that band itself.
+   *
+   * **The status-bar term is required, and this was measured the hard way.**
+   * Under `ignoreLayoutSafeArea` a `padding` resolves from **window y = 0**, not
+   * from the content top — even though the content root itself starts at the
+   * status-bar bottom (`ui_dump`: `root` at `[0,117]`). Measured numbers with the
+   * bar shown on 笔记页: `HdsTitleBar` is `[0,117][1320,435]` px, i.e. it ends at
+   * **145 vp absolute** (`39 status bar + 56 row + 50 band`), and the grid must
+   * start at `(145 + 8) * 3 = 459` px. Dropping the term reserved 106 vp and the
+   * grid started at 342 px — 39 vp under the capsule, first card row tucked
+   * behind it. Keeping the term produced 459 px exactly.
+   *
+   * Note the asymmetry with `chromeTopInset()`, which has the same origin but a
+   * different job (where content goes *after* the bar leaves).
    */
-  private readonly TITLE_BAR_CLEARANCE: number = 96;
+  private titleBandHeight(): number {
+    return WindowService.statusBarHeightVp() + TITLE_ROW_HEIGHT + this.titleBottomHeight();
+  }
+
+  /**
+   * Height of the title bar's bottom band: 34 vp capsule + 8 vp air above and
+   * below.
+   *
+   * 设置页 has no filter / sort row, and 标签页 has nothing to filter before the
+   * first tag exists — the band collapses to 0 there rather than leaving an
+   * empty strip under the title.
+   */
+  private titleBottomHeight(): number {
+    if (this.selectedTab === 0) {
+      return BOTTOM_BUILDER_HEIGHT;
+    }
+    if (this.selectedTab === 1 && this.tagsSnapshot.length > 0) {
+      return BOTTOM_BUILDER_HEIGHT;
+    }
+    return 0;
+  }
+
+  /**
+   * 页面内容的顶部留白。
+   *
+   * 顶栏收起时整条 bar（标题行 + 筛选条那一带）一起让开，所以留的是状态栏下沿
+   * + 8 vp：内容原点是窗口顶端，8 vp 会压在时钟上。
+   *
+   * 没有 HDS 外壳（API < 23，`PlainShell`）时根本没有标题栏，筛选条回到内容区，
+   * 这里只留一点呼吸。
+   */
+  private pageTopInset(): number {
+    if (!this.hdsSupported) {
+      return 12;
+    }
+    return this.chromeHidden ? this.chromeTopInset() : this.titleBandHeight() + 8;
+  }
 
   /**
    * Width of one grid column in vp. `WaterFlow` measures a `FlowItem`'s child
@@ -1631,7 +1756,7 @@ struct Index {
   NotesPage() {
     Column() {
       // 最近搜索贴在搜索框下面（搜索框在标题栏里）。它只在「搜索框展开且查询为
-      // 空」时出现，所以顶栏那 96 vp 的留白由它来顶——`NotesHeader` 在它出现时
+      // 空」时出现，所以标题栏那一段的留白由它来顶——`NotesHeader` 在它出现时
       // 只留 8 vp，两行不会叠出一条空白带。
       if (this.historyVisible()) {
         this.SearchHistory()
@@ -2056,95 +2181,94 @@ struct Index {
     .alignItems(HorizontalAlign.Start)
   }
 
+  /**
+   * 页面顶部的呼吸：筛选条 / 排序条已经搬进标题栏（`TitleBottom`），这一页的
+   * 第一块内容只需让过**整条标题栏**（标题行 + 筛选条那一带）。
+   *
+   * `SearchHistory` 自己已经从 `titleBandHeight()` 之下开始排（搜索框展开时顶栏
+   * 一定在位），所以它出现时这里只留 8 vp，否则两道留白会叠成一条空带。
+   *
+   * 顶栏收起时整条 bar 一起让开，留的是**状态栏下沿** + 8 vp：内容原点是窗口顶端，
+   * 8 vp 会压在时钟上。
+   *
+   * **必须给一个显式高度**。这里曾经是一个只有 `padding` 的空 `Column`：空容器
+   * 不进布局，那圈 padding 也就跟着消失，网格直接从窗口顶端开始排、第一排卡片
+   * 钻到标题栏底下（实测卡片标题与「笔记」二字重叠）。撑开它的是 `height`，不是
+   * padding。
+   *
+   * **API < 23 没有 HDS 标题栏**，筛选条 / 排序条无处可搬，所以那一支仍然自己画
+   * 在内容区（`CapsuleSurface` 会退回手搓玻璃）。不保留这一支，老设备上就没有
+   * 筛选和排序了——降级是「材质差一点」，不是「功能没了」。
+   */
   @Builder
   NotesHeader() {
-    // No search field here: search lives in the title row and expands in place.
-    // The single filter row is the only pinned chrome above the grid, so the
-    // header is now one compact band instead of three stacked rows.
-    //
-    // 多选态下这一行整条换成动作条，高度与筛选条相同（34 vp），所以进出多选
-    // 网格不会上下一跳。
-    if (this.selecting) {
-      this.SelectionHeader()
-    } else {
-      Row({ space: 8 }) {
-        this.ChipGroup(0)
-        this.ChipGroup(10)
+    Column() {
+      if (!this.hdsSupported) {
+        // 没有 HDS 标题栏：多选动作条与筛选条仍然要有一条，方向同页头。
+        if (this.selecting) {
+          this.SelectionCapsule()
+        } else {
+          Row({ space: 8 }) {
+            this.ChipGroup(0)
+            this.ChipGroup(10)
+          }
+          .width('100%')
+        }
       }
-      .width('100%')
-      // The measured title row band on this device; the smaller value than before
-      // reflects the title row no longer reserving a separate large-title band.
-      //
-      // `+8` on top of `TITLE_BAR_CLEARANCE`: 96 vp is exactly the title bar's own
-      // bottom edge (285 px / 3), so a filter row pinned at 96 sat flush against
-      // the bar with zero air — reported as 「离顶部按钮过近」. The clearance must
-      // keep meaning "the bar ends here", so the gap is added separately.
-      //
-      // 顶栏收起时这段留白必须一起收掉：标题栏让开了，胶囊却还钉在 96 vp 的位置，
-      // 中间空出一条什么也没有的带子——比不收还难看。收起时留的是**状态栏下沿**
-      // + 8 vp，不能是 8 vp：内容原点是窗口顶端，8 vp 会压在时钟上。
-      //
-      // 搜索历史出现时只留 8：那一块自己已经从 96 vp 之下开始排（搜索框展开时
-      // 顶栏一定在位），再补一次 96 就是两道留白叠成一条空带。
-      .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET,
-        top: this.historyVisible() ? 8 : (this.chromeHidden ? this.chromeTopInset() : this.TITLE_BAR_CLEARANCE + 8),
-        bottom: 10 })
-      // 不给 `.animation()`：这条 `top` 的过渡由 `setChromeHidden()` 里的
-      // `animateTo` 统一驱动，两套动画叠在一起就是「两条曲线各走各的」。
     }
+    .width('100%')
+    .height(this.hdsSupported ? (this.historyVisible() ? 8 : this.pageTopInset()) : 42)
+    // `height` 是 border-box，所以非 HDS 那一支的 8 vp 呼吸要留在这里；HDS 那一支
+    // 的高度本身就是「让过标题栏」的空带，再加 padding 就把它吃掉 8 vp。
+    .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET,
+      bottom: this.hdsSupported ? 0 : 8 })
+    // 不给 `.animation()`：这条高度过渡由 `setChromeHidden()` 里的 `animateTo`
+    // 统一驱动，两套动画叠在一起就是「两条曲线各走各的」。
   }
 
   /**
    * 多选态的动作条：已选数量 + 归档 / 删除 / 导出 + 取消。
    *
-   * 放在页头而不是页底：底部是 HDS 的浮动页签栏（`barOverlap`），一条动作条压在
-   * 它上面会互相遮挡；页头正好是用户刚长按完卡片之后视线所在的位置。
+   * 它占的正是筛选条那一带（标题栏底部，见 `TitleBottom`），高度完全一致
+   * （34 vp），所以进出多选网格不会上下一跳。放在页头而不是页底：底部是 HDS 的
+   * 浮动页签栏（`barOverlap`），一条动作条压在它上面会互相遮挡。
    *
    * 三个动作的确认策略不同：归档可逆（笔记只是从「全部」移到「已归档」），不问；
    * 删除不可逆到需要一次确认（30 天回收站），批量删除更是一次处理很多篇，必须
    * 报出数量；导出是只读操作，不问，直接弹保存选择器。
    */
   @Builder
-  SelectionHeader() {
-    // 外层只负责左右内缩：胶囊本身必须是完整一块（材质走 `matchParent`，如果
-    // 用 padding 缩内容盒，承载层会跟着缩进去，边上露出一圈没材质的边）。
-    Column() {
-      Stack({ alignContent: Alignment.Center }) {
-        this.GlassCapsuleSurface(17)
-        Row({ space: 2 }) {
-          Text(`已选 ${this.selectedIds.length} 项`)
-            .fontSize(12)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.accentColor())
-            .padding({ left: 12, right: 8 })
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-          this.SelectionAction('归档', false, () => {
-            this.archiveSelected();
-          })
-          this.SelectionAction('删除', true, () => {
-            this.confirmDeleteSelected();
-          })
-          this.SelectionAction('导出', false, () => {
-            this.exportSelected();
-          })
-          this.SelectionAction('取消', false, () => {
-            this.exitSelect();
-          })
-        }
-        .width('100%')
-        .height('100%')
-        .padding(3)
+  SelectionCapsule() {
+    Stack({ alignContent: Alignment.Center }) {
+      this.CapsuleSurface(17)
+      Row({ space: 2 }) {
+        Text(`已选 ${this.selectedIds.length} 项`)
+          .fontSize(12)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.accentColor())
+          .padding({ left: 12, right: 8 })
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        this.SelectionAction('归档', false, () => {
+          this.archiveSelected();
+        })
+        this.SelectionAction('删除', true, () => {
+          this.confirmDeleteSelected();
+        })
+        this.SelectionAction('导出', false, () => {
+          this.exportSelected();
+        })
+        this.SelectionAction('取消', false, () => {
+          this.exitSelect();
+        })
       }
       .width('100%')
-      .height(34)
-      .borderRadius(17)
-      .clip(true)
+      .height('100%')
+      .padding(3)
     }
-    .width('100%')
-    .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET,
-      top: this.chromeHidden ? this.chromeTopInset() : this.TITLE_BAR_CLEARANCE + 8, bottom: 10 })
-    // 同上：过渡统一由 `setChromeHidden()` 的 `animateTo` 驱动。
+    .layoutWeight(1)
+    .height(34)
+    .borderRadius(17)
   }
 
   @Builder
@@ -2162,31 +2286,50 @@ struct Index {
   }
 
   /**
-   * 胶囊外壳：材质 + 遮罩（或手搓玻璃 + 一道顶光）。
+   * 胶囊外壳：控件自己的沉浸光感（或手搓玻璃 + 一道顶光）。
    *
    * 抽出这一层是因为筛选条 / 排序条 / 多选动作条是**同一个控件家族**。三处各写
    * 一遍材质与顶光，改一处就会漏两处，页面立刻看起来像三个人做的。
+   *
+   * ## 为什么这里可以用 `.systemMaterial()`，而从前不行
+   *
+   * 这三条胶囊现在住在标题栏底部（`TitleBottom`），而那正是 `systemMaterial`
+   * 生效的两个范围之一（另一个是 `barPosition(End)` 的底部页签栏）。官方功耗
+   * 优化文档给的正例就是这个形状：在标题栏里给一个**局部容器**设沉浸式系统
+   * 材质。从前它们在页面内容区，那里「设置沉浸光感效果不生效」，只能退回
+   * `MaterialLayer` 用一个不可见 `Toggle` 当载体。
+   *
+   * 三条形状约束，都是踩过的：
+   *  - **形状只由 `borderRadius` 给**，不用 `clipShape`，也不给父节点 `clip(true)`。
+   *    材质的边缘光按节点自己的圆角栅格化；用 clip 去切会把矩形四条直边留成
+   *    12/3/6/9 点钟方向的亮弧（「边缘光感异常」）。
+   *  - **`backgroundColor` 保持透明**：材质在上/中算力档会接管背景色，在低算力
+   *    档才退回 `materialColor`，这里填色只会让它自己那一档看起来更脏。
+   *  - **不设 `border` / `shadow`**：`applyShadow` 默认 true 会覆盖 `shadow`，
+   *    而 `borderWidth` 同样会被材质重置。
+   *
+   * 不支持沉浸光感时退回手搓玻璃：`backgroundEffect` + 顶部一道 `glass_hi` 高光。
+   * 两条都是「节点自己的背景」，所以圆角由 `borderRadius` 一并裁好。
    */
   @Builder
-  GlassCapsuleSurface(radius: number) {
-    if (this.glassOn()) {
-      MaterialLayer({
-        radius: radius,
-        gear: this.glassLevel
-      })
+  CapsuleSurface(radius: number) {
+    if (this.immersiveSupported) {
       Column()
         .width('100%')
         .height('100%')
         .borderRadius(radius)
-        .backgroundColor(this.glassTint())
+        .backgroundColor(Color.Transparent)
+        .systemMaterial(this.immersiveMaterial(false))
     } else {
       Column()
         .width('100%')
         .height('100%')
+        .borderRadius(radius)
         .backgroundEffect(this.glassEffect())
       Column()
         .width('100%')
         .height('100%')
+        .borderRadius(radius)
         .linearGradient({
           angle: 180,
           colors: [[$r('app.color.glass_hi'), 0.0], ['#00FFFFFF', this.glassSheenStop()]]
@@ -2331,21 +2474,20 @@ struct Index {
   }
 
   /**
-   * A single capsule holding one chip group. Two of these share one row:
-   * filter (全部/已归档/收藏) on the left, sort (最近修改/按标题/按创建) on the
-   * right. `base` 0 = filter, 10 = sort; `FilterChip` treats `mode >= 10` as
-   * sort, so any future group must use a multiple of 10 as its base.
+   * 一条装着筛选项（或排序项）的胶囊。两条共用一行：左边筛选、右边排序。
    *
-   * The surface is a `MaterialLayer` carrier when the device renders immersive
-   * material, and the hand-built `backgroundEffect` glass otherwise. It cannot be
-   * `.systemMaterial()` on this `Stack`: page content is outside the material's
-   * allowed scopes, so the call is a silent no-op — the reason this used a
-   * hand-built blur in the first place.
+   * `base` 0 = 筛选，10 = 排序；`FilterChip` 把 `mode >= 10` 当排序，所以将来
+   * 再加一组必须用 10 的倍数当 base。
+   *
+   * 表面走 `CapsuleSurface`：控件的原生沉浸光感（胶囊已经在标题栏底部那一带里，
+   * 那里 `systemMaterial` 生效），不支持时退回手搓玻璃。**不要再给它套
+   * `.clip(true)`**——材质的边缘光按节点自己的圆角栅格化，clip 会把矩形四条直边
+   * 留成四道亮弧。
    */
   @Builder
   ChipGroup(base: number) {
     Stack({ alignContent: Alignment.Center }) {
-      this.GlassCapsuleSurface(17)
+      this.CapsuleSurface(17)
       Row({ space: 2 }) {
         if (base === 0) {
           // 三个筛选项统一 **2 字**（全部 / 收藏 / 归档）。三个 chip 是等分宽度的，
@@ -2381,7 +2523,6 @@ struct Index {
     .layoutWeight(1)
     .height(34)
     .borderRadius(17)
-    .clip(true)
   }
 
   /**
@@ -2468,7 +2609,7 @@ struct Index {
     // four-arcs artefact the circular buttons had with `clipShape`. Nothing here
     // needs clipping — the children sit inside the 14/6 vp padding.
     .backgroundColor(Color.Transparent)
-    .systemMaterial(this.immersiveSupported ? this.immersiveMaterial() : uiMaterial.Material.empty)
+    .systemMaterial(this.immersiveSupported ? this.immersiveMaterial(true) : uiMaterial.Material.empty)
     .border(this.immersiveSupported
       ? { width: 0 }
       : { width: this.glassRimWidth(), color: $r('app.color.glass_border') })
@@ -2523,11 +2664,11 @@ struct Index {
       .width('100%')
     }
     .width('100%')
-    // 它是这一页的第一块内容，所以要自己顶开标题栏那道带子（96 vp 是标题栏的
-    // 下沿，见 `TITLE_BAR_CLEARANCE`）。搜索框展开时顶栏一定在位——`hideTitleBar`
-    // 的条件里有 `!searchExpanded`——所以这里不需要判断 `chromeHidden`。
+    // 它是这一页的第一块内容，所以要自己顶开标题栏那道带子（含筛选条那一带，
+    // 见 `titleBandHeight()`）。搜索框展开时顶栏一定在位——`hideTitleBar` 的条件
+    // 里有 `!searchExpanded`——所以这里不需要判断 `chromeHidden`。
     .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET,
-      top: this.TITLE_BAR_CLEARANCE + 4, bottom: 0 })
+      top: this.titleBandHeight() + 4, bottom: 0 })
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -2726,21 +2867,21 @@ struct Index {
           .width('100%')
           .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
       } else {
-        // 排序 + 筛选。样式与笔记页的筛选条 / 排序条**完全一致**：同样的胶囊
-        // 外壳、同样的 34 vp 高、同样的 28 vp 药丸。同一类控件在两个页面上
-        // 长成两个样子，是最容易让人觉得「这个 app 是拼起来的」。
+        // 排序与筛选**不在这里**：它们和笔记页那两条一样住在标题栏底部
+        // （`TitleBottom`），所以两页的控件不只是长得一样，而是同一个构建体。
+        // 有标签时 `titleBottomHeight()` 才返回那一带的高度，没有标签时标题栏
+        // 里根本不留空带。
         //
-        // 顶部同样留出 `TITLE_BAR_CLEARANCE + 8`：96 vp 正好是标题栏自己的下边缘，
-        // 贴着它排会让控件看起来黏在按钮上。
-        Row({ space: 8 }) {
-          // 顺序与笔记页一致：**先筛选、后排序**。两个页面的控件长一样，
-          // 摆的顺序也该一样，否则用户每次都要重新找一遍。
-          this.TagChipGroup(1)
-          this.TagChipGroup(0)
+        // 没有 HDS 标题栏时（API < 23）无处可搬，这里自己画一条——降级是「材质
+        // 差一点」，不是「功能没了」。
+        if (!this.hdsSupported) {
+          Row({ space: 8 }) {
+            this.TagChipGroup(1)
+            this.TagChipGroup(0)
+          }
+          .width('100%')
+          .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
         }
-        .width('100%')
-        .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
-        .margin({ top: 8 })
 
         // 标签是**药丸**，不是等长的列表行：长度由名字自己决定，从左到右、从上
         // 到下流式排布。等长行会让人以为每一行是一个「条目」，而标签本质上是
@@ -2767,8 +2908,9 @@ struct Index {
     .width('100%')
     .height('100%')
     // No local heading: the HDS title bar owns the page title (大标题) on every
-    // tab, so each tab only reserves that band.
-    .padding({ top: this.TITLE_BAR_CLEARANCE })
+    // tab, so each tab only reserves that band — which now includes the filter
+    // row it carries.
+    .padding({ top: this.pageTopInset() })
     .bindSheet(this.tagNameShown, this.TagNameSheet(), {
       height: SheetSize.MEDIUM,
       dragBar: true,
@@ -2933,7 +3075,7 @@ struct Index {
   @Builder
   TagChipGroup(kind: number) {
     Stack({ alignContent: Alignment.Center }) {
-      this.GlassCapsuleSurface(17)
+      this.CapsuleSurface(17)
       Row({ space: 2 }) {
         if (kind === 0) {
           // 只传基础文字，箭头在 `TagChip` 的构建体内算（同 `FilterChip.chipText`）：
@@ -3559,8 +3701,10 @@ struct Index {
     }
     .width('100%')
     .height('100%')
-    // Same band reserve as the other tabs: the HDS title bar owns the 大标题.
-    .padding({ top: this.TITLE_BAR_CLEARANCE })
+    // Same band reserve as the other tabs: the HDS title bar owns the 大标题. 设置页
+    // 没有筛选条那一带（`titleBottomHeight()` 返回 0），所以这里就是
+    // 状态栏 + 标题行的高度。
+    .padding({ top: this.titleBandHeight() })
   }
 
   @Builder
