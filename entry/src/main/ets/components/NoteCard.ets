@@ -144,6 +144,15 @@ export struct NoteCard {
   private static readonly LIGHT_THRESHOLD: number = 56;
 
   /**
+   * 边缘渐隐的过渡带宽度（vp）。
+   *
+   * 定值，不跟着位移一起变。若带随 `dx` 变宽，斜率跟着变：`dx` 小时是一段极陡的
+   * 淡出（几乎等于硬边），而那正是用户看得最多的阶段。44 vp 约双列卡片的 1/4——
+   * 宽到看不出边线，又不至于把标题吃掉。
+   */
+  private static readonly EDGE_FADE: number = 44;
+
+  /**
    * 第二档的判定线（vp）。
    *
    * 拖到这条线之前是**轻滑**，越过是**重滑**，两档松手执行不同动作。
@@ -172,6 +181,60 @@ export struct NoteCard {
   /** 当前是否已越过第二档判定线（松手就是重滑动作）。 */
   private pastSecond(): boolean {
     return Math.abs(this.swipeOffset) >= this.longThreshold();
+  }
+
+  /**
+   * 卡面在**单元格边缘**处的空间渐隐——越界那一段的退场方式。
+   *
+   * 为什么必须是空间渐变，而不是整卡降不透明度：量过。整卡降到 0.58 时切口两侧仍是
+   * 250 对 234（16 个色阶，与完全不透明只差一点）——均匀淡化让整个矩形一起变淡，
+   * **边线处的相对落差没变**，那条线原封不动。要消失的是这条线，只能做成空间上的：
+   * 让紧挨切口的最后一段淡到 0，线上就没有像素可被切。
+   *
+   * 时间上也不允许均匀淡化：卡片宽 = 单元格宽，外沿本来就压在格边，**第一像素**就越界
+   * 被裁。整卡要淡到看不见得等半个卡片之后，而最难看的正是开头那一段。
+   *
+   * 三条前提，缺一条就不生效（都是实测踩出来的）：
+   *  - **与卡面同组。** `blendMode(DST_IN, OFFSCREEN)` 擦的是「同一组里已经画过的
+   *    内容」，所以外面要 `renderGroup(true)`；拆成兄弟节点它会把页面背景一起擦掉。
+   *  - **自己**不跟着卡片平移。切口在屏幕上固定，停在单元格边缘；渐变跟着卡片走就
+   *    永远对不上那条线。`translate` 因此挂在卡面上，**不挂在这一组上**。
+   *  - **不依赖背景色。** `DST_IN` 是 `r = d × sa`：白色只提供 alpha、颜色不参与，
+   *    深浅两套主题共用一条遮罩。
+   */
+  @Builder
+  EdgeFade() {
+    Column()
+      .width('100%')
+      .height('100%')
+      .linearGradient({ angle: 90, colors: this.edgeFadeColors() })
+      .blendMode(BlendMode.DST_IN, BlendApplyType.OFFSCREEN)
+      .hitTestBehavior(HitTestMode.None)
+  }
+
+  /**
+   * 渐隐遮罩的停靠点（沿**单元格**宽度归一，0 = 单元格左边）。
+   *
+   * 右滑被裁的是右端、左滑被裁的是左端，两条不是镜像的一句话，各写一套。
+   *
+   * 过渡带取 `EDGE_FADE` 定值、**不挂在位移上**：带随 `dx` 变宽的话斜率也跟着变，
+   * `dx` 小时就是一段极陡的淡出（几乎等于硬边），而用户看到的正是小位移阶段。
+   * 静止时返回全保留——否则每张卡常驻一条淡边，等于给网格加了个暗角。
+   */
+  private edgeFadeColors(): Array<[ResourceColor, number]> {
+    const w: number = this.cardW > 0 ? this.cardW : 198;
+    const keep: string = this.withAlpha('#FFFFFF', 1);
+    const gone: string = this.withAlpha('#FFFFFF', 0);
+    if (Math.abs(this.swipeOffset) < 0.5) {
+      return [[keep, 0], [keep, 1]];
+    }
+    const frac: number = Math.min(0.5, NoteCard.EDGE_FADE / w);
+    if (this.swipeOffset > 0) {
+      // 右滑：被裁的是右端。
+      return [[keep, 0], [keep, 1 - frac], [gone, 1]];
+    }
+    // 左滑：被裁的是左端。
+    return [[gone, 0], [keep, frac], [keep, 1]];
   }
 
   /**
@@ -239,7 +302,16 @@ export struct NoteCard {
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
-      // 操作层在下，卡片在上。卡片被 `translate` 推开的地方露出这一层。
+      // 操作层、卡面、渐隐遮罩圈成**一个不移动的组**。四条都是硬约束：
+      //  - 卡面单独 `translate`（不是整组）：渐隐要钉在**单元格边缘**，切口在屏幕上
+      //    不动，跟着卡片走就永远对不上那条线。
+      //  - 三者同组：`DST_IN, OFFSCREEN` 擦的是「同一组里已经画过的内容」。渐隐在组外
+      //    会连页面背景一起擦掉；纸面在组外则擦不到它——纸同色不透明、铺到格边，切口
+      //    那一侧看见的仍是纸（实测：文字已经渐隐，右侧仍是一块实心白）。
+      //  - 组不移动：整组平移会把渐隐一起带走，等于没做。
+      //  - 操作层在最下：卡片被推开的地方露出它。它的图标与文案落在**露出侧**，
+      //    与切口隔着整张卡，渐隐到不了那里，所以动作提示始终清楚。
+      Stack({ alignContent: Alignment.TopStart }) {
       if (this.cardW > 0 && this.cardH > 0) {
         this.SwipeLayer()
       }
@@ -365,6 +437,9 @@ export struct NoteCard {
         }
       })
       // 横向拖动改由 `PanGesture` 接管；纵向滚动仍旧交给瀑布流。
+      //
+      // **`translate` 挂在这里，别挂到外层组上**：遮罩的停靠点钉在单元格边缘，整组
+      // 平移会让它跟着走、失去参照物（实测完全不生效）。位移只驱动卡面自己。
       .translate({ x: this.swipeOffset })
       .onAreaChange((oldArea: Area, newArea: Area) => {
         const w: number = Number(newArea.width);
@@ -429,6 +504,15 @@ export struct NoteCard {
             this.settle(0);
           })
       )
+      // 渐隐层压在卡面之上，与卡面同组：`DST_IN` 只擦「这一组里已经画过的内容」。
+      if (Math.abs(this.swipeOffset) > 0.5) {
+        this.EdgeFade()
+      }
+      }
+      .width('100%')
+      .height(this.cardH > 0 ? this.cardH : '100%')
+      // 离屏组：`DST_IN` 才不会连底下的操作层和页面背景一起擦掉。
+      .renderGroup(true)
     }
     // 卡片根节点自己声明宽度：`FlowItem` 的子节点是按**整条流**测量的，
     // 不钉宽度，`'100%'` 会解析成两列的宽度并盖住邻居。
@@ -503,6 +587,8 @@ export struct NoteCard {
     }
     .width(this.cardW)
     .height(this.cardH)
+    // 操作层不移动，所以它的边缘**永远是卡片自己的圆角轮廓**——没有切线要藏，
+    // 也就不需要任何淡出。渐变遮罩（`EdgeFade()`）只擦卡面所在的组，擦不到这里。
     // 圆角与裁剪**只在这里做一次**，且用的是与卡片相同的半径。
     //
     // 这一条改过两次才对。原先把圆角放在「色相条」自己身上（宽度 = 露出宽度），
@@ -524,16 +610,19 @@ export struct NoteCard {
     Stack({ alignContent: Alignment.TopStart }) {
       // 第 1 层：卡片自己的表面色。底下这一层必须是「纸」，否则纯色坐在页面
       // 背景上会被读成另一张卡，而不是这张卡底下的一层。
+      //
+      // 整格大小、与卡片同圆角、**不移动**。它也在卡面那一组里，所以 `EdgeFade()`
+      // 会连它一起擦——这正是必须的：纸同色不透明、铺到格边，只擦卡面的话切口那一侧
+      // 看见的仍是纸（实测：文字已经渐隐，右侧仍是一块实心白）。
       Column()
         .width('100%')
         .height('100%')
         .backgroundColor(this.glassOn ? this.glassTint : $r('sys.color.ohos_id_color_card_bg'))
         .borderRadius(this.cornerRadius)
-      // 第 2 层：色相。**只铺在真正露出来的那一条上**，并在卡片边缘处淡到零；
+      // 第 2 层：色相。**只铺在真正露出来的那一条上**，并在卡片内侧淡到零。
       // 铺满整张卡时，露出来的永远是渐变里最深的那一段，看起来就是一块色板。
-      // 这里**不给这一条自己设圆角**——外层的 `clip(true)` 会用与卡片完全相同的
-      // 半径裁它，两者才是同一条弧；单独给圆角会被窄宽度夹成更小的半径，弧线
-      // 向内收，露出侧就多出一条与卡片边缘对不上的弧（实测可见）。
+      // 不给这一条自己设圆角：外层的 `clip(true)` 用与卡片相同的半径裁它，两者
+      // 才是同一条弧。
       Column()
         .width(Math.abs(this.swipeOffset))
         .height('100%')
@@ -582,13 +671,12 @@ export struct NoteCard {
   @Builder
   EndLayer() {
     Stack({ alignContent: Alignment.TopEnd }) {
+      // 同 `StartLayer`：整格大小的「纸」，与卡片同圆角、不移动。色相只铺露出段。
       Column()
         .width('100%')
         .height('100%')
         .backgroundColor(this.glassOn ? this.glassTint : $r('sys.color.ohos_id_color_card_bg'))
         .borderRadius(this.cornerRadius)
-      // 同 `StartLayer`：色相条自己不设圆角，交给外层 `clip(true)` 用卡片半径
-      // 裁一次，两端弧线才与卡片轮廓重合。
       Column()
         .width(Math.abs(this.swipeOffset))
         .height('100%')
