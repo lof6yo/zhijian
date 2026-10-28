@@ -71,6 +71,22 @@ const BOTTOM_BUILDER_HEIGHT: number = 50;
 const TITLE_ROW_HEIGHT: number = 56;
 
 /**
+ * 筛选带（`bottomBuilder`）收放的三段时长（ms）。
+ *
+ * 收起：控件淡出（`BAND_FADE_MS`）→ 留白与结构一起收（`BAND_CLOSE_MS`）。
+ * 展开：留白撑开（`BAND_OPEN_MS`）→ 挂上这一带 → 控件淡入（`BAND_FADE_MS`）。
+ *
+ * 收起时两者能同时改、展开时不能，原因见 `syncBand()`：结构**摘掉**不影响 padding
+ * 的插值，结构**插入**会让 `animateTo` 把 padding 重算成终值。
+ *
+ * 数值与 `setChromeHidden()` 是同一种节奏（收 300 / 展 220，`FastOutSlowIn`）：
+ * 整段收起 ≈ 320 ms，展开 ≈ 340 ms。
+ */
+const BAND_FADE_MS: number = 140;
+const BAND_CLOSE_MS: number = 180;
+const BAND_OPEN_MS: number = 200;
+
+/**
  * 滚动内容在图顶边缘的渐隐长度（vp）。
  *
  * 顶栏收起后网格的上边界就在状态栏下沿，滚到那里的卡片会被裁成一条直线（实测
@@ -209,6 +225,48 @@ struct Index {
    * 不收的界面看起来像卡住了。
    */
   @Local chromeHidden: boolean = false;
+  /**
+   * 筛选带里那两条胶囊的不透明度档位：`true` = 正在淡出 / 已淡出。
+   *
+   * 这是三个状态里唯一走纯属性动画的一个（`opacity`），所以它决定「控件怎么走」。
+   */
+  @Local bandFading: boolean = false;
+  /**
+   * 筛选带是否**在结构上存在**（决定 `bottomBuilder` 给不给）。
+   *
+   * ## 为什么必须与页面留白分开
+   *
+   * `bottomBuilder` 是交给 HDS 的**构建参数**，挂上 / 摘掉都是瞬时的，`animateTo`
+   * 对结构无效。早先把「结构摘掉」和「留白归零」写成同一个布尔，收起方向看着是平滑的
+   * （节点先没了，padding 还在插值），但**展开方向一帧跳 50 vp**——实测 `外观` 从
+   * 419 px 直接到 313 px 再回到 435 px：结构插入时把 padding 重算成了终值，
+   * 插值被跳过。
+   *
+   * 所以结构只在**两端**切换，而且切换时留白已是 0（收起）或仍是 0（展开），
+   * 那一刻画面完全一样，看不见它跳。
+   */
+  @Local bandShown: boolean = true;
+  /**
+   * 页面顶部留白里属于筛选带的那一段（vp），`0…BOTTOM_BUILDER_HEIGHT`。
+   *
+   * 它才是「内容往下让」的那段距离，是一个普通数字，`animateTo` 能逐帧插值。
+   * `titleBandHeight()` 读它，于是笔记网格、标签列表、设置页三者一起平移——
+   * 而它们本来就在同一条 50 vp 上，不可能有一处先到。
+   */
+  @Local bandInset: number = BOTTOM_BUILDER_HEIGHT;
+  /**
+   * 带子里画的是**哪个页签**的筛选条。
+   *
+   * 不能直接用 `selectedTab`：切到设置页的那一刻 `selectedTab` 已经是 2，而带子
+   * 还要淡出 140 ms。照 `selectedTab` 画，这 140 ms 里画出来的是标签页的两条
+   * 「全部 / 在用」「名称 / 数量」——实测抓到的中间帧就是这样，笔记页的筛选条在
+   * 淡出途中换成了另一页的控件，比直接消失更奇怪。
+   *
+   * 所以它是**带子自己的页签**：收起期间保持原样，只在展开的起点切到目标页签。
+   */
+  @Local bandTab: number = 0;
+  /** 收起 / 展开的排队定时器（-1 = 没在跑）。 */
+  private bandTimer: number = -1;
   /** 上一次采样到的滚动位置（vp），用来算方向。 */
   private lastScrollY: number = 0;
   /** 同向滚动的累积量；抖一下就翻状态会让界面在滑动时闪烁。 */
@@ -362,6 +420,14 @@ struct Index {
     this.installAutoSync();
   }
 
+  /** 页面销毁时把筛选带的排队定时器收掉，否则它会抱着整页引用继续跑。 */
+  aboutToDisappear(): void {
+    if (this.bandTimer >= 0) {
+      clearTimeout(this.bandTimer);
+      this.bandTimer = -1;
+    }
+  }
+
   private bindTabScrollers(): void {
     if (!this.hdsSupported) {
       return;
@@ -437,6 +503,9 @@ struct Index {
     // 标签名单同样要一份快照：`this.store.tags` 是普通单例的字段，改了不会重绘。
     this.tagsSnapshot = TagStore.instance.knownTags(this.store.tags);
     this.listVersion++;
+    // 删掉最后一个标签时标签页的筛选带要收起来，而这不是一次页签切换——
+    // 目标高度跟着 `tagsSnapshot` 变，所以这里也要跟上。
+    this.syncBand();
   }
 
   // ------------------------------------------------------- chrome on scroll
@@ -989,6 +1058,99 @@ struct Index {
   }
 
   /**
+   * 让筛选带的显隐走向当前页签的目标状态。
+   *
+   * 只在一个地方改状态，收放都走这里，所以「切到设置页」「切回笔记页」「删掉最后一个
+   * 标签导致标签页没有筛选带」三种情况节奏一致。
+   *
+   * ## 两个方向不对称，因为两个方向的坑不一样
+   *
+   * 收起：控件淡出（`BAND_FADE_MS`）→ 留白与结构**一起**收（`BAND_CLOSE_MS`）。
+   * 展开：留白撑开（`BAND_OPEN_MS`）→ 挂结构 → 控件淡入（`BAND_FADE_MS`）。
+   *
+   * **收起时结构与留白同时改，展开时必须分开。** 收起方向结构是「摘掉」，页面留白
+   * 的插值不受影响（摘掉之后 padding 还在动）；而展开方向结构是「插入」，`animateTo`
+   * 一旦碰上结构变化就会把 padding 重算成终值、插值被跳过——实测 `外观` 一帧从
+   * 419 px 跳到 313 px 再跳回 435 px。所以展开时先让留白走完，再挂结构。
+   *
+   * 两个方向共同的前提：**留白只在控件不可见的时候动**。反过来的话，34 vp 的胶囊
+   * 会被塞进一条越来越矮的带子里，看着像被压扁。
+   */
+  private syncBand(): void {
+    if (this.bandTimer >= 0) {
+      clearTimeout(this.bandTimer);
+      this.bandTimer = -1;
+    }
+    const gone: boolean = this.bandTargetGone();
+    if (!gone) {
+      // 两个页签**都有**带子时（笔记 ⇄ 标签），内容整条换掉就够了：高度没变，
+      // 没有任何位移需要动画，淡出淡入反而会让控件凭空闪一下。
+      if (this.bandShown && !this.bandFading) {
+        this.bandTab = this.selectedTab;
+        return;
+      }
+      // 展开，顺序与收起严格相反：
+      // 1. 留白撑开（结构还不在，控件也还透明——整段只有内容在下移）；
+      // 2. 撑满之后才挂上这一带；
+      // 3. 最后让控件淡入。
+      //
+      // 第 2 步必须晚于第 1 步：`bottomBuilder.height` 一挂上就是满高，而页面留白
+      // 是另一条插值；先挂结构等于让 HDS 先占住 50 vp，`animateTo` 随即被打断
+      // （实测 `外观` 一帧从 419 px 跳到 313 px 再跳回 435 px）。
+      this.bandTab = this.selectedTab;
+      this.bandFading = true;
+      animateTo({ duration: BAND_OPEN_MS, curve: Curve.FastOutSlowIn }, () => {
+        this.bandInset = BOTTOM_BUILDER_HEIGHT;
+      });
+      this.bandTimer = setTimeout(() => {
+        this.bandTimer = -1;
+        // 此刻留白已经是满的：挂上这一带前后，内容位置完全一致，只有材质出现。
+        // 控件仍是全透明，所以这一次插入看不出跳变。
+        this.bandShown = true;
+        animateTo({ duration: BAND_FADE_MS, curve: Curve.FastOutSlowIn }, () => {
+          this.bandFading = false;
+        });
+      }, BAND_OPEN_MS);
+      return;
+    }
+    // 收起。已经在收 / 已经收完就不再重来一次，否则连点两下会来回抖。
+    if (!this.bandShown && this.bandInset === 0) {
+      return;
+    }
+    // 第一段：控件淡出。带子还在，内容仍是**原来那个页签**的（`bandTab` 不动），
+    // 所以看到的是「笔记的筛选条淡出」，不是「忽然变成标签页的筛选条再淡出」。
+    animateTo({ duration: BAND_FADE_MS, curve: Curve.FastOutSlowIn }, () => {
+      this.bandFading = true;
+    });
+    // 第二段：看不见之后合拢。这里结构**与留白同时**收——收起方向没有「结构插入
+    // 重算 padding」的问题（那是展开方向的坑），而分开做反而会多出一段「bar 还有
+    // 145 vp、内容只让 95 vp」的窗口：内容会滑到材质底下再让 bar 追上，闪一下。
+    this.bandTimer = setTimeout(() => {
+      this.bandTimer = -1;
+      animateTo({ duration: BAND_CLOSE_MS, curve: Curve.FastOutSlowIn }, () => {
+        this.bandInset = 0;
+        this.bandShown = false;
+      });
+    }, BAND_FADE_MS);
+  }
+
+  /**
+   * 当前页签是否**不该有**筛选带。
+   *
+   * 设置页没有筛选 / 排序，标签页在没有标签时也没有——那两处整块不给
+   * `bottomBuilder`，而不是留一条高度 0 的空带。
+   */
+  private bandTargetGone(): boolean {
+    if (this.selectedTab === 0) {
+      return false;
+    }
+    if (this.selectedTab === 1 && this.tagsSnapshot.length > 0) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * 页签切换的唯一入口。页签栏的 `onChange` 只做一件事：把它转进来。
    *
    * 标题栏只有一套搜索框，搜索词作用在**当前**页签上。不清掉的话，笔记页搜
@@ -1012,6 +1174,7 @@ struct Index {
     // 另一个页签是另一条滚动轴：上一个页签里「往上滑到一半」的状态带过来，
     // 会让新页签的顶栏一开始就是收起的，而用户根本没滑过它。
     this.restoreChrome();
+    this.syncBand();
   }
 
   /**
@@ -1033,6 +1196,8 @@ struct Index {
     if (this.selectedTab !== 0) {
       this.selectedTab = 0;
       this.hdsTabs.changeIndex(0);
+      // 程序切页签也会换掉筛选带的目标高度，所以同样要走这条过渡。
+      this.syncBand();
     }
   }
 
@@ -1060,9 +1225,10 @@ struct Index {
     // 效果不生效」）。从前它们留在内容区，只能靠 `MaterialLayer` 用不可见 `Toggle`
     // 当载体；搬进这里之后材质由控件自己画，那个载体在本页就不需要了。
     //
-    // `height` 随页签变化：设置页没有这两条，标签页在没有标签时也没有——
-    // 那两处**整块不给** `bottomBuilder`，而不是给一条高度 0 的空带（后者仍会
-    // 参与标题栏布局，只是看不见）。
+    // 这一带给不给，看的是 `bandShown` 而不是当前页签：设置页没有这两条、标签页在
+    // 没有标签时也没有，那两处**整块不给** `bottomBuilder`，而不是给一条高度 0 的
+    // 空带（后者仍会参与标题栏布局，只是看不见）。但它不是随页签瞬时翻转的——
+    // 何时收、何时挂由 `syncBand()` 排队，页面留白另由 `bandInset` 插值。
     const content: TitleBarContentOptions = {
       stackBuilder: () => {
         this.TitleRow();
@@ -1174,16 +1340,16 @@ struct Index {
    * （`titleBandHeight()`）。
    *
    * 页签变化时这一带会整条换内容而不是叠加：设置页没有筛选，标签页在没有标签时
-   * 也没有——两处 `titleBottomHeight()` 返回 0，HDS 直接不留这一带。
+   * 也没有——两处 `bandTargetGone()` 返回 true，HDS 直接不留这一带。
    */
   @Builder
   TitleBottom() {
     Row({ space: 8 }) {
-      if (this.selecting && this.selectedTab === 0) {
+      if (this.selecting && this.bandTab === 0) {
         // 多选态：整条换成动作条。高度与筛选条完全相同（34 vp），所以进出多选
         // 网格不会上下一跳。
         this.SelectionCapsule()
-      } else if (this.selectedTab === 0) {
+      } else if (this.bandTab === 0) {
         this.ChipGroup(0)
         this.ChipGroup(10)
       } else {
@@ -1199,6 +1365,9 @@ struct Index {
       top: (BOTTOM_BUILDER_HEIGHT - 34) / 2, bottom: (BOTTOM_BUILDER_HEIGHT - 34) / 2
     })
     .alignItems(VerticalAlign.Center)
+    // 淡出由 `syncBand()` 里的 `animateTo` 驱动（它改 `bandFading`），这里只读状态、
+    // 不挂 `.animation()`：两处各挂一条曲线就是两条各走各的。
+    .opacity(this.bandFading ? 0 : 1)
   }
 
   /** 展开标题栏里的搜索框。搜索词是共享的，作用在当前页签上。 */
@@ -1741,25 +1910,25 @@ struct Index {
    * different job (where content goes *after* the bar leaves).
    */
   private titleBandHeight(): number {
-    return WindowService.statusBarHeightVp() + TITLE_ROW_HEIGHT + this.titleBottomHeight();
+    return WindowService.statusBarHeightVp() + TITLE_ROW_HEIGHT + this.bandInset;
   }
 
   /**
-   * Height of the title bar's bottom band: 34 vp capsule + 8 vp air above and
-   * below.
+   * Height of the title bar's bottom band **as a structure**: either the full
+   * 34 vp capsule + 8 vp air above and below, or nothing at all.
    *
    * 设置页 has no filter / sort row, and 标签页 has nothing to filter before the
-   * first tag exists — the band collapses to 0 there rather than leaving an
+   * first tag exists — the band is removed entirely there rather than leaving an
    * empty strip under the title.
+   *
+   * This is fed to `bottomBuilder.height`, which is a **builder argument**, not a
+   * node attribute: `animateTo` cannot interpolate it. So it never takes a
+   * fractional value — the animated part lives in `titleBandHeight()`'s
+   * `bandInset` term, and this flips only at a moment when the band is invisible
+   * either way (contents faded out, inset already 0).
    */
   private titleBottomHeight(): number {
-    if (this.selectedTab === 0) {
-      return BOTTOM_BUILDER_HEIGHT;
-    }
-    if (this.selectedTab === 1 && this.tagsSnapshot.length > 0) {
-      return BOTTOM_BUILDER_HEIGHT;
-    }
-    return 0;
+    return this.bandShown ? BOTTOM_BUILDER_HEIGHT : 0;
   }
 
   /**
@@ -3052,8 +3221,8 @@ struct Index {
       } else {
         // 排序与筛选**不在这里**：它们和笔记页那两条一样住在标题栏底部
         // （`TitleBottom`），所以两页的控件不只是长得一样，而是同一个构建体。
-        // 有标签时 `titleBottomHeight()` 才返回那一带的高度，没有标签时标题栏
-        // 里根本不留空带。
+        // 有标签时 `bandInset` 是 50，标签全删之后它会走到 0——标题栏里就不留
+        // 空带了。
         //
         // 没有 HDS 标题栏时（API < 23）无处可搬，这里自己画一条——降级是「材质
         // 差一点」，不是「功能没了」。
@@ -3902,8 +4071,8 @@ struct Index {
     .width('100%')
     .height('100%')
     // Same band reserve as the other tabs: the HDS title bar owns the 大标题. 设置页
-    // 没有筛选条那一带（`titleBottomHeight()` 返回 0），所以这里就是
-    // 状态栏 + 标题行的高度。
+    // 没有筛选条那一带，`bandInset` 最终会收到 0，所以这里就是状态栏 + 标题行
+    // 的高度——但它是**走过去的**，不是一帧跳过去的。
     .padding({ top: this.titleBandHeight() })
   }
 

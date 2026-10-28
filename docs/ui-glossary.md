@@ -52,7 +52,7 @@
 | 背景层 | `Index.PageBackdrop()` | 全屏底色 / 渐变 / 光晕，三个 tab 共用 |
 | 标题栏 | HDS `titleBar()`（`titleBarOptions()`） | 两带：**标题行**（页面标题 + 两个圆形玻璃按钮）+ **筛选带**（`bottomBuilder`，装筛选条 / 排序条或动作条）。由 `HdsNavigation` 拥有（MINI 模式） |
 | 标题行 | `Index.TitleRow()` | 标题栏内的第一行：页面标题（或展开后的搜索框）+ 搜索按钮 + 新建按钮 |
-| 筛选带 | 标题栏 `bottomBuilder` → `Index.TitleBottom()` | 标题栏底部的第二带，高 50 vp；装筛选条 + 排序条，多选时整条换成动作条。设置页、无标签的标签页**没有这一带** |
+| 筛选带 | 标题栏 `bottomBuilder` → `Index.TitleBottom()` | 标题栏底部的第二带，高 50 vp；装筛选条 + 排序条，多选时整条换成动作条。设置页、无标签的标签页**没有这一带**。它在切页签时不是瞬间消失，而是控件淡出 → 留白合拢（见 `bandInset`） |
 | 页头 | `Index.NotesHeader()` | 只是筛选带之下的呼吸空带（一个显式高度的空 `Column`），**不含任何控件**；API < 23 没有 HDS 标题栏时，筛选条退回这里 |
 | 筛选区 | `TitleBottom()` 内的 `ChipGroup(0)` | 只含筛选项（全部 / 收藏 / 归档），三项同为 2 字 |
 | 排序区 | `TitleBottom()` 内的 `ChipGroup(10)` | 只含排序项（修改 / 标题 / 创建），三项同为 2 字，与筛选条同一行 |
@@ -223,8 +223,10 @@
 | 页面渐变 | `page_grad_top/mid/bottom` | 渐变背景三停 |
 | 光晕 | `glow_blue/purple/cyan` | 光感背景装饰，必须 `hitTestBehavior(None)` |
 | 侧内缩 | `SIDE_INSET` = 16 | 标题行/筛选条/页签栏统一左右缩进 |
-| 标题栏避让 | `titleBandHeight()` | 各 tab 根节点的上内边距 = `statusBarHeightVp() + 标题行 56 + titleBottomHeight()`（50 / 0）；**按窗口坐标**解析，含状态栏 |
+| 标题栏避让 | `titleBandHeight()` | 各 tab 根节点的上内边距 = `statusBarHeightVp() + 标题行 56 + bandInset`；**按窗口坐标**解析，含状态栏。读 `bandInset` 而不是 `titleBottomHeight()`：后者是两档的结构判断，前者才会逐帧插值 |
 | 筛选带高 | `BOTTOM_BUILDER_HEIGHT` = 50 | 34 vp 胶囊 + 上下各 8；`titleBarOptions().bottomBuilder.height` 与页面留白共用这一个数 |
+| 筛选带留白 | `bandInset` | `0…50`，页面顶部留白里属于筛选带的那一段；切页签时由 `animateTo` 插值，这是整段过渡唯一会走的数 |
+| 筛选带结构 | `bandShown` | 是否挂 `bottomBuilder`（两档）。`bottomBuilder` 是 HDS 的构建参数，`animateTo` 对它无效，所以它只在带子不可见时瞬时翻转 |
 | 顶栏收起留白 | `chromeTopInset()` | `statusBarHeightVp() + 8`；收起态内容从哪开始，与 `titleBandHeight()` 同一个状态栏项 |
 | 页签栏高 | `BAR_HEIGHT` = 56 | |
 | 页签栏底距 | `BAR_BOTTOM_MARGIN` = 32 | |
