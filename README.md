@@ -26,6 +26,9 @@ Tools + 模拟器的 Windows 机器上，也能完成“改代码 → 构建 →
 - 500 ms 防抖自动保存 + 返回保存；内容未变时不写盘，避免无谓的 `updatedAt` 抖动。
 - 误触新建、一个字都没写就返回会丢弃空笔记（`purgeNote`，不进回收站）。
 - 本地 `.md` + YAML frontmatter，笔记平铺在 `notes/`；回收站（`TrashPage`）。
+- 共用控件层：页头 / 空态 / 成对按钮 / 行内动作 / toast / 确认框 / 圆角与字号令牌
+  各只有一处实现（`components/ui/` + `common/Toast|Dialogs|UiTokens`），
+  规范见 `docs/ui-consistency.md`。
 - 搜索按标题/正文/标签过滤；点标签回到笔记页并把标签变成可见的查询条件。
 - 笔记卡片左右滑动四档：右轻归档 / 右重删除（确认）/ 左轻收藏 / 左重 AI 洞见。
 - AI 洞见（OpenAI 兼容接口）：左滑到底让模型给出标签，已有标签归一复用，
@@ -93,6 +96,10 @@ entry/src/main/ets/
   services/SettingsStore.ets # 主题/背景/强调色/光感挡位/编辑器排版
   common/Palette.ets         # 强调色 light/dark 色对
   common/WindowService.ets   # 系统栏内容色与图标明暗
+  common/Toast.ets           # 全应用唯一的 toast 入口（2000 ms、吞异常）
+  common/Dialogs.ets         # 确认框：danger / accent 两个入口
+  common/UiTokens.ets        # 圆角三档、字号五档
+  components/ui/             # PageHeader / EmptyState / ActionButton+TextAction
   components/NoteCard.ets    # 瀑布流卡片（只接收 primitives）
   components/FormulaWeb.ets  # 块级公式（ArkWeb + 离线 KaTeX），全工程唯一的 Web
   pages/Index.ets            # HDS 外壳 + 3 页签 + 搜索/筛选/排序 + 设置
