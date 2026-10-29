@@ -630,9 +630,16 @@ button.
   标题栏一起显隐——`hideTitleBar()` 收的是**整个** `HdsTitleBar`，`bottomBuilder`
   在它内部，所以不需要 `dynamicHideTitleBar({ hideBottomBuilder })`，也不再有人
   手工算「胶囊的 `top` 该收多少」。
-- **页签栏的显隐只能走 `hdsTabs.applyHideAnimation/applyShowAnimation`**
-  （`HdsAnimationMode.SCROLL_ANIMATION`）。`HdsTabsFloatingStyle` 没有可见性
-  字段，栏本身画在 HDS 里；给自绘胶囊加 `translate` 不参与布局，等于没做。
+- **页签栏的显隐只能走 `hdsTabs.applyHideAnimation/applyShowAnimation`**。
+  `HdsTabsFloatingStyle` 没有可见性字段，栏本身画在 HDS 里；给自绘胶囊加
+  `translate` 不参与布局，等于没做。
+- **收起与展开必须用不同的 `HdsAnimationMode`，这不是笔误。**
+  收起只能 `SCROLL_ANIMATION`：换成 `CLICK_ANIMATION` 时它**只收标题栏**，
+  页签栏留在原地——实测笔记页与标签页「上滑后底栏不动」，看上去就是收起失效。
+  展开只能 `CLICK_ANIMATION`：`SCROLL_ANIMATION` 的回归是把胶囊先摊成满屏宽、
+  图标放大到 1.67 倍再收拢（设置页实测 900 px → 1320 px），读起来是「底栏弹跳
+  放大」。`CLICK_ANIMATION` 只在原位做一次缩放淡入，尺寸是渐进的、不铺满整行。
+  两档没有对称解，所以方向决定档位（`setChromeHidden()` 里 if/else 各写一档）。
 - **三个页签共用一套判定，判定的入参是 `Scroller`，不是写死 `notesScroller`。**
   `handleChromeScroll(scroller)` 由笔记 `WaterFlow`、标签 `Scroll`、设置 `List` 各自
   的 `onDidScroll` 调用。「上滑让位」是外壳的行为，不是笔记网格的行为——设置页
@@ -659,8 +666,13 @@ button.
   在减小」，与「用户往回翻」完全同形。于是同一次上滑先收起顶栏与页签栏、弹回时又
   把它们叫了回来——而 HDS 的展开动效在这一刻是把胶囊摊成满屏宽的那一个（实测
   设置页拉到底再上滑：胶囊 900 → 1320 px、图标放大到 1.67 倍再缩回），读起来就是
-  「底栏往上跑、放得特别大」。所以到底时不累计、不翻状态，并置 `scrollSeed = true`：
-  离开底部之后的第一条事件重新种基准，回弹的余量不会被当成一次猛推。
+  「底栏往上跑、放得特别大」。所以到底时**只压掉「位置在减小」的那一半**
+  （`isAtEnd() && delta < 0`），正方向照常累计。
+  **不能把整段都跳过**：内容刚过一屏的页面（标签药丸十来行正好这样）第一帧位移就
+  已经落在底部，整段守卫连正方向一起吞掉，收起永远不触发——实测标签页 49 个标签、
+  内容 1651 px 对 1773 px 视口，上滑后底栏纹丝不动，看着就是「这一页的收起坏了」。
+  先量内容高度再判定，不要用「这一页不好使」下结论。
+  离开底部之后的第一条事件重新种基准（`scrollSeed`），回弹的余量不会被当成一次猛推。
   `moveToEdge` 这类「滚到底」的动作同样经过这里，不需要另加判定。
 - **内容区的顶部留白只剩一档，而它必须含状态栏高度**：`pageTopInset()` = 展开时
   `titleBandHeight() + 8`，收起时 `chromeTopInset()`（= `statusBarHeightVp() + 8`）。

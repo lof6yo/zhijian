@@ -588,9 +588,14 @@ struct Index {
     // 图标放大到 1.67 倍再缩回去，读起来就是「底栏往上跑、放得特别大」。
     //
     // 到底时 `yOffset` 已经不是位置的度量：那一截既是回弹，方向判定在这里没有意义。
-    // 所以到底期间既不累计、也不翻状态；离开底部之后重新种基准，回弹的余量不会
+    // 所以到底期间不累计反向位移；离开底部之后重新种基准，回弹的余量不会
     // 被当成一次「猛推」。
-    if (scroller.isAtEnd()) {
+    //
+    // 但只能压掉「位置在减小」的那一半。内容刚过一屏的页面（标签药丸多到十来行
+    // 就是这样）第一帧位移就直接落在底部，整段守卫连正方向一起吞掉，于是收起
+    // 永远不触发——实测标签页上滑到底栏纹丝不动，看着就是「这一页的收起坏了」。
+    // 正方向的位移这时仍然是真位移，照常累计。
+    if (scroller.isAtEnd() && delta < 0) {
       this.scrollAccum = 0;
       this.scrollSeed = true;
       return;
@@ -637,10 +642,19 @@ struct Index {
     // 页签栏的显隐是 HDS 控制的（`HdsTabsFloatingStyle` 没有可见性字段，栏本身
     // 画在 HDS 里），所以只能请它播自己的收起 / 展开动效，而不是给自绘胶囊加
     // `translate`——那条自绘胶囊在 HDS 外壳里根本不参与布局。
+    // 收起与展开**故意用不同的档**，不是笔误。
+    //
+    // 收起必须是 `SCROLL_ANIMATION`：`CLICK_ANIMATION` 在滚动场景下只收起标题栏，
+    // 页签栏停在原地——实测笔记页与标签页「上滑后底栏不动」，看着像收起失效。
+    //
+    // 展开则不能再走 `SCROLL_ANIMATION`：那一档的回归是把胶囊先摊成满屏宽、
+    // 图标放大到 1.67 倍再收拢（设置页实测 900 px → 1320 px），读起来是「底栏
+    // 弹跳放大」。用 `CLICK_ANIMATION` 展开只在原位做一次缩放淡入，尺寸变化
+    // 是渐进的、不铺满整行，这才与「让位 / 回归」同一种语气。
     if (hidden) {
       this.hdsTabs.applyHideAnimation(HdsAnimationMode.SCROLL_ANIMATION);
     } else {
-      this.hdsTabs.applyShowAnimation(HdsAnimationMode.SCROLL_ANIMATION);
+      this.hdsTabs.applyShowAnimation(HdsAnimationMode.CLICK_ANIMATION);
     }
   }
 
