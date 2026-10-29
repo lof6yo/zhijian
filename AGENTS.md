@@ -633,8 +633,23 @@ button.
 - **页签栏的显隐只能走 `hdsTabs.applyHideAnimation/applyShowAnimation`**
   （`HdsAnimationMode.SCROLL_ANIMATION`）。`HdsTabsFloatingStyle` 没有可见性
   字段，栏本身画在 HDS 里；给自绘胶囊加 `translate` 不参与布局，等于没做。
-- **方向取自 `notesScroller.currentOffset().yOffset`，不是 `onDidScroll` 的增量**
+- **三个页签共用一套判定，判定的入参是 `Scroller`，不是写死 `notesScroller`。**
+  `handleChromeScroll(scroller)` 由笔记 `WaterFlow`、标签 `Scroll`、设置 `List` 各自
+  的 `onDidScroll` 调用。「上滑让位」是外壳的行为，不是笔记网格的行为——设置页
+  上滑而顶栏纹丝不动，用户会以为这一页坏了。`bindToScrollable` 也要绑三条：
+  标题栏的渐变模糊由「内容是否到了它底下」决定，只绑笔记页时设置页滚下去那层
+  模糊永远不出现。
+- **三条轴共用一份 `lastScrollY`，所以必须有 `scrollSeed`。** 切回一个已经滑到
+  中段的页签，它下一次 `onDidScroll` 的 yOffset 是 500 而上一次记的是 0——那 500 vp
+  会被当成「用户正在猛推」，顶栏在手指还没动的时候就收了。`restoreChrome()` 置
+  `scrollSeed = true`，新轴的第一条事件只种基准、不算位移。
+- **方向取自 `scroller.currentOffset().yOffset`，不是 `onDidScroll` 的增量**
   （增量正负号在容器之间含义不一致）。`onDidScroll` 只当节拍器。
+- **设置页的标题行没有动作位。** 这一页没有「新建」可言，而搜索是笔记内容的
+  检索——十行配置一眼扫完，放一个放大镜只会暗示「设置可以搜」，点下去又什么都
+  搜不出来。所以 `TitleRow()` 里放大镜与 `+` 都按 `selectedTab !== 2` 才渲染，
+  标题自己铺满这一行。`switchTab()` 已经清 `searchExpanded`，所以进这一页不会
+  带着一个展开的搜索框。
 - **同向累计 24 vp 才翻转状态**：手指落下时的抖动与回弹都产生反向的几 vp，
   直接跟着翻会让界面在滑动中闪烁。
 - **`yOffset ≤ 4` 无条件恢复**：那是「我从头再看一遍」的位置，顶栏不在就等于
@@ -678,6 +693,8 @@ button.
   这时不在边界上（y≈460 处采样与改前一致）。
   验证要在**收起态**抓图并逐行采样，不能只看整张截图——40 vp 的斜坡在缩略图上
   看起来就像正常背景。
+  **同一条 `fadingEdge` 也挂在标签页的 `Scroll` 与设置页的 `List` 上**：三个页签
+  被让出来的边界是同一个边界，只有笔记页渐隐、另两页刀切，等于三页三种边。
 
 ### 切页签时筛选带的收放
 

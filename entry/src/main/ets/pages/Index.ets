@@ -273,6 +273,15 @@ struct Index {
   private scrollAccum: number = 0;
   /** 当前滚动方向：1 = 内容被往上推（看后面的内容），-1 = 往回翻。 */
   private scrollDir: number = 1;
+  /**
+   * 下一次滚动只当基准、不算位移。
+   *
+   * 三个页签是**三条独立的滚动轴**，而 `lastScrollY` 只有一份。切回一个已经滑到
+   * 中段的页签时，它下一次 `onDidScroll` 的 yOffset 是 500 而上一次记的是 0——
+   * 那 500 vp 会被当成「用户正在猛推」，顶栏在手指还没动的时候就收起来了。
+   * 所以每次 `restoreChrome()` 之后先让第一条事件把基准种上。
+   */
+  private scrollSeed: boolean = true;
   /** 搜索历史快照，新的在前。 */
   @Local searchHistory: string[] = [];
   /** AI 设置组的草稿：endpoint 与三个场景的模型名。 */
@@ -530,16 +539,35 @@ struct Index {
    *
    * ## 方向与阈值
    *
-   * 位移取自 `notesScroller.currentOffset()`，而不是 `onDidScroll` 的增量：增量的
-   * 正负号在不同容器上含义不同，而「yOffset 变大 = 内容被往上推」是没有歧义的。
-   * 同向累计 24 vp 才翻转状态——手指落下时的抖动与回弹都会产生反向的几 vp，直接
-   * 跟着翻会让界面在滑动过程中闪烁。
+   * 位移取自传入 `Scroller` 的 `currentOffset()`，而不是 `onDidScroll` 的增量：
+   * 增量的正负号在不同容器上含义不同，而「yOffset 变大 = 内容被往上推」是没有
+   * 歧义的。同向累计 24 vp 才翻转状态——手指落下时的抖动与回弹都会产生反向的
+   * 几 vp，直接跟着翻会让界面在滑动过程中闪烁。
    *
    * 回到顶部（yOffset ≲ 4 vp）时无条件恢复：那是「我从头再看一遍」的位置，
    * 顶栏不在就等于没有搜索框和新建按钮。
+   *
+   * ## 为什么收 `Scroller` 而不是写死 `notesScroller`
+   *
+   * 「上滑让位」是这一层外壳的行为，不是笔记网格的行为。三个页签各有自己的
+   * `Scroller`（`bindScroller(i, …)` 就是为了保留各自的滚动位置），所以任何一条
+   * 滚动轴都得能驱动同一套判定——否则在设置页上滑，顶栏和页签栏纹丝不动，用户
+   * 会以为这一页坏了。三条轴共用一份 `lastScrollY` / `scrollAccum` 是安全的：
+   * 切页签时 `restoreChrome()` 会 `scrollSeed = true`，新轴的第一条事件只种基准、
+   * 不算位移，不会把「切过去时已经滑到中段」误读成一次猛推。
    */
-  private handleNotesScroll(): void {
-    const y: number = this.notesScroller.currentOffset().yOffset;
+  private handleChromeScroll(scroller: Scroller): void {
+    const y: number = scroller.currentOffset().yOffset;
+
+    // 新轴上来的第一条事件只用来对齐基准。
+    if (this.scrollSeed) {
+      this.scrollSeed = false;
+      this.lastScrollY = y;
+      this.scrollAccum = 0;
+      this.scrollDir = 1;
+      return;
+    }
+
     const delta: number = y - this.lastScrollY;
     this.lastScrollY = y;
 
@@ -601,6 +629,8 @@ struct Index {
   private restoreChrome(): void {
     this.lastScrollY = 0;
     this.scrollAccum = 0;
+    this.scrollDir = 1;
+    this.scrollSeed = true;
     this.setChromeHidden(false);
   }
 
@@ -1291,7 +1321,11 @@ struct Index {
 
       // 搜索与新建是**每个页自己的**动作：笔记页是搜索笔记 / 新建笔记，标签页是
       // 搜索标签 / 新建标签。按钮外形与笔记页完全一致（同一个 CircleAction）。
-      if (!this.searchExpanded) {
+      //
+      // **设置页两个都不给**。这一页没有「新建」可言，而搜索是笔记内容的检索——
+      // 十行配置一眼扫完，在设置页放一个搜索框只会暗示「设置可以搜」，点下去又
+      // 什么也搜不出来。所以整块动作位不渲染，标题自己把这一行铺满。
+      if (!this.searchExpanded && this.selectedTab !== 2) {
         this.CircleAction($r('sys.symbol.magnifyingglass'), () => {
           this.openSearch();
         }, this.selectedTab === 1 ? '搜索标签' : '搜索')
@@ -1312,7 +1346,7 @@ struct Index {
         this.CircleAction($r('sys.symbol.plus'), () => {
           this.newNote();
         }, '新建笔记')
-      } else {
+      } else if (this.selectedTab === 1) {
         this.CircleAction($r('sys.symbol.plus'), () => {
           this.openTagNameEditor(false, '');
         }, '新建标签')
@@ -1762,7 +1796,10 @@ struct Index {
     // 输入框本身，把它藏起来等于把用户手上的东西抽走——所以那种情况下不 hide，
     // 否则「滚动时收起顶栏」会变成「搜索时丢失输入框」。
     .hideTitleBar(this.chromeHidden && !this.searchExpanded, true)
-    .bindToScrollable([this.notesScroller])
+    // 三条滚动轴都要绑：标题栏的渐变模糊由「内容是否到了它底下」决定，而每个
+    // 页签都有自己的 Scroller。只绑笔记页时，切到设置页上滑，标题栏已经收起、
+    // 内容也确实滚到了它底下，但那层模糊永远不出现（它对这一页是「不知道有内容」）。
+    .bindToScrollable([this.notesScroller, this.tagsScroller, this.settingsScroller])
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
     .width('100%')
     .height('100%')
@@ -2115,7 +2152,7 @@ struct Index {
         // 含义不一致，所以只把它当「发生了一次滚动」的节拍器，位置从
         // `currentOffset()` 读。
         .onDidScroll(() => {
-          this.handleNotesScroll();
+          this.handleChromeScroll(this.notesScroller);
         })
       }
     }
@@ -3255,6 +3292,13 @@ struct Index {
         .align(Alignment.TopStart)
         // 与笔记页一致：底部留出浮动页签栏的高度，否则最后一排药丸被压在栏下。
         .contentEndOffset(120)
+        // 与笔记页、设置页同一套让位判定（上滑收起、回顶恢复）。
+        .onDidScroll(() => {
+          this.handleChromeScroll(this.tagsScroller);
+        })
+        // 顶栏收起后药丸会滚到状态栏下沿被直线裁掉，与笔记网格同一个问题、
+        // 同一条渐隐。
+        .fadingEdge(true, { fadingEdgeLength: LengthMetrics.vp(CHROME_FADE) })
       }
     }
     .width('100%')
@@ -4067,13 +4111,25 @@ struct Index {
       .layoutWeight(1)
       .contentEndOffset(120)
       .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
+      // 与笔记网格同一套让位判定：上滑收起顶栏与页签栏，回到顶部再请回来。
+      // 设置页没有筛选带，`hideTitleBar` 收的只是标题行本身，但「让位」这件事
+      // 三个页签必须是同一种手感——在设置页上滑而什么都不动，会让人以为卡住了。
+      .onDidScroll(() => {
+        this.handleChromeScroll(this.settingsScroller);
+      })
+      // 收起后这一页的上边界同样落在状态栏下沿，第一张分组卡片会被裁成一条直线。
+      // 与笔记网格用同一条渐隐，两个页签的「被让出来的边界」才是同一种语言。
+      .fadingEdge(true, { fadingEdgeLength: LengthMetrics.vp(CHROME_FADE) })
     }
     .width('100%')
     .height('100%')
     // Same band reserve as the other tabs: the HDS title bar owns the 大标题. 设置页
     // 没有筛选条那一带，`bandInset` 最终会收到 0，所以这里就是状态栏 + 标题行
     // 的高度——但它是**走过去的**，不是一帧跳过去的。
-    .padding({ top: this.titleBandHeight() })
+    //
+    // 顶栏收起时这里必须跟着让位（`pageTopInset()` 的另一半），否则标题栏走了、
+    // 内容还留着 145 vp 的空带，屏幕上就是「上面秃了一块」而不是「让出来了」。
+    .padding({ top: this.pageTopInset() })
   }
 
   @Builder
