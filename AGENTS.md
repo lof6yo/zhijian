@@ -815,6 +815,38 @@ button.
   `\n`、其余字符一致」，所以粘贴与输入法组合不会误判。空内容时退出列表（变成
   空行），否则回车会「什么都不发生」，列表再也退不出去。
 
+### 共用控件层：`components/ui/` + `common/Toast|Dialogs|UiTokens`
+
+同一种控件原来在每页各写一遍，于是**同一个东西有三种样子**：返回是 `Button('‹')`
+（文本字符，字形与基线随字号漂移）对 `GlassButton`（玻璃圆钮）；页头标题存在
+24 Bold / 16 Medium / 28 三档并存；空态有「图标 + 标题 + 提示」的三段式、一行 13
+灰字、两行文字三种；toast 有 `getPromptAction()`、直接 `import { promptAction }`、
+自带 try-catch 三种写法且时长不一。**两个相邻控件差 2 vp 用户看不出来，只会觉得
+「没对齐」——问题不是某一处写错了，而是没有一处说了算。**
+
+所以新增控件**必须**落在这几处，不要再在页面里手写第四种：
+
+| 控件 | 文件 | 边界 |
+|---|---|---|
+| `PageHeader` | `components/ui/PageHeader.ets` | **NavDestination 页专用**：56 vp 一行、`SymbolGlyph(chevron_left)` 返回、16 Medium 标题。不要放进阅读页——阅读页没有固定页头，按钮浮在正文上 |
+| `EmptyState` | `components/ui/EmptyState.ets` | `fill: true` 占满并避让页签栏（列表页），`false` 只做内容宽居中（sheet / 卡片内）。**选错不是风格差异**：给 sheet 用 `true` 会把面板撑到全屏 |
+| `ActionButton` / `TextAction` | `components/ui/ActionButton.ets` | 44 vp 成对按钮 vs 行内小动作。回收站的「恢复/删除」是 `TextAction`——两个 44 vp 按钮会把行高推到 70+ |
+| `Toast.show(ui, msg)` | `common/Toast.ets` | 全应用唯一的 toast 入口（2000 ms、吞异常）。**必须吞**：设备没有提示通道时 `showToast` 会抛，而那次删除已经写盘了，不能因为提示失败变成「失败」 |
+| `Dialogs.danger` / `Dialogs.accent` | `common/Dialogs.ets` | 左「取消」空实现、右动作键。危险与强调是**两个入口**而不是一个布尔——强调色是运行期 hex，这一层拿不到 |
+| `RADIUS_*` / `FONT_*` | `common/UiTokens.ets` | 圆角三档（12 控件 / 14 胶囊 / 17 表面）、字号五档。第 17 档不在这里：它是 `CARD_CORNER`，**用户可改**，不能被模块常量取代 |
+
+两条从踩过的坑里来的约束：
+
+- **`@Param` 不能用 ArkUI 的保留属性名。** `ActionButton` 的可点开关叫 `isEnabled`
+  而不是 `enabled`——后者与 `CustomComponent` 基类同名，静态检查报
+  `Property 'enabled' ... is not assignable to the same property in base type`。
+- **`ReaderPage.GlassButton` 上的 `.clip(true)` 与 `Index.CircleAction` 的
+  「不要 clip」不矛盾，别照 AGENTS 的结论删掉它。** 那边是官方材质自己画形状，
+  clip 会把材质的矩形边切出四道亮弧；这边是手绘玻璃，上缘高光的
+  `linearGradient` 必须 clip 才停在圆角内。
+
+统一规范见 `docs/ui-consistency.md`（圆角/字号档位、控件使用边界、旧实现对照表）；
+术语仍以 `docs/ui-glossary.md` 为准。
 
 ### 自动同步与下拉同步
 

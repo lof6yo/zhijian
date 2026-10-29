@@ -3,6 +3,9 @@ import { display, LengthMetrics, uiMaterial } from '@kit.ArkUI';
 import { deviceInfo, BusinessError, systemDateTime } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { WindowService } from '../common/WindowService';
+import { Toast } from '../common/Toast';
+import { Dialogs } from '../common/Dialogs';
+import { RADIUS_CONTROL, FONT_BODY } from '../common/UiTokens';
 import { SettingsStore } from '../services/SettingsStore';
 import { Note } from '../models/Note';
 import { NoteStore } from '../services/NoteStore';
@@ -10,6 +13,7 @@ import { TagStore } from '../services/TagStore';
 import { NoteCard } from '../components/NoteCard';
 import { CardSurface } from '../components/CardSurface';
 import { MaterialLayer } from '../components/MaterialLayer';
+import { EmptyState } from '../components/ui/EmptyState';
 import { TrashPage } from './TrashPage';
 import { ReaderPage, ReaderParam } from './ReaderPage';
 import { WebDavPage } from './WebDavPage';
@@ -1049,7 +1053,8 @@ struct Index {
     } else if (name === 'webdav') {
       WebDavPage({
         pathStack: this.pathStack,
-        accentColor: this.accentColor()
+        accentColor: this.accentColor(),
+        accentChipColor: this.accentChipColor()
       })
     }
   }
@@ -2089,9 +2094,7 @@ struct Index {
                       if (target !== undefined) {
                         this.store.toggleArchive(target);
                         this.refreshList();
-                        this.getUIContext().getPromptAction().showToast({
-                          message: target.archived ? '已归档' : '已取消归档'
-                        });
+                        Toast.show(this.getUIContext(), target.archived ? '已归档' : '已取消归档');
                       }
                     },
                     onToggleFavorite: (id: string) => {
@@ -2241,11 +2244,11 @@ struct Index {
       return;
     }
     if (this.insightBusy) {
-      this.getUIContext().getPromptAction().showToast({ message: '上一篇还在打标签' });
+      Toast.show(this.getUIContext(), '上一篇还在打标签');
       return;
     }
     if (target.body.trim().length === 0) {
-      this.getUIContext().getPromptAction().showToast({ message: '这一篇还没有内容' });
+      Toast.show(this.getUIContext(), '这一篇还没有内容');
       return;
     }
     this.insightBusy = true;
@@ -2256,7 +2259,7 @@ struct Index {
     AiTags.suggest(target.title, target.body, this.tagsSnapshot).then((result: TagSuggestion) => {
       this.insightBusy = false;
       if (!result.ok) {
-        this.getUIContext().getPromptAction().showToast({ message: result.message });
+        Toast.show(this.getUIContext(), result.message);
         return;
       }
       const merged: string[] = baseline.slice();
@@ -2268,7 +2271,7 @@ struct Index {
         }
       }
       if (added.length === 0) {
-        this.getUIContext().getPromptAction().showToast({ message: '这篇已经有这些标签了' });
+        Toast.show(this.getUIContext(), '这篇已经有这些标签了');
         return;
       }
       const fresh = this.store.find(id);
@@ -2286,14 +2289,12 @@ struct Index {
         }
       }
       if (reallyAdded.length === 0) {
-        this.getUIContext().getPromptAction().showToast({ message: '这篇已经有这些标签了' });
+        Toast.show(this.getUIContext(), '这篇已经有这些标签了');
         return;
       }
       this.store.setTags(fresh, finalTags);
       this.refreshList();
-      this.getUIContext().getPromptAction().showToast({
-        message: `已加标签 ${reallyAdded.map((tag: string) => `# ${tag}`).join(' ')}`
-      });
+      Toast.show(this.getUIContext(), `已加标签 ${reallyAdded.map((tag: string) => `# ${tag}`).join(' ')}`);
     });
   }
 
@@ -2407,10 +2408,10 @@ struct Index {
           })
         Button('添加')
           .height(40)
-          .fontSize(14)
+          .fontSize(FONT_BODY)
           .backgroundColor(this.accentColor())
           .fontColor(this.onAccentColor())
-          .borderRadius(12)
+          .borderRadius(RADIUS_CONTROL)
           .onClick(() => {
             this.addTag(this.tagDraft);
           })
@@ -2658,9 +2659,7 @@ struct Index {
     }
     this.refreshList();
     this.exitSelect();
-    this.getUIContext().getPromptAction().showToast({
-      message: changed > 0 ? `已归档 ${changed} 篇` : '这批笔记已在归档里'
-    });
+    Toast.show(this.getUIContext(), changed > 0 ? `已归档 ${changed} 篇` : '这批笔记已在归档里');
   }
 
   private confirmDeleteSelected(): void {
@@ -2670,31 +2669,19 @@ struct Index {
     }
     // 「已归档」的笔记删起来也没有额外代价，所以一句话说清后果就够了：进回收站、
     // 30 天内可恢复。
-    this.getUIContext().showAlertDialog({
-      title: `删除 ${count} 篇笔记`,
-      message: `这 ${count} 篇笔记会移入回收站，保留 30 天。`,
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '删除',
-        fontColor: $r('app.color.danger'),
-        action: () => {
-          const targets = this.selectedNotes();
-          let removed: number = 0;
-          for (const note of targets) {
-            if (this.store.deleteNote(note)) {
-              removed++;
-            }
+    Dialogs.danger(this.getUIContext(), `删除 ${count} 篇笔记`,
+      `这 ${count} 篇笔记会移入回收站，保留 30 天。`, '删除', () => {
+        const targets = this.selectedNotes();
+        let removed: number = 0;
+        for (const note of targets) {
+          if (this.store.deleteNote(note)) {
+            removed++;
           }
-          this.refreshList();
-          this.exitSelect();
-          this.getUIContext().getPromptAction().showToast({ message: `已移入回收站 ${removed} 篇` });
         }
-      }
-    });
+        this.refreshList();
+        this.exitSelect();
+        Toast.show(this.getUIContext(), `已移入回收站 ${removed} 篇`);
+      });
   }
 
   /**
@@ -2718,7 +2705,7 @@ struct Index {
     }
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     NoteTransfer.exportItems(context, items).then((result: TransferResult) => {
-      this.getUIContext().getPromptAction().showToast({ message: result.message });
+      Toast.show(this.getUIContext(), result.message);
       // 导出成功后退出多选；取消保存则留在原地，用户的勾选不该因为点了一下
       // 「取消」就全丢。
       if (result.ok) {
@@ -2731,7 +2718,7 @@ struct Index {
   private exportNote(note: Note): void {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     NoteTransfer.exportNote(context, note).then((result: TransferResult) => {
-      this.getUIContext().getPromptAction().showToast({ message: result.message });
+      Toast.show(this.getUIContext(), result.message);
     });
   }
 
@@ -2739,7 +2726,7 @@ struct Index {
   private duplicateNote(note: Note): void {
     const copy = this.store.duplicateNote(note);
     this.refreshList();
-    this.getUIContext().getPromptAction().showToast({ message: `已创建「${copy.title}」` });
+    Toast.show(this.getUIContext(), `已创建「${copy.title}」`);
   }
 
   /**
@@ -3188,27 +3175,19 @@ struct Index {
    * 什么都没有，指引「点 +」会把人送去新建，而不是去归档）、真的一篇都没有
    * （这才是该引导新建的时候）。共用一个「点击右上角 + 记录第一条」时，空的
    * 「已归档」看起来像是在暗示「你还没新建过笔记」。
+   *
+   * 构建体已换成共用组件 `components/ui/EmptyState`，视觉与原来逐字一致；
+   * `emptyIcon()` / `emptyTitle()` / `emptyHint()` 三个方法留在这里，因为它们是本页的
+   * 业务语义（搜不到 / 归档空 / 一篇都没有），属于页面而不属于控件。
    */
   @Builder
   EmptyState() {
-    Column({ space: 10 }) {
-      SymbolGlyph(this.emptyIcon())
-        .fontSize(48)
-        .fontColor([$r('app.color.text_secondary')])
-        .opacity(0.6)
-      Text(this.emptyTitle())
-        .fontSize(17)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-      Text(this.emptyHint())
-        .fontSize(13)
-        .fontColor($r('app.color.text_secondary'))
-        .textAlign(TextAlign.Center)
-    }
-    .width('100%')
-    .layoutWeight(1)
-    .justifyContent(FlexAlign.Center)
-    .padding({ bottom: 120 })
+    EmptyState({
+      icon: this.emptyIcon(),
+      title: this.emptyTitle(),
+      hint: this.emptyHint(),
+      fill: true
+    })
   }
 
   private emptyIcon(): Resource {
@@ -3250,11 +3229,15 @@ struct Index {
   TagsPage() {
     Column({ space: 12 }) {
       if (this.store.tags.length === 0) {
-        Text('还没有标签。在笔记 frontmatter 里添加 tags 字段后会自动出现在这里。')
-          .fontSize(13)
-          .fontColor($r('app.color.text_secondary'))
-          .width('100%')
-          .padding({ left: this.SIDE_INSET, right: this.SIDE_INSET })
+        // 空态换成共用组件：原来是一行 13 灰字，与笔记页的三段式（图标 / 标题 /
+        // 提示）完全不是一种东西——同一页签栏下的两页，「没有内容」说成两种样子。
+        // 图标用 `sys.symbol.label`（标签页自己的符号），不借用笔记页的 `doc_text`。
+        EmptyState({
+          icon: $r('sys.symbol.label'),
+          title: '还没有标签',
+          hint: '在笔记 frontmatter 里添加 tags 字段后会自动出现在这里。',
+          fill: true
+        })
       } else {
         // 排序与筛选**不在这里**：它们和笔记页那两条一样住在标题栏底部
         // （`TitleBottom`），所以两页的控件不只是长得一样，而是同一个构建体。
@@ -3346,27 +3329,14 @@ struct Index {
   /** 删除标签：只从笔记里去掉这个标签，笔记本身不动。 */
   private confirmRemoveTag(tag: string): void {
     const count = this.store.countTag(tag);
-    this.getUIContext().showAlertDialog({
-      title: '删除标签',
-      message: count > 0
-        ? `「${tag}」会从 ${count} 篇笔记里去掉。这些笔记不会被删除。`
-        : `「${tag}」会被删除。`,
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '删除',
-        fontColor: $r('app.color.danger'),
-        action: () => {
-          this.store.removeTag(tag);
-          TagStore.instance.removeTag(tag);
-          this.refreshList();
-          this.getUIContext().getPromptAction().showToast({ message: '标签已删除' });
-        }
-      }
-    });
+    Dialogs.danger(this.getUIContext(), '删除标签',
+      count > 0 ? `「${tag}」会从 ${count} 篇笔记里去掉。这些笔记不会被删除。` : `「${tag}」会被删除。`,
+      '删除', () => {
+        this.store.removeTag(tag);
+        TagStore.instance.removeTag(tag);
+        this.refreshList();
+        Toast.show(this.getUIContext(), '标签已删除');
+      });
   }
 
   /**
@@ -3399,18 +3369,17 @@ struct Index {
       TagStore.instance.renameTag(old, name);
       this.refreshList();
       this.tagNameShown = false;
-      this.getUIContext().getPromptAction()
-        .showToast({ message: changed > 0 ? `已改名，影响 ${changed} 篇笔记` : '已改名' });
+      Toast.show(this.getUIContext(), changed > 0 ? `已改名，影响 ${changed} 篇笔记` : '已改名');
       return;
     }
     if (TagStore.instance.addTag(name)) {
       this.tagNameShown = false;
       // 新标签只存在于标签名录里，笔记的标签列表没变，所以必须显式刷新快照。
       this.refreshList();
-      this.getUIContext().getPromptAction().showToast({ message: '标签已创建，可在笔记的「标签…」里使用' });
+      Toast.show(this.getUIContext(), '标签已创建，可在笔记的「标签…」里使用');
       return;
     }
-    this.getUIContext().getPromptAction().showToast({ message: '这个标签已经有了' });
+    Toast.show(this.getUIContext(), '这个标签已经有了');
   }
 
   @Builder
@@ -4173,11 +4142,19 @@ struct Index {
     Text(label)
       .fontSize(12)
       .fontWeight(FontWeight.Medium)
-      .fontColor(this.segmentSelected(value, kind) ? this.onAccentColor() : $r('app.color.text_secondary'))
+      // 不用 onAccentColor()：分段控件改用 chip 语言（浅底 + 强调色字），
+      // 与筛选条、标签页的选中态保持一致，避免同一应用里出现两种「选中」视觉。
+      .fontColor(this.segmentSelected(value, kind) ? this.accentColor() : $r('app.color.text_secondary'))
       .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+      // 11 而非 14：外层胶囊已有 borderRadius(14) 且内边距仅 3 vp，
+      // 子节点若也 14，圆角弧会顶到父边界，产生裁切白边。
       .borderRadius(11)
-      .backgroundColor(this.segmentSelected(value, kind) ? this.accentColor() : Color.Transparent)
-      .animation({ duration: 160, curve: Curve.EaseOut })
+      // 浅底强调色字，与 ChipIndicator 同语言；不用实心强调色，
+      // 避免三个分段按钮看起来像一排实心胶囊，与筛选条风格割裂。
+      .backgroundColor(this.segmentSelected(value, kind) ? this.accentChipColor() : Color.Transparent)
+      // 200 ms FastOutSlowIn 与 ChipIndicator / FilterChip 对齐，
+      // 使所有选中态滑块/底色切换共享同一套时序，减少界面各处动画节奏差异。
+      .animation({ duration: 200, curve: Curve.FastOutSlowIn })
       .onClick(() => {
         if (kind === SEG_GLASS) {
           // Repaints every glass surface immediately; the effect tables read
@@ -4279,7 +4256,7 @@ struct Index {
     AiKey.remove().then(() => {
       this.aiKeyPresent = false;
       this.aiKeyDraft = '';
-      this.getUIContext().getPromptAction().showToast({ message: '密钥已清除' });
+      Toast.show(this.getUIContext(), '密钥已清除');
     });
   }
 
@@ -4335,7 +4312,7 @@ struct Index {
 
     const key: string = this.aiKeyDraft.trim();
     if (key.length === 0) {
-      this.getUIContext().getPromptAction().showToast({ message: 'AI 设置已保存' });
+      Toast.show(this.getUIContext(), 'AI 设置已保存');
       return;
     }
     AiKey.save(key).then((ok: boolean) => {
@@ -4344,7 +4321,7 @@ struct Index {
         this.aiKeyDraft = '';
         this.aiKeyPresent = true;
       }
-      this.getUIContext().getPromptAction().showToast({ message: ok ? 'AI 设置已保存' : '密钥保存失败' });
+      Toast.show(this.getUIContext(), ok ? 'AI 设置已保存' : '密钥保存失败');
     });
   }
 
@@ -4472,7 +4449,7 @@ struct Index {
   private exportZip(): void {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     NoteTransfer.exportZip(context).then((result: TransferResult) => {
-      this.getUIContext().getPromptAction().showToast({ message: result.message });
+      Toast.show(this.getUIContext(), result.message);
     });
   }
 
@@ -4481,7 +4458,7 @@ struct Index {
     NoteTransfer.importFiles(context).then((result: TransferResult) => {
       this.store.reload();
       this.refreshList();
-      this.getUIContext().getPromptAction().showToast({ message: result.message });
+      Toast.show(this.getUIContext(), result.message);
     });
   }
 }

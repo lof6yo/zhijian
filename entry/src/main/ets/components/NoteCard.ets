@@ -1,6 +1,7 @@
 import { systemDateTime } from '@kit.BasicServicesKit';
 import { CardSurface } from './CardSurface';
 import { Haptics } from '../common/Haptics';
+import { Dialogs } from '../common/Dialogs';
 
 /**
  * `.background()` takes a typed options object: ArkTS rejects an inline object
@@ -835,22 +836,11 @@ export struct NoteCard {
    */
   private confirmArchive(): void {
     const name = this.title.length > 0 ? this.title : '无标题';
-    this.getUIContext().showAlertDialog({
-      title: '归档笔记',
-      message: `“${name}”会从「全部」移到「已归档」，随时可以恢复。`,
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '归档',
-        fontColor: this.accentColor,
-        action: () => {
-          this.onArchive(this.noteId);
-        }
-      }
-    });
+    // 归档可逆 → `Dialogs.accent`（确认键用强调色）。强调色是运行期值，所以要传。
+    Dialogs.accent(this.getUIContext(), '归档笔记',
+      `“${name}”会从「全部」移到「已归档」，随时可以恢复。`, '归档', this.accentColor, () => {
+        this.onArchive(this.noteId);
+      });
   }
 
   /**
@@ -861,22 +851,11 @@ export struct NoteCard {
    */
   private confirmDelete(): void {
     const name = this.title.length > 0 ? this.title : '无标题';
-    this.getUIContext().showAlertDialog({
-      title: '删除笔记',
-      message: `“${name}”将移入回收站，保留 30 天。`,
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '删除',
-        fontColor: $r('app.color.danger'),
-        action: () => {
-          this.onDelete(this.noteId);
-        }
-      }
-    });
+    // 不可逆 → `Dialogs.danger`（确认键染危险色），与归档在视觉上必须能分开。
+    Dialogs.danger(this.getUIContext(), '删除笔记',
+      `“${name}”将移入回收站，保留 30 天。`, '删除', () => {
+        this.onDelete(this.noteId);
+      });
   }
 
   /**

@@ -1,5 +1,11 @@
 import { TrashEntry } from '../models/Note';
 import { NoteStore } from '../services/NoteStore';
+import { CARD_CORNER } from '../services/SettingsStore';
+import { PageHeader } from '../components/ui/PageHeader';
+import { EmptyState } from '../components/ui/EmptyState';
+import { TextAction, TONE_ACCENT, TONE_DANGER } from '../components/ui/ActionButton';
+import { Toast } from '../common/Toast';
+import { Dialogs } from '../common/Dialogs';
 
 @ComponentV2
 export struct TrashPage {
@@ -28,103 +34,93 @@ export struct TrashPage {
           .hitTestBehavior(HitTestMode.None)
           .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
-        Column({ space: 12 }) {
-        Row({ space: 8 }) {
-          Button('‹')
-            .fontSize(28)
-            .fontColor($r('app.color.text_primary'))
-            .backgroundColor(Color.Transparent)
-            .width(44)
-            .height(44)
-            .onClick(() => {
+        // 这一层不再带 `space: 12`：`PageHeader` 自带 56 vp 高度与左右 padding，
+        // 再叠 12 vp 间距就等于凭空多出一条空白，把第一行卡片/空态往下推。
+        Column() {
+          // 页头换成 `PageHeader`：原来是手写的 `Button('‹')` + 24 Bold 标题 + 13 fp「清空」，
+          // 与 WebDAV 页各写一遍且字号不同（24 Bold / 16 Medium）。全应用只留一种页头：
+          // 56 vp、SymbolGlyph 返回、16 Medium 标题；「清空」仍只在有内容时出现。
+          PageHeader({
+            title: '回收站',
+            subtitle: '删除的笔记保留 30 天',
+            trailing: this.entries.length > 0 ? '清空' : '',
+            trailingDanger: true,
+            onBack: () => {
               this.pathStack.pop();
+            },
+            onTrailing: () => {
+              this.confirmEmpty();
+            }
+          })
+
+          if (this.entries.length === 0) {
+            // 空态换成 `EmptyState`：原来两行灰字且没有图标，分不清「确实是空」还是
+            // 「没加载出来」。`fill: true` 自带 `layoutWeight(1)`，保留原来那个占位属性，
+            // 也仍然由同一层 `if` 保证空态与列表不会同时渲染。
+            EmptyState({
+              icon: $r('sys.symbol.trash'),
+              title: '回收站是空的',
+              hint: '长按笔记卡片可以删除',
+              fill: true
             })
-          Column({ space: 2 }) {
-            Text('回收站')
-              .fontSize(24)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
-            Text('删除的笔记保留 30 天')
-              .fontSize(12)
-              .fontColor($r('app.color.text_secondary'))
-          }
-          .alignItems(HorizontalAlign.Start)
-          .layoutWeight(1)
-          if (this.entries.length > 0) {
-            Text('清空')
-              .fontSize(13)
-              .fontColor($r('app.color.danger'))
-              .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-              .onClick(() => {
-                this.confirmEmpty();
-              })
-          }
-        }
-        .width('100%')
+          } else {
+            List({ space: 8 }) {
+              ForEach(this.entries, (entry: TrashEntry) => {
+                ListItem() {
+                  Row({ space: 10 }) {
+                    Column({ space: 3 }) {
+                      Text(entry.title.length > 0 ? entry.title : '无标题')
+                        .fontSize(15)
+                        .fontColor($r('app.color.text_primary'))
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                      Text(this.deletedLabel(entry.deletedAt))
+                        .fontSize(11)
+                        .fontColor($r('app.color.text_secondary'))
+                    }
+                    .alignItems(HorizontalAlign.Start)
+                    .layoutWeight(1)
 
-        if (this.entries.length === 0) {
-          Column({ space: 8 }) {
-            Text('回收站是空的')
-              .fontSize(16)
-              .fontColor($r('app.color.text_primary'))
-            Text('长按笔记卡片可以删除')
-              .fontSize(12)
-              .fontColor($r('app.color.text_secondary'))
-          }
-          .width('100%')
-          .layoutWeight(1)
-          .justifyContent(FlexAlign.Center)
-        } else {
-          List({ space: 8 }) {
-            ForEach(this.entries, (entry: TrashEntry) => {
-              ListItem() {
-                Row({ space: 10 }) {
-                  Column({ space: 3 }) {
-                    Text(entry.title.length > 0 ? entry.title : '无标题')
-                      .fontSize(15)
-                      .fontColor($r('app.color.text_primary'))
-                      .maxLines(1)
-                      .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    Text(this.deletedLabel(entry.deletedAt))
-                      .fontSize(11)
-                      .fontColor($r('app.color.text_secondary'))
-                  }
-                  .alignItems(HorizontalAlign.Start)
-                  .layoutWeight(1)
-
-                  Text('恢复')
-                    .fontSize(12)
-                    .fontColor(this.accentColor)
-                    .padding({ left: 10, right: 10, top: 7, bottom: 7 })
-                    .backgroundColor($r('app.color.chip_bg'))
-                    .borderRadius(12)
-                    .onClick(() => {
-                      if (this.store().restoreTrash(entry.fileName)) {
-                        this.toast('已恢复');
-                        this.refresh();
-                      } else {
-                        this.toast('恢复失败');
+                    // 行内动作改用 `TextAction`：原来是两段各写一遍 padding/底色/圆角的
+                    // `Text`，与 WebDAV 页的成对按钮尺寸对不上。两档语义不同，所以不是
+                    // 一个 `danger` 布尔：
+                    // 「恢复」是正向动作（原来就是强调色文字 + `chip_bg` 底）→ `TONE_ACCENT`；
+                    // 「删除」不可逆且原来无底色 → `TONE_DANGER` + `filled: false`。
+                    TextAction({
+                      label: '恢复',
+                      tone: TONE_ACCENT,
+                      accentColor: this.accentColor,
+                      onTap: () => {
+                        if (this.store().restoreTrash(entry.fileName)) {
+                          Toast.show(this.getUIContext(), '已恢复');
+                          this.refresh();
+                        } else {
+                          Toast.show(this.getUIContext(), '恢复失败');
+                        }
                       }
                     })
-                  Text('删除')
-                    .fontSize(12)
-                    .fontColor($r('app.color.danger'))
-                    .padding({ left: 10, right: 10, top: 7, bottom: 7 })
-                    .onClick(() => {
-                      this.confirmDelete(entry);
+                    TextAction({
+                      label: '删除',
+                      tone: TONE_DANGER,
+                      filled: false,
+                      onTap: () => {
+                        this.confirmDelete(entry);
+                      }
                     })
+                  }
+                  .width('100%')
+                  .padding(14)
+                  // 卡片表面走 surface 档（`CARD_CORNER`），与笔记卡片、设置分组卡片同一个数：
+                  // 回收站的一行本来也是一张卡片，留一个 16 只会让它在笔记页旁边差 1 vp。
+                  .backgroundColor($r('app.color.glass_bg'))
+                  .borderRadius(CARD_CORNER)
+                  .border({ width: 0.5, color: $r('app.color.glass_border') })
                 }
-                .width('100%')
-                .padding(14)
-                .backgroundColor($r('app.color.glass_bg'))
-                .borderRadius(16)
-                .border({ width: 0.5, color: $r('app.color.glass_border') })
-              }
-            }, (entry: TrashEntry) => `${entry.fileName}-${this.version}`)
+              }, (entry: TrashEntry) => `${entry.fileName}-${this.version}`)
+            }
+            .layoutWeight(1)
+            .width('100%')
           }
-          .layoutWeight(1)
-          .width('100%')
-        }
         }
         // No `top` inset: `NavDestination` content already starts below the
         // status bar (fullscreen layout is not used), so a manual 48 vp top
@@ -158,52 +154,22 @@ export struct TrashPage {
     return `删除于 ${date.getMonth() + 1} 月 ${date.getDate()} 日 · 30 天后自动清除`;
   }
 
-  private toast(message: string): void {
-    try {
-      this.getUIContext().getPromptAction().showToast({ message: message, duration: 1600 });
-    } catch (error) {
-      // Toast is cosmetic.
-    }
-  }
-
   private confirmDelete(entry: TrashEntry): void {
-    this.getUIContext().showAlertDialog({
-      title: '永久删除',
-      message: `“${entry.title.length > 0 ? entry.title : '无标题'}”将无法恢复。`,
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '永久删除',
-        fontColor: $r('app.color.danger'),
-        action: () => {
-          this.store().deleteTrashForever(entry.fileName);
-          this.refresh();
-        }
-      }
-    });
+    // 改走 `Dialogs.danger`：原来这个确认框是手写的十二行，删/清空/移除一共有 8 份，
+    // 其中一份忘了给确认键上危险色，删除与归档在视觉上就没有区别了。
+    Dialogs.danger(this.getUIContext(), '永久删除',
+      `“${entry.title.length > 0 ? entry.title : '无标题'}”将无法恢复。`, '永久删除', () => {
+        this.store().deleteTrashForever(entry.fileName);
+        this.refresh();
+      });
   }
 
   private confirmEmpty(): void {
-    this.getUIContext().showAlertDialog({
-      title: '清空回收站',
-      message: '回收站中的笔记将全部永久删除，无法恢复。',
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '清空',
-        fontColor: $r('app.color.danger'),
-        action: () => {
-          const count = this.store().emptyTrash();
-          this.toast(`已清空 ${count} 篇`);
-          this.refresh();
-        }
-      }
-    });
+    Dialogs.danger(this.getUIContext(), '清空回收站',
+      '回收站中的笔记将全部永久删除，无法恢复。', '清空', () => {
+        const count = this.store().emptyTrash();
+        Toast.show(this.getUIContext(), `已清空 ${count} 篇`);
+        this.refresh();
+      });
   }
 }

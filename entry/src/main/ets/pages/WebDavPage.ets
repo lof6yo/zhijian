@@ -1,8 +1,11 @@
-import { promptAction } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { SettingsStore } from '../services/SettingsStore';
+import { SettingsStore, CARD_CORNER } from '../services/SettingsStore';
 import { Credentials } from '../services/Credentials';
 import { SyncEngine, SyncOutcome } from '../services/SyncEngine';
+import { PageHeader } from '../components/ui/PageHeader';
+import { ActionButton } from '../components/ui/ActionButton';
+import { Toast } from '../common/Toast';
+import { RADIUS_CONTROL, RADIUS_PILL, FONT_BODY, FONT_MICRO, FONT_SECONDARY } from '../common/UiTokens';
 
 const DOMAIN = 0x0000;
 const TAG = 'ZhijianDavPage';
@@ -26,6 +29,8 @@ const TAG = 'ZhijianDavPage';
 export struct WebDavPage {
   @Param pathStack: NavPathStack = new NavPathStack();
   @Param accentColor: string = '#0A59F7';
+  /** 强调色的浅底。强调色是运行期 hex，这一层算不出来，由调用方给（与 `NoteCard` 同做法）。 */
+  @Param accentChipColor: string = '#E8EEFF';
 
   @Local url: string = '';
   @Local user: string = '';
@@ -70,7 +75,13 @@ export struct WebDavPage {
           .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
         Column() {
-          this.Header()
+          PageHeader({
+            title: 'WebDAV 同步',
+            note: 'zhijian/',
+            onBack: () => {
+              this.pathStack.pop();
+            }
+          })
 
           Scroll() {
             Column({ space: 12 }) {
@@ -83,16 +94,16 @@ export struct WebDavPage {
               // duplication is the cheaper side of that trade.
               Column({ space: 6 }) {
                 Text('服务器地址')
-                  .fontSize(12)
+                  .fontSize(FONT_SECONDARY)
                   .fontColor($r('app.color.text_secondary'))
                   .width('100%')
                 TextInput({ text: this.url, placeholder: 'https://example.com/dav/' })
                   .type(InputType.Normal)
-                  .fontSize(14)
+                  .fontSize(FONT_BODY)
                   .fontColor($r('app.color.text_primary'))
                   .placeholderColor($r('app.color.text_secondary'))
                   .backgroundColor($r('app.color.glass_bg'))
-                  .borderRadius(14)
+                  .borderRadius(RADIUS_CONTROL)
                   .height(44)
                   .width('100%')
                   .padding({ left: 12, right: 12 })
@@ -105,16 +116,16 @@ export struct WebDavPage {
 
               Column({ space: 6 }) {
                 Text('用户名')
-                  .fontSize(12)
+                  .fontSize(FONT_SECONDARY)
                   .fontColor($r('app.color.text_secondary'))
                   .width('100%')
                 TextInput({ text: this.user, placeholder: '用于基本认证' })
                   .type(InputType.Normal)
-                  .fontSize(14)
+                  .fontSize(FONT_BODY)
                   .fontColor($r('app.color.text_primary'))
                   .placeholderColor($r('app.color.text_secondary'))
                   .backgroundColor($r('app.color.glass_bg'))
-                  .borderRadius(14)
+                  .borderRadius(RADIUS_CONTROL)
                   .height(44)
                   .width('100%')
                   .padding({ left: 12, right: 12 })
@@ -127,7 +138,7 @@ export struct WebDavPage {
 
               Column({ space: 6 }) {
                 Text('密码')
-                  .fontSize(12)
+                  .fontSize(FONT_SECONDARY)
                   .fontColor($r('app.color.text_secondary'))
                   .width('100%')
                 TextInput({
@@ -135,11 +146,11 @@ export struct WebDavPage {
                   placeholder: this.hasStoredPassword ? '已保存，留空则不修改' : '应用专用密码'
                 })
                   .type(InputType.Password)
-                  .fontSize(14)
+                  .fontSize(FONT_BODY)
                   .fontColor($r('app.color.text_primary'))
                   .placeholderColor($r('app.color.text_secondary'))
                   .backgroundColor($r('app.color.glass_bg'))
-                  .borderRadius(14)
+                  .borderRadius(RADIUS_CONTROL)
                   .height(44)
                   .width('100%')
                   .padding({ left: 12, right: 12 })
@@ -157,16 +168,16 @@ export struct WebDavPage {
               if (this.showDnsPin) {
                 Column({ space: 6 }) {
                   Text('直连 IP')
-                    .fontSize(12)
+                    .fontSize(FONT_SECONDARY)
                     .fontColor($r('app.color.text_secondary'))
                     .width('100%')
                   TextInput({ text: this.dnsIp, placeholder: '例如 192.0.2.1，留空则用系统 DNS' })
                     .type(InputType.Normal)
-                    .fontSize(14)
+                    .fontSize(FONT_BODY)
                     .fontColor($r('app.color.text_primary'))
                     .placeholderColor($r('app.color.text_secondary'))
                     .backgroundColor($r('app.color.glass_bg'))
-                    .borderRadius(14)
+                    .borderRadius(RADIUS_CONTROL)
                     .height(44)
                     .width('100%')
                     .padding({ left: 12, right: 12 })
@@ -179,16 +190,16 @@ export struct WebDavPage {
 
                 Column({ space: 6 }) {
                   Text('代理服务器')
-                    .fontSize(12)
+                    .fontSize(FONT_SECONDARY)
                     .fontColor($r('app.color.text_secondary'))
                     .width('100%')
                   TextInput({ text: this.proxy, placeholder: 'http://proxy:8080，留空则用系统设置' })
                     .type(InputType.Normal)
-                    .fontSize(14)
+                    .fontSize(FONT_BODY)
                     .fontColor($r('app.color.text_primary'))
                     .placeholderColor($r('app.color.text_secondary'))
                     .backgroundColor($r('app.color.glass_bg'))
-                    .borderRadius(14)
+                    .borderRadius(RADIUS_CONTROL)
                     .height(44)
                     .width('100%')
                     .padding({ left: 12, right: 12 })
@@ -200,7 +211,7 @@ export struct WebDavPage {
                 .width('100%')
               } else {
                 Text('连不上？可设置「直连 IP」与「代理服务器」')
-                  .fontSize(11)
+                  .fontSize(FONT_MICRO)
                   .fontColor($r('app.color.text_secondary'))
                   .width('100%')
                   .padding({ left: 2 })
@@ -212,43 +223,43 @@ export struct WebDavPage {
               this.Hint()
 
               Row({ space: 10 }) {
-                Button(this.busy ? '请稍候…' : '测试连接')
-                  .fontSize(14)
-                  .fontColor($r('app.color.text_primary'))
-                  .backgroundColor($r('app.color.chip_bg'))
-                  .layoutWeight(1)
-                  .height(44)
-                  .enabled(!this.busy)
-                  .onClick(() => {
+                ActionButton({
+                  label: this.busy ? '请稍候…' : '测试连接',
+                  primary: false,
+                  isEnabled: !this.busy,
+                  accentColor: this.accentColor,
+                  onTap: () => {
                     this.runTest();
-                  })
-                Button(this.busy ? '同步中…' : '立即同步')
-                  .fontSize(14)
-                  .fontColor($r('app.color.on_accent'))
-                  .backgroundColor(this.accentColor)
+                  }
+                })
                   .layoutWeight(1)
-                  .height(44)
-                  .enabled(!this.busy)
-                  .onClick(() => {
+                ActionButton({
+                  label: this.busy ? '同步中…' : '立即同步',
+                  primary: true,
+                  isEnabled: !this.busy,
+                  accentColor: this.accentColor,
+                  onTap: () => {
                     this.runSync();
-                  })
+                  }
+                })
+                  .layoutWeight(1)
               }
               .width('100%')
               .margin({ top: 4 })
 
               if (this.status.length > 0) {
                 Text(this.status)
-                  .fontSize(12)
+                  .fontSize(FONT_SECONDARY)
                   .fontColor(this.statusOk ? $r('app.color.text_secondary') : $r('app.color.danger'))
                   .width('100%')
                   .padding(12)
                   .backgroundColor($r('app.color.glass_bg'))
-                  .borderRadius(14)
+                  .borderRadius(RADIUS_CONTROL)
               }
 
               if (this.lastSync > 0) {
                 Text(`上次同步 · ${WebDavPage.formatTime(this.lastSync)}`)
-                  .fontSize(11)
+                  .fontSize(FONT_MICRO)
                   .fontColor($r('app.color.text_secondary'))
                   .width('100%')
                   .padding({ left: 2 })
@@ -275,40 +286,10 @@ export struct WebDavPage {
   }
 
   @Builder
-  Header() {
-    Row({ space: 4 }) {
-      Button('‹')
-        .fontSize(28)
-        .fontColor($r('app.color.text_primary'))
-        .backgroundColor(Color.Transparent)
-        .width(44)
-        .height(44)
-        .accessibilityText('返回')
-        .onClick(() => {
-          this.pathStack.pop();
-        })
-      Text('WebDAV 同步')
-        .fontSize(16)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .layoutWeight(1)
-      Text('zhijian/')
-        .fontSize(11)
-        .fontColor($r('app.color.text_secondary'))
-    }
-    .width('100%')
-    // A compact 56 vp row with no top inset — `NavDestination` content already
-    // starts below the status bar, so any `padding({ top })` here is dead space.
-    .height(56)
-    .padding({ left: 8, right: 16 })
-    .backgroundColor($r('app.color.page_bg'))
-  }
-
-  @Builder
   AutoSyncGroup() {
     Column({ space: 10 }) {
       Text('自动同步')
-        .fontSize(13)
+        .fontSize(FONT_SECONDARY)
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.text_primary'))
         .width('100%')
@@ -319,12 +300,12 @@ export struct WebDavPage {
         this.AutoSyncChip('定时', 2)
       }
       .padding(3)
-      .borderRadius(14)
+      .borderRadius(RADIUS_PILL)
       .backgroundColor($r('app.color.page_bg'))
       .width('100%')
 
       Text('间隔')
-        .fontSize(12)
+        .fontSize(FONT_SECONDARY)
         .fontColor($r('app.color.text_secondary'))
         .width('100%')
         .padding({ top: 4, bottom: 0 })
@@ -336,12 +317,12 @@ export struct WebDavPage {
         this.AutoSyncChip('60 分钟', 60, true)
       }
       .padding(3)
-      .borderRadius(14)
+      .borderRadius(RADIUS_PILL)
       .backgroundColor($r('app.color.page_bg'))
       .width('100%')
 
       Text(this.autoSyncHint())
-        .fontSize(11)
+        .fontSize(FONT_MICRO)
         .fontColor($r('app.color.text_secondary'))
         .width('100%')
         .padding({ top: 2 })
@@ -349,20 +330,24 @@ export struct WebDavPage {
     .width('100%')
     .padding(12)
     .backgroundColor($r('app.color.glass_bg'))
-    .borderRadius(16)
+    .borderRadius(CARD_CORNER)
   }
 
   @Builder
   AutoSyncChip(label: string, value: number, isInterval: boolean = false) {
     Text(label)
-      .fontSize(12)
-      .fontWeight(this.autoSyncSelected(value, isInterval) ? FontWeight.Medium : FontWeight.Normal)
+      // 字重不随选中变化：Medium 与 Normal 的字宽不同，切档时居中的标签会横向抖一下，
+      // 而这个跳变比底色变化更响。选中只由「浅底 + 强调色字」表达。
+      .fontSize(FONT_SECONDARY)
       .fontColor(this.autoSyncSelected(value, isInterval) ? this.accentColor : $r('app.color.text_secondary'))
       .textAlign(TextAlign.Center)
       .layoutWeight(1)
       .height(28)
-      .borderRadius(14)
-      .backgroundColor(this.autoSyncSelected(value, isInterval) ? $r('app.color.chip_bg') : Color.Transparent)
+      .borderRadius(RADIUS_PILL)
+      // 浅底用强调色自己的 tint，不是固定的 `chip_bg`：强调色可选蓝/青/橙，
+      // 固定蓝底配青色字会出现「青字压在浅蓝块上」这种明显不是一套的颜色。
+      .backgroundColor(this.autoSyncSelected(value, isInterval) ? this.accentChipColor : Color.Transparent)
+      .animation({ duration: 200, curve: Curve.FastOutSlowIn })
       .onClick(() => {
         if (isInterval) {
           SettingsStore.instance.setAutoSyncInterval(value);
@@ -395,13 +380,13 @@ export struct WebDavPage {
   Hint() {
     Column({ space: 4 }) {
       Text('笔记以 Markdown 文件存放在服务器 zhijian/ 目录，首次同步会自动创建。')
-        .fontSize(11)
+        .fontSize(FONT_MICRO)
         .fontColor($r('app.color.text_secondary'))
       Text('按笔记 ID 配对并按修改时间三方合并；两端同时修改时保留冲突副本，不会覆盖。')
-        .fontSize(11)
+        .fontSize(FONT_MICRO)
         .fontColor($r('app.color.text_secondary'))
       Text('删除会同步到对端回收站并保留 30 天，不会直接销毁。')
-        .fontSize(11)
+        .fontSize(FONT_MICRO)
         .fontColor($r('app.color.text_secondary'))
     }
     .alignItems(HorizontalAlign.Start)
@@ -499,7 +484,7 @@ export struct WebDavPage {
           this.applyOutcome(outcome);
           if (outcome.ok) {
             this.lastSync = outcome.finishedAt;
-            promptAction.showToast({ message: outcome.message });
+            Toast.show(this.getUIContext(), outcome.message);
           }
         });
       })

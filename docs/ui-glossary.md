@@ -180,19 +180,27 @@
 
 ---
 
-## 8. 控件 Control —— 阅读页 / 回收站页
+## 8. 控件 Control —— 阅读页 / 回收站页 / WebDAV 页
 
 | 规范名 | 代码 | 定义 |
 |---|---|---|
-| 阅读页头 | `ReaderPage` 顶部 Row | 高 56，不透明 `page_bg`，不加状态栏内边距 |
-| 返回按钮 | `Button('‹')` | 阅读页与回收站各一个 |
+| 阅读页工具组 | `ReaderPage` 的 `BackButton()` + `Actions()` | 两组 40 vp 玻璃圆钮浮在正文之上，**没有固定页头**；正文顶部让出 `CONTENT_TOP_INSET` |
+| 玻璃圆钮 | `ReaderPage.GlassButton()` | 手绘玻璃：`backgroundEffect` + 上缘 `glass_hi` 渐变 + 1 vp `glass_border`，`borderRadius(hit/2)` |
+| 页面页头 | `components/ui/PageHeader` | NavDestination 页专用：56 vp 一行、`SymbolGlyph(chevron_left)` 返回、16 Medium 标题、可选副标题 / 尾部动作；**不加状态栏内边距** |
+| 返回按钮 | `PageHeader` 内的 `SymbolGlyph` 热区 | 44×44 透明热区。**不再是 `Button('‹')`**——文本字符的字形、基线与左右留白随字号漂移，28 fp 的撇顶不到热区正中 |
+| 尾部动作 | `PageHeader` 的 `trailing` + `trailingDanger` | 页头右端的文字动作（回收站的「清空」），12 fp；`trailingDanger` 只换颜色，不换尺寸 |
 | 笔记标题 | 页头中间 `Text` | 跟随 H1 |
 | 正在编辑条 | `Row`（`正在编辑 · 标题/引用/…`） | 只在该块处于编辑态时出现，右端是 删除 / 完成 |
 | 块编辑器 | `TextArea`（`LiveBlockEditor`） | 源码在上，`预览效果` 在下；等宽字体 |
 | 整篇编辑器 | `TextArea`（`WholeDocEditor`） | 「简单」编辑体验：全屏一个 Markdown 字段 |
 | 格式按钮条 | `FormatBar` | 标题/粗体/斜体/列表/待办/引用/表格/代码，默认关闭 |
 | 回收站行 | `TrashPage` 里的 `ListItem` | 标题 + 删除时间 + 恢复/删除 |
-| 清空按钮 | 页头右端 `Text('清空')` | 危险色 |
+| 清空按钮 | `PageHeader` 的 `trailing` | 危险色 |
+| 成对动作按钮 | `components/ui/ActionButton` | 高 44、圆角 `RADIUS_CONTROL`(12)、15 Medium；`primary` = 强调色底 + `on_accent` 字，否则 `chip_bg` 底 + `text_primary` 字 |
+| 行内文字动作 | `components/ui/TextAction` | 12 fp，`filled` 时圆角 `RADIUS_CONTROL` + `chip_bg` 底；`danger` 只换颜色 |
+| 空状态 | `components/ui/EmptyState` | 图标 48 / 标题 17 Medium / 提示 13；`fill` 决定是否占满剩余空间并避让页签栏 |
+| 问题提示 | `common/Toast.show(ui, message)` | 全应用唯一的 toast 入口：2000 ms、吞异常。**不要再写 `showToast`，也不要 `import { promptAction }`** |
+| 确认框 | `common/Dialogs.danger/accent(...)` | 左「取消」空实现、右动作键。「危险」与「强调」是两个入口而不是一个布尔——强调色是运行期 hex，这一层拿不到 |
 
 ---
 
@@ -223,6 +231,10 @@
 | 页面渐变 | `page_grad_top/mid/bottom` | 渐变背景三停 |
 | 光晕 | `glow_blue/purple/cyan` | 光感背景装饰，必须 `hitTestBehavior(None)` |
 | 侧内缩 | `SIDE_INSET` = 16 | 标题行/筛选条/页签栏统一左右缩进 |
+| 控件圆角 | `RADIUS_CONTROL` = 12 | 按钮、输入框、行内动作；`common/UiTokens.ets` |
+| 胶囊圆角 | `RADIUS_PILL` = 14 | 28 vp 胶囊（筛选项 / 排序项 / 分段项）；同文件 |
+| 表面圆角 | `CARD_CORNER` = 17（运行期 `cardCorner`） | 笔记卡片、设置卡片、搜索提示条、标签药丸。**唯一会被用户设置改变的一档**，所以不是模块常量 |
+| 字号档 | `FONT_PAGE_TITLE` 16 / `FONT_CARD_TITLE` 15 / `FONT_BODY` 14 / `FONT_SECONDARY` 12 / `FONT_MICRO` 11 | 五档之外不再新增；回收站那行 24 Bold 就是没有档位才漂出来的 |
 | 标题栏避让 | `titleBandHeight()` | 各 tab 根节点的上内边距 = `statusBarHeightVp() + 标题行 56 + bandInset`；**按窗口坐标**解析，含状态栏。读 `bandInset` 而不是 `titleBottomHeight()`：后者是两档的结构判断，前者才会逐帧插值 |
 | 筛选带高 | `BOTTOM_BUILDER_HEIGHT` = 50 | 34 vp 胶囊 + 上下各 8；`titleBarOptions().bottomBuilder.height` 与页面留白共用这一个数 |
 | 筛选带留白 | `bandInset` | `0…50`，页面顶部留白里属于筛选带的那一段；切页签时由 `animateTo` 插值，这是整段过渡唯一会走的数 |

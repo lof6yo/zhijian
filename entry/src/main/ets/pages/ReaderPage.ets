@@ -11,6 +11,9 @@ import { NoteStore } from '../services/NoteStore';
 import { SettingsStore } from '../services/SettingsStore';
 import { AiClient, AiReply } from '../services/AiClient';
 import { Haptics } from '../common/Haptics';
+import { Toast } from '../common/Toast';
+import { Dialogs } from '../common/Dialogs';
+import { ActionButton } from '../components/ui/ActionButton';
 
 /**
  * 打开笔记页的参数。
@@ -573,7 +576,7 @@ export struct ReaderPage {
     this.commitPending();
     const body: string = this.note.body.trim();
     if (body.length === 0) {
-      this.getUIContext().getPromptAction().showToast({ message: '这一篇还没有内容' });
+      Toast.show(this.getUIContext(), '这一篇还没有内容');
       return;
     }
     this.aiBusy = true;
@@ -581,7 +584,7 @@ export struct ReaderPage {
     AiClient.chat(action.scenario, action.system, body).then((reply: AiReply) => {
       this.aiBusy = false;
       if (!reply.ok) {
-        this.getUIContext().getPromptAction().showToast({ message: reply.message });
+        Toast.show(this.getUIContext(), reply.message);
         return;
       }
       this.aiResult = reply.text;
@@ -599,7 +602,7 @@ export struct ReaderPage {
     this.clearEditing();
     this.touched = true;
     this.persist(next);
-    this.getUIContext().getPromptAction().showToast({ message: `已替换为${this.aiActionLabel}结果` });
+    Toast.show(this.getUIContext(), `已替换为${this.aiActionLabel}结果`);
   }
 
   private commitPending(): void {
@@ -670,22 +673,10 @@ export struct ReaderPage {
     }
     // 删一整段是不可逆的（只改正文，不进回收站），所以必须问一句。
     // 一个误触就抹掉一段正文，是这一页最容易造成真实损失的地方。
-    this.getUIContext().showAlertDialog({
-      title: '删除这一段？',
-      message: '这一段会从笔记里移除。可以用顶部的「撤销」找回，但不会再出现在回收站里。',
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '删除',
-        fontColor: $r('app.color.danger'),
-        action: () => {
-          this.removeBlockNow(index);
-        }
-      }
-    });
+    Dialogs.danger(this.getUIContext(), '删除这一段？',
+      '这一段会从笔记里移除。可以用顶部的「撤销」找回，但不会再出现在回收站里。', '删除', () => {
+        this.removeBlockNow(index);
+      });
   }
 
   private removeBlockNow(index: number): void {
@@ -898,7 +889,7 @@ export struct ReaderPage {
       if (!HINT_SHOWN) {
         HINT_SHOWN = true;
         setTimeout(() => {
-          this.getUIContext().getPromptAction().showToast({ message: '点按任意段落就能修改' });
+          Toast.show(this.getUIContext(), '点按任意段落就能修改');
         }, 700);
       }
     })
@@ -1073,6 +1064,8 @@ export struct ReaderPage {
       // 所以它和圆钮一样是「材质自己画出的形状」，不需要 `clipShape`。
       .backgroundEffect({ radius: 18, saturation: 1.6, brightness: 1.04, color: $r('app.color.glass_tint') })
       .border({ width: 1, color: $r('app.color.glass_border') })
+      // 同上：手绘玻璃的高光要 clip 才会停在胶囊圆角内，删掉会在两端露出矩形的直边。
+      .clip(true)
       // 正在跑的那一项保持全不透明（它是主角），其余两项变淡表示「暂时不可点」。
       // `enabled(false)` 才是「不可点」本身：只靠 `onAiAction` 里的 `aiBusy` 早退，
       // 点击仍然会被吃掉、按钮仍然会给出按下的反馈，看着像点了没反应。
@@ -1108,7 +1101,7 @@ export struct ReaderPage {
     }
     const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, this.aiResult);
     pasteboard.getSystemPasteboard().setData(data).then(() => {
-      this.getUIContext().getPromptAction().showToast({ message: '已复制' });
+      Toast.show(this.getUIContext(), '已复制');
     }).catch((error: BusinessError) => {
       hilog.warn(DOMAIN, 'ReaderPage', 'copy failed: %{public}d', error.code);
     });
@@ -1163,32 +1156,31 @@ export struct ReaderPage {
       .borderRadius(14)
       .backgroundColor($r('app.color.card_bg'))
 
+      // 一个面板里只应有一个强调动作：这里的那一个是「替换正文」——它才是用户
+      // 打开这个面板要做的决定，「复制」只是把结果带走。原来两个都是强调色（复制
+      // 用强调色浅底 + 强调字，替换用实心强调底），读的人在下决定之前分不出主次。
+      // 所以「复制」走次级底（`chip_bg` + 正文色），尺寸交给 `ActionButton` 的
+      // 统一档（44 高 / `RADIUS_CONTROL`），与 WebDAV 页那两个成对按钮一致。
       Row({ space: 10 }) {
-        Text('复制')
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.accentColor)
-          .textAlign(TextAlign.Center)
-          .layoutWeight(1)
-          .height(46)
-          .borderRadius(23)
-          .backgroundColor(this.accentChipColor())
-          .onClick(() => {
+        ActionButton({
+          label: '复制',
+          primary: false,
+          accentColor: this.accentColor,
+          onTap: () => {
             this.copyAiResult();
-          })
-          .accessibilityText('复制结果')
-        Text('替换正文')
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(Color.White)
-          .textAlign(TextAlign.Center)
+          }
+        })
           .layoutWeight(1)
-          .height(46)
-          .borderRadius(23)
-          .backgroundColor(this.accentColor)
-          .onClick(() => {
+          .accessibilityText('复制结果')
+        ActionButton({
+          label: '替换正文',
+          primary: true,
+          accentColor: this.accentColor,
+          onTap: () => {
             this.applyAiResult();
-          })
+          }
+        })
+          .layoutWeight(1)
           .accessibilityText('用结果替换正文')
       }
       .width('100%')
@@ -1241,6 +1233,9 @@ export struct ReaderPage {
     .borderRadius(FLOAT_HIT / 2)
     .backgroundEffect({ radius: 18, saturation: 1.6, brightness: 1.04, color: $r('app.color.glass_tint') })
     .border({ width: 1, color: $r('app.color.glass_border') })
+    // 这里的 clip 是**必需**的，与 `Index.CircleAction` 的「不要 clip」不矛盾：
+    // 那边是官方材质自己按圆角栅格化形状，clip 会把矩形直边切出四道亮弧；
+    // 这边是手绘玻璃，上缘高光的 `linearGradient` 是铺满矩形的，只有 clip 才能让它停在圆角内。
     .clip(true)
     .opacity(this.gateDim(gate) ? 0.38 : 1)
     .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
