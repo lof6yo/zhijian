@@ -4,6 +4,9 @@
     [switch]$Sign,
     [switch]$Timestamp,
     [switch]$Purge,
+    # Publish the HAP already in the output directory instead of building. Every
+    # artifact check still runs; this only skips the hvigor invocation.
+    [switch]$SkipBuild,
     [string]$Product = 'default',
     # Abort when the build log has not grown for this many seconds.
     #
@@ -188,49 +191,59 @@ if ($Clean) {
     Remove-Item (Join-Path $root 'build') -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# -SkipBuild reuses the HAP already in `$outputDir` and keeps every check below:
+# staleness against sources, minimum size, and the zip/manifest test. It exists
+# because a release cold build on this machine goes silent for 50–70 s inside
+# `CompileArkTS`, which the stall guard above cannot distinguish from a deadlock
+# — running that build by hand with a longer ceiling and publishing here is the
+# same artifact with one fewer false negative.
+if (-not $SkipBuild) {
+    $stale = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -match 'hvigor' })
+    if ($stale.Count -gt 0) {
+        Write-Host "  reaping $($stale.Count) hvigor daemon(s) from earlier runs" -ForegroundColor DarkGray
+        KillHvigorTree
+        Start-Sleep -Milliseconds 800
+    }
+} else {
+    Write-Host '  reusing the existing artifact (-SkipBuild)' -ForegroundColor DarkGray
+}
+
 # Reap daemons left behind by earlier `devecocli build` / `devecocli run` calls
 # *before* starting. They are the ones that deadlock: a daemon started hours ago
 # keeps the build directory locked, and the next build blocks on it forever.
 # Cheap and safe — they are only a cache, and `--no-daemon` will not reuse them.
-$stale = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match 'hvigor' })
-if ($stale.Count -gt 0) {
-    Write-Host "  reaping $($stale.Count) hvigor daemon(s) from earlier runs" -ForegroundColor DarkGray
-    KillHvigorTree
-    Start-Sleep -Milliseconds 800
-}
+if (-not $SkipBuild) {
+    $hvigor = Join-Path $env:DEVECO_CLI_CLT_PATH 'bin\hvigorw.bat'
+    $cli = "`$env:PATH = '$($env:PATH -replace "'", "''")'; " +
+        "`$env:DEVECO_CLI_CLT_PATH = '$env:DEVECO_CLI_CLT_PATH'; " +
+        "`$env:DEVECO_SDK_HOME = '$env:DEVECO_SDK_HOME'; " +
+        "`$env:OHOS_HDC_SERVER_PORT = '$env:OHOS_HDC_SERVER_PORT'; "
+    $hvigorCmd = $cli + "& '$hvigor' --mode module -p module=$module@$Product " +
+        "-p product=$Product -p buildMode=$mode assembleHap --no-daemon"
 
-# `hvigorw --no-daemon` is the primary path, not the fallback: the daemon is
-# what hangs, and this route starts a fresh process every time. It is also
-# faster than it sounds — 80 s cold, 12–19 s incremental.
-$hvigor = Join-Path $env:DEVECO_CLI_CLT_PATH 'bin\hvigorw.bat'
-$cli = "`$env:PATH = '$($env:PATH -replace "'", "''")'; " +
-    "`$env:DEVECO_CLI_CLT_PATH = '$env:DEVECO_CLI_CLT_PATH'; " +
-    "`$env:DEVECO_SDK_HOME = '$env:DEVECO_SDK_HOME'; " +
-    "`$env:OHOS_HDC_SERVER_PORT = '$env:OHOS_HDC_SERVER_PORT'; "
-$hvigorCmd = $cli + "& '$hvigor' --mode module -p module=$module@$Product " +
-    "-p product=$Product -p buildMode=$mode assembleHap --no-daemon"
-
-# The `--no-daemon` route is retried **once** before falling back to the CLI.
-# The stall that prompted this is intermittent, and the same command that went
-# silent for two minutes ran in 17 s immediately afterwards on an unchanged
-# tree. A retry therefore costs at most one `$StallSec` and usually recovers the
-# whole build; `devecocli build` is ~6× slower (114 s vs 17 s measured), so it
-# must not be the first response to a one-off silence.
-$result = Invoke-Timed 'hvigorw' $hvigorCmd
-if ($result -ne 'ok') {
-    Write-Host '  retrying hvigorw --no-daemon once ...' -ForegroundColor Yellow
+    # The `--no-daemon` route is retried **once** before falling back to the CLI.
+    # The stall that prompted this is intermittent, and the same command that went
+    # silent for two minutes ran in 17 s immediately afterwards on an unchanged
+    # tree. A retry therefore costs at most one `$StallSec` and usually recovers
+    # the whole build; `devecocli build` is ~6× slower (114 s vs 17 s measured),
+    # so it must not be the first response to a one-off silence.
     $result = Invoke-Timed 'hvigorw' $hvigorCmd
-}
+    if ($result -ne 'ok') {
+        Write-Host '  retrying hvigorw --no-daemon once ...' -ForegroundColor Yellow
+        $result = Invoke-Timed 'hvigorw' $hvigorCmd
+    }
 
-if ($result -ne 'ok') {
-    # Only reached when `--no-daemon` failed twice: an ohpm sync that never ran,
-    # a corrupted hvigor cache. The CLI is the slower route but it repairs both.
-    Write-Host '  retrying through devecocli build ...' -ForegroundColor Yellow
-    $result = Invoke-Timed 'devecocli build' (
-        $cli + "devecocli build --product $Product --build-mode $mode")
+    if ($result -ne 'ok') {
+        # Only reached when `--no-daemon` failed twice: an ohpm sync that never
+        # ran, a corrupted hvigor cache. The CLI is the slower route but it
+        # repairs both.
+        Write-Host '  retrying through devecocli build ...' -ForegroundColor Yellow
+        $result = Invoke-Timed 'devecocli build' (
+            $cli + "devecocli build --product $Product --build-mode $mode")
+    }
+    if ($result -ne 'ok') { Fail "Build failed (see $buildLog)" }
 }
-if ($result -ne 'ok') { Fail "Build failed (see $buildLog)" }
 
 # ---- verify the artifact is the one this build wrote ------------------------
 # hvigor's file name does **not** encode the build mode: both debug and release

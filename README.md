@@ -34,8 +34,9 @@ Tools + 模拟器的 Windows 机器上，也能完成“改代码 → 构建 →
 - AI 洞见（OpenAI 兼容接口）：左滑到底让模型给出标签，已有标签归一复用，
   没有才新建，与原标签**合并**而非覆盖；请求期间页面上有进度胶囊。
 - 状态栏与手势条在主页、阅读页、回收站均与页面背景连续（深色模式已逐像素核对）。
-- 应用图标为分层图标：3×3 蓝色马赛克背景层 + 白色折角纸前景层，各 1024×1024；
-  由 `design/my-icon.png` 一张母版经 `scripts/gen-icon.ps1` 反解 alpha 拆分而来。
+- 应用图标为单层图标：深青 `#` 在米色等高线底板上，1024×1024；由
+  `design/icon.png` 一张母版经 `scripts/gen-icon.ps1` 派生（母版原样作为
+  `app_icon.png`，另出 216² 的 `startIcon.png`）。
 
 截图：`screenshots/`（`/screenshots` 不入库）。
 
@@ -106,7 +107,7 @@ entry/src/main/ets/
   pages/ReaderPage.ets       # 阅读 + 块级就地编辑（无模式切换）
   pages/TrashPage.ets        # 回收站 NavDestination
 AppScope/resources/base/media/
-  layered_image.json         # 分层图标：foreground/background，均 1024
+  app_icon.png               # 单层应用图标（母版原样，entry 另有一份）
 entry/src/main/resources/rawfile/render/
   katex.html                 # 唯一的 Web 渲染页（块级公式）
   vendor/                    # katex.min.js / .css / KaTeX_*.woff2（离线）
