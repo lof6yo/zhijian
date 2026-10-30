@@ -6,8 +6,27 @@
  * color therefore lives here as a plain hex string, with an explicit light and
  * dark variant so dark mode keeps AA contrast instead of reusing the saturated
  * light-mode hue.
+ *
+ * ## 强调色不是独立的设置项，它由背景主题派生
+ *
+ * 用户选「沙海」，整套强调色就变成陶土橙；选「长白」，变成冷紫。**没有第二个
+ * 开关**——若强调色还能单独选，屏幕上就会出现「黄山 + 橙」这种与地形色相打架的
+ * 组合，而「自动适配」也就成了一句做不到的承诺。派生关系写在
+ * `ContourTheme.accentKey` 上（每个地点声明自己的色相），这里只负责按 key 查表。
+ *
+ * 代价是强调色的可选范围跟着主题走（五套），而不再是一份独立的色板。收益是
+ * 一致性：整个界面的唯一饱和色永远与背景的地貌色相互相呼应，而不是互相抢。
+ *
+ * ## 为什么字段只有这一组
+ *
+ * `glow*` / `page*` / `glass*` 三组曾经在这里：光斑颜色、背景渐变三段、以及
+ * 玻璃选中底。前两组随「背景改成等高线主题」一起失去读者（底色与光斑都不再由
+ * 强调色染），第三组从来没被读过（`glassBg()` 无调用点）。留着三个没有读者的
+ * 十八参数字段，只会让新增第五套配色时不得不凭空发明十二个没人看的 hex——所以
+ * 一并删掉。要恢复光斑，重新设计那一层，不要把它接回这张表。
  */
 export class AccentScheme {
+  /** 与 `ContourTheme.accentKey` 对应。 */
   key: string;
   label: string;
   /** Saturated hue for the light theme. */
@@ -20,35 +39,9 @@ export class AccentScheme {
   /** Soft tint behind chips, used instead of a translucent accent fill. */
   chipLight: string;
   chipDark: string;
-  /** Selected-segment / filter fill. */
-  glassLight: string;
-  glassDark: string;
-  /** FAB halo. */
-  glowLight: string;
-  glowDark: string;
-  /**
-   * Backdrop gradient endpoints. These are what make 光感 follow the accent:
-   * the page is a two-stop wash of the accent's own hue, so switching 强调色
-   * recolours the whole canvas instead of leaving a fixed blue sky behind a
-   * teal UI.
-   *
-   * The stops are deliberately *much* paler than `accent` — a page painted at
-   * accent strength makes the cards unreadable. Light mode keeps them near-white
-   * with a hue bias; dark mode keeps them near-black with the same bias, so the
-   * text keeps its contrast either way.
-   */
-  pageTopLight: string;
-  pageTopDark: string;
-  pageMidLight: string;
-  pageMidDark: string;
-  pageBottomLight: string;
-  pageBottomDark: string;
 
   constructor(key: string, label: string, accentLight: string, accentDark: string,
-    onAccentLight: string, onAccentDark: string, chipLight: string, chipDark: string,
-    glassLight: string, glassDark: string, glowLight: string, glowDark: string,
-    pageTopLight: string, pageTopDark: string, pageMidLight: string, pageMidDark: string,
-    pageBottomLight: string, pageBottomDark: string) {
+    onAccentLight: string, onAccentDark: string, chipLight: string, chipDark: string) {
     this.key = key;
     this.label = label;
     this.accentLight = accentLight;
@@ -57,16 +50,6 @@ export class AccentScheme {
     this.onAccentDark = onAccentDark;
     this.chipLight = chipLight;
     this.chipDark = chipDark;
-    this.glassLight = glassLight;
-    this.glassDark = glassDark;
-    this.glowLight = glowLight;
-    this.glowDark = glowDark;
-    this.pageTopLight = pageTopLight;
-    this.pageTopDark = pageTopDark;
-    this.pageMidLight = pageMidLight;
-    this.pageMidDark = pageMidDark;
-    this.pageBottomLight = pageBottomLight;
-    this.pageBottomDark = pageBottomDark;
   }
 
   accent(isDark: boolean): string {
@@ -80,40 +63,36 @@ export class AccentScheme {
   chipBg(isDark: boolean): string {
     return isDark ? this.chipDark : this.chipLight;
   }
-
-  glassBg(isDark: boolean): string {
-    return isDark ? this.glassDark : this.glassLight;
-  }
-
-  glow(isDark: boolean): string {
-    return isDark ? this.glowDark : this.glowLight;
-  }
-
-  pageTop(isDark: boolean): string {
-    return isDark ? this.pageTopDark : this.pageTopLight;
-  }
-
-  pageMid(isDark: boolean): string {
-    return isDark ? this.pageMidDark : this.pageMidLight;
-  }
-
-  pageBottom(isDark: boolean): string {
-    return isDark ? this.pageBottomDark : this.pageBottomLight;
-  }
 }
 
 export class Palette {
-  /** Index matches the persisted `accentMode` setting. */
+  /**
+   * 五套强调色，与 `ContourThemes.all` 的地点一一对应（顺序不必相同，靠 key 关联）。
+   *
+   * 色相按地点的地貌色温挑：
+   *
+   * | 地点 | 强调色 | 理由 |
+   * |---|---|---|
+   * | 黄山 | 蓝 `#0A59F7` | 云海与远山的冷蓝 |
+   * | 龙脊 | 绿 `#2E7D4F` | 梯田植被 |
+   * | 长白 | 紫 `#7452C8` | 高寒湖盆的暮色，也避开与黄山同为蓝 |
+   * | 沙海 | 橙 `#D9700A` | 沙 |
+   * | 呼伦 | 青 `#0E8F8F` | 水草与天光 |
+   *
+   * 深色一套统一提亮并降饱和（`#2E7D4F` 压在近黑底上会读不出来），同时把
+   * `onAccent` 反过来压到近黑——白字压在 `#6FD39A` 上只有 1.8:1。
+   */
   static readonly schemes: AccentScheme[] = [
     new AccentScheme('blue', '蓝', '#0A59F7', '#8AB4FF', '#FFFFFF', '#0B1020',
-      '#E8EEFF', '#1E2A44', '#CC0A59F7', '#558AB4FF', '#330A59F7', '#408AB4FF',
-      '#EAF1F8', '#1B2530', '#F6F9FC', '#1B1F29', '#E8EEFF', '#101114'),
-    new AccentScheme('teal', '青', '#0E8F8F', '#5FD3D3', '#FFFFFF', '#04201F',
-      '#DFF4F4', '#123434', '#CC0E8F8F', '#555FD3D3', '#330E8F8F', '#405FD3D3',
-      '#E6F4F4', '#14302F', '#F4FAFA', '#16262A', '#DFF2F2', '#0E1414'),
+      '#E8EEFF', '#1E2A44'),
+    new AccentScheme('green', '绿', '#2E7D4F', '#6FD39A', '#FFFFFF', '#06240F',
+      '#E4F3E8', '#173220'),
+    new AccentScheme('violet', '紫', '#7452C8', '#B79BF0', '#FFFFFF', '#150A2A',
+      '#EEE8FB', '#241B38'),
     new AccentScheme('amber', '橙', '#D9700A', '#FFB86B', '#FFFFFF', '#2A1602',
-      '#FCEBDC', '#3A2513', '#CCD9700A', '#55FFB86B', '#33D9700A', '#40FFB86B',
-      '#FAF0E6', '#30231A', '#FCF7F2', '#29201B', '#FBEBDA', '#14100D')
+      '#FCEBDC', '#3A2513'),
+    new AccentScheme('teal', '青', '#0E8F8F', '#5FD3D3', '#FFFFFF', '#04201F',
+      '#DFF4F4', '#123434')
   ];
 
   static scheme(index: number): AccentScheme {
@@ -121,6 +100,21 @@ export class Palette {
       return Palette.schemes[0];
     }
     return Palette.schemes[index];
+  }
+
+  /**
+   * key → 下标。认不出时退回 0（蓝），与 `scheme()` 的归一方向一致。
+   *
+   * 用 key 而不是「主题下标 % 3」来关联：主题会增删，而位置关系一旦被当成契约，
+   * 加第六个地点就会把它静默指到别人家的强调色上。
+   */
+  static indexOf(key: string): number {
+    for (let i = 0; i < Palette.schemes.length; i++) {
+      if (Palette.schemes[i].key === key) {
+        return i;
+      }
+    }
+    return 0;
   }
 }
 

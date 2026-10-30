@@ -284,7 +284,8 @@ entry/src/main/ets/
 ├── pages/               # Index (HDS shell: 3 tabs, title bar actions),
 │                        # ReaderPage / TrashPage / WebDavPage (NavDestination)
 ├── components/          # NoteCard, CardSurface, MaterialLayer (沉浸光感
-│                        # Toggle carrier), FormulaWeb (KaTeX 块级公式)
+│                        # Toggle carrier), FormulaWeb (KaTeX 块级公式),
+│                        # ContourCanvas (背景等高线，单个 Canvas)
 ├── markdown/            # 自研 Markdown 引擎：MdTypes (AST) / MdParser /
 │                        # CodeHighlight / MathLite / MdView (原生 ArkUI 渲染)
 ├── models/              # Note (V2 @ObservedV2/@Trace)
@@ -298,12 +299,14 @@ entry/src/main/resources/rawfile/render/
 └── vendor/              # katex.min.js + katex.min.css + KaTeX_*.woff2（离线）
 ```
 
-**包体只有两件事：应用代码（`ets/modules.abc` ≈ 524 KB，debug 另带
-`sourceMaps.map`/`symbolMap.map`）和这一套 KaTeX（≈ 558 KB）。**
+**包体只有三件事：应用代码（`ets/modules.abc` ≈ 653 KB，debug 另带
+`sourceMaps.map`/`symbolMap.map`）、一套 KaTeX（≈ 558 KB）和五份背景等高线几何
+（`rawfile/contours/` ≈ 100 KB，1.0.8 起）。**
 曾经这里有 Mermaid（5.4 MB）与 ECharts（1.1 MB），以及一个 Vite 构建的 Crepe
 编辑器（2.7 MB），三者加起来占 HAP 的 93%——而**没有一条 UI 路径能走到它们**：
 `MdView` 把图块画成「渲染未接入」占位卡片，`EditorPage` 也没有任何 `pushPath`
-入口。删掉之后 release HAP 从 10.5 MB 降到 **1,345 KB**。要加回图表，先读 §6
+入口。删掉之后 release HAP 从 10.5 MB 降到 **1,345 KB**（1.0.7），加上等高线后
+**1,473 KB**（1.0.8）。要加回图表，先读 §6
 「图表为什么不在包里」。
 
 ### WebDAV sync
@@ -539,7 +542,7 @@ button.
   when the user taps the body.
 - **设置 is grouped by purpose**, in this order: 阅读与编辑 / 外观 / AI / 同步与备份 /
   回收站 / 关于. 「阅读与编辑」在最前：字号、行距、编辑体验是写作时随手会调的东西，
-  而外观（主题、光感挡位、强调色）装好之后基本不再动——与「AI 排在同步之前」是同一条
+  而外观（主题、光感挡位、背景主题）装好之后基本不再动——与「AI 排在同步之前」是同一条
   理由：越常用的越靠上。 AI 排在同步之前：两者都是「对外连接」的配置，而 AI 是写作时随时要用
   的，同步是装好之后就不动的。 Each group is a `SectionLabel` plus its cards; keep a new row inside
   the group it belongs to rather than appending it to the end of the list.
@@ -1355,10 +1358,12 @@ an older device degrades instead of crashing. The HDS libraries live in the
   title bar and the floating capsule sit over one continuous surface, which is
   what makes the material sampling coherent. Do not reintroduce `PageBackdrop()`
   inside a `TabContent`.
-- **`SegmentButton` takes a `kind` (`SEG_THEME` / `SEG_BACKGROUND` / `SEG_GLASS`)**,
-  not a boolean. Three independent segmented rows on the settings page would
-  otherwise need three flags plus a precedence rule. Both `SegmentButton` and
-  `segmentSelected()` switch on it, so a new row must add a constant to both.
+- **`SegmentButton` takes a `kind` (`SEG_THEME` / `SEG_GLASS`)**, not a boolean.
+  Two independent segmented rows on the settings page would otherwise need two
+  flags plus a precedence rule. Both `SegmentButton` and `segmentSelected()` switch
+  on it, so a new row must add a constant to both. `SEG_BACKGROUND` was removed
+  with the 背景样式 row (背景 is the 等高线 theme now, which is picked from a swatch
+  row rather than a segment).
 - **A tag is a query, not a private filter.** Tapping a tag on 标签 calls
   `filterByTag(tag)`, which sets `query` **and** `searchExpanded` and switches to
   the notes tab, so the constraint is visible in the search field and clearable
@@ -1503,17 +1508,36 @@ an older device degrades instead of crashing. The HDS libraries live in the
   chrome that slides up must clear the status bar explicitly, not use a constant.
   `Index.PageBackdrop` is drawn **once** behind the whole shell, not per tab, so
   the background does not jump when switching tabs and the swipe has no seam.
-- **背景 is 光感 only, and it follows 强调色.** There is no 背景样式 setting any more:
-  the retired `backgroundStyle` preference (`0` solid / `1` gradient /
-  `2` gradient + glow) was removed with its 分段控件 row, because a solid fill
-  contradicts the 光感 look and the two "gradient" variants were the same shape
-  with an extra orbital glow. `Index.PageBackdrop` now has exactly one form —
-  an accent gradient (`Palette.AccentScheme.pageTop/pageMid/pageBottom`) plus four
-  `accentGlowColor()` orbs — so switching 强调色 repaints the whole background with
-  no separate control. `KEY_BACKGROUND` is deliberately left documented in
-  `SettingsStore.ets` but unread: an installed build still holds a value under it
-  and Preferences never garbage-collects, so the name is kept to stop someone
-  reintroducing a parallel field that disagrees with the palette.
+- **背景是一层真实地形的等高线，主题决定它，强调色由主题派生。**
+  `Index.PageBackdrop` 是「160° 三段底色渐变 + 一个全屏 `Canvas`」。三个色标与
+  线色都来自 `common/ContourTheme.ets` 的五套地点配色（黄山 / 龙脊 / 长白 /
+  沙海 / 呼伦），几何是构建期从公开 DEM 提好的 `rawfile/contours/{key}.txt`——
+  运行期不打包 DEM 位图、不联网。`backgroundStyle` 这个偏好键留名不读：装过的
+  机器上仍有值，而 Preferences 从不回收键。
+  - **强调色不再是独立设置项。** `ContourTheme.accentKey` → `Palette.indexOf()`
+    把主题映射到那五套色相之一，设置页只有「背景主题」一行色点。留一个独立的
+    强调色开关就会出现「沙海背景 + 黄山蓝按钮」这种两套色相打架的组合，而
+    「自动适配」也成了一句做不到的承诺。`KEY_ACCENT` 同样留名不读不写：
+    读它会让旧值在切主题之后复活，写它等于存了一份可能与主题不一致的副本。
+  - **四个 `radialGradient` 光斑整个删掉**，连同 `Palette` 里没有读者的三组字段
+    （`glow*` / `page*` / `glass*`）。光斑压在等高线上会盖住线条，调淡到不盖住
+    就只是一层雾。
+  - **可读性预算是硬指标，量的是感知亮度差不是一个比值**：普通线 ΔL ≤16（浅）
+    / ≤14（深），计曲线 ≤26 / ≤18，计曲线与普通线的强度比 ≥1.6。这组数由
+    `tools/contour-budget.js` 逐主题验算、由 `tools/contour-audit.js` 在设备截图上
+    复核（**按行取 95 分位**估底色，因为竖直方向有渐变）。实测五主题浅色普通线
+    中位 13.6–14.0、P90 24.4–25.7，深色中位 11.9–13.3、P90 20.5，全部在预算内。
+  - **深色主题的计曲线必须比普通线更亮。** 深色底近黑，线越接近底色越弱；若计
+    曲线取了更深的色，它在深色下反而变成弱的那一档，加粗也没用。浅色相反。
+    两套方向相反，不能共用一张表。
+  - **上下两条淡出带用 Canvas 的 `destination-out`，不盖底色层。** 底色是渐变，
+    同色遮罩对不上；擦 alpha 与底色无关，深浅共用一条遮罩。顶部 130 vp、底部
+    110 vp，比例退到 0.06 而不是 0——硬切会在带子边界留一道横线。
+  - **一档线一次 `stroke`，不是每条折线一个节点。** 沙海有 699 条折线、5744 个点；
+    用 ArkUI 组件画就是上千个节点。Canvas 只有 1 个节点，实测整次重绘 15 ms。
+    同一次 stroke 里重叠段按并集覆盖率栅格化，陡坡不会叠成深色块。
+  - **`ContourCanvas` 的几何缓存在模块级 `Map` 里**，`@Monitor('themeKey','isDark')`
+    负责重绘。`@Param` 变了实例是复用的，`aboutToAppear` 不会再跑。
 - **The bottom 页签栏 is a floating capsule, and its width comes from a *bucket*.**
   `HdsBarWidthRangeOptions` chooses by **window** width: `smallWidth` when the tab
   area is **< 440 vp**, `mediumWidth` for 440–600, `largeWidth` for > 840. This

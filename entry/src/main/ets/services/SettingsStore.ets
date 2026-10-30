@@ -7,14 +7,21 @@ const DOMAIN = 0x0000;
 const STORE_NAME = 'hmstart_settings';
 const KEY_THEME = 'themeMode';
 /*
- * `backgroundStyle` is a retired setting: 背景 keeps only 光感 and follows 强调色.
- * The key is intentionally *not* deleted — an installed build still has a value
- * under it, and Preferences never garbage-collects. Reading it is a no-op, but
- * leaving the name documented here stops someone re-introducing a parallel
- * `backgroundStyle` field that silently disagrees with the palette-driven
- * backdrop.
+ * `backgroundStyle` is a retired setting: 背景 is now the 等高线 theme below and
+ * has no style axis. The key is intentionally *not* deleted — an installed build
+ * still has a value under it, and Preferences never garbage-collects. Reading it
+ * is a no-op, but leaving the name documented here stops someone re-introducing
+ * a parallel `backgroundStyle` field that silently disagrees with the theme.
+ */
+/*
+ * `accentMode` 也是 retired：强调色现在由背景主题派生（`ContourTheme.accentKey`
+ * → `Palette.indexOf`），不再是独立设置项。装过的机器上偏好里仍有这个键，所以
+ * 保留名字**但不读也不写**——读它会让一个旧值在切主题之后突然复活，而写它等于
+ * 存了一份与主题可能不一致的副本，两者都是「同一个事实两个来源」。
  */
 const KEY_ACCENT = 'accentMode';
+/** 背景主题（等高线地点）下标。见 `common/ContourTheme.ets`。 */
+const KEY_BACKDROP = 'backdropTheme';
 const KEY_FONT_SIZE = 'editorFontSize';
 const KEY_LINE_HEIGHT = 'editorLineHeight';
 const KEY_GLASS = 'glassLevel';
@@ -108,7 +115,21 @@ export class SettingsStore {
   static readonly instance: SettingsStore = new SettingsStore();
 
   themeMode: number = 0;
-  accentMode: number = 0;
+  /**
+   * 背景主题下标，指向 `ContourThemes.all`。
+   *
+   * 存的是**数字下标**而不是 key：设置项在这里一直是数字（`themeMode`、
+   * `glassLevel` 都是），Preferences 的 `get` 也只需一种类型。代价是
+   * 「顺序即契约」——`ContourThemes.all` 的排列不能重排，否则老用户存下的 2
+   * 会在下次启动时变成另一个地点。续加只能往后追加。
+   *
+   * 默认 0（黄山）：它是这套视觉语言的出处，等高线密度也最有辨识度。
+   *
+   * **强调色不再是这里的字段。** 它是背景主题的派生值（`ContourTheme.accentKey`
+   * → `Palette.indexOf`），单独存一份就成了同一个事实的两个来源：切主题之后
+   * 旧值还在，而界面显示的已经是派生值。
+   */
+  backdropTheme: number = 0;
   /** Editor body font size in px (web side uses px, not vp). */
   editorFontSize: number = 17;
   /** Editor line height as a percentage of the font size, e.g. 175 = 1.75. */
@@ -217,7 +238,7 @@ export class SettingsStore {
     try {
       this.prefs = preferences.getPreferencesSync(context, { name: STORE_NAME });
       this.themeMode = this.readNumber(KEY_THEME, this.themeMode);
-      this.accentMode = this.readNumber(KEY_ACCENT, this.accentMode);
+      this.backdropTheme = this.readNumber(KEY_BACKDROP, this.backdropTheme);
       this.editorFontSize = this.clamp(this.readNumber(KEY_FONT_SIZE, this.editorFontSize),
         FONT_SIZE_MIN, FONT_SIZE_MAX);
       this.editorLineHeight = this.clamp(this.readNumber(KEY_LINE_HEIGHT, this.editorLineHeight),
@@ -252,9 +273,20 @@ export class SettingsStore {
     this.writeNumber(KEY_THEME, mode);
   }
 
-  setAccentMode(mode: number): void {
-    this.accentMode = mode;
-    this.writeNumber(KEY_ACCENT, mode);
+  /**
+   * 切背景主题。
+   *
+   * 只夹下界，不夹上界：上界是 `ContourThemes.all.length`，而读取方
+   * `ContourThemes.theme()` 自己就越界退回第一个——把长度抄一份到这里，就成了
+   * 第二个需要同步的常量（加主题时忘了改这边，用户切到新主题却被打回黄山）。
+   * 两端都走同一处 `theme()` 归一，显示与画布就不可能不一致。
+   *
+   * `setAccentMode` 已删除：强调色由这里选的这个主题派生，没有第二个写入点。
+   */
+  setBackdropTheme(index: number): void {
+    const safe: number = index < 0 ? 0 : index;
+    this.backdropTheme = safe;
+    this.writeNumber(KEY_BACKDROP, safe);
   }
 
   setEditorFontSize(size: number): void {

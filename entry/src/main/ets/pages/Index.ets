@@ -23,6 +23,8 @@ import { Credentials } from '../services/Credentials';
 import { SyncEngine } from '../services/SyncEngine';
 import { AutoSync } from '../services/AutoSync';
 import { AccentScheme, Palette, TagHeat } from '../common/Palette';
+import { ContourTheme, ContourThemes, ContourInk } from '../common/ContourTheme';
+import { ContourCanvas } from '../components/ContourCanvas';
 import { FONT_SIZE_MAX, FONT_SIZE_MIN, CARD_CORNER,
   GEAR_ADAPTIVE, GEAR_HIGH, GEAR_LOW, GEAR_MEDIUM,
   GLASS_LEVEL_DEFAULT, GLASS_LEVEL_MAX, GLASS_LEVEL_MIN,
@@ -181,7 +183,14 @@ struct Index {
    */
   @Local tagsSnapshot: string[] = [];
   @Local themeMode: number = 0;
-  @Local accentMode: number = 0;
+  /**
+   * 背景主题下标（`ContourThemes.all` 的顺序）。
+   *
+   * 这是**外观里唯一的一档色相选择**：底色、地形几何、强调色全部由它派生。
+   * 强调色没有独立的 `@Local`——有的话就有两个真实来源，切换主题之后旧值还
+   * 挂着，界面会出现「沙海的褐色背景 + 黄山的蓝按钮」。派生点在 `scheme()`。
+   */
+  @Local backdropTheme: number = 0;
   @Local fontSize: number = 17;
   @Local lineHeight: number = 175;
   /**
@@ -381,7 +390,7 @@ struct Index {
 
   aboutToAppear(): void {
     this.themeMode = SettingsStore.instance.themeMode;
-    this.accentMode = SettingsStore.instance.accentMode;
+    this.backdropTheme = SettingsStore.instance.backdropTheme;
     this.fontSize = SettingsStore.instance.editorFontSize;
     this.lineHeight = SettingsStore.instance.editorLineHeight;
     this.glassLevel = SettingsStore.instance.glassLevel;
@@ -976,9 +985,20 @@ struct Index {
     }, 420);
   }
 
-  private setAccentMode(mode: number): void {
-    this.accentMode = mode;
-    SettingsStore.instance.setAccentMode(mode);
+  /**
+   * 切背景主题。所有色相都跟着它走。
+   *
+   * 只改 `@Local` + 持久化：底色渐变、地形几何、强调色、设置页的选中圈都读同一
+   * 个 `backdropTheme`，所以一处赋值就全部跟着变，不需要通知画布（画布自己有
+   * `@Monitor('themeKey')`）。强调色也在这里随之切换，因为它没有第二个来源。
+   */
+  private setBackdropTheme(index: number): void {
+    this.backdropTheme = index;
+    SettingsStore.instance.setBackdropTheme(index);
+  }
+
+  private backdrop(): ContourTheme {
+    return ContourThemes.theme(this.backdropTheme);
   }
 
   /**
@@ -1012,8 +1032,23 @@ struct Index {
     return value;
   }
 
+  /**
+   * 当前强调色。
+   *
+   * **只有一个输入：`backdropTheme`。** 强调色由主题的 `accentKey` 派生，界面
+   * 上不存在独立的色相开关，所以这里读的必须与 `backdrop()` 是同一个下标——
+   * 否则「选沙海得到橙色按钮」这条承诺就只在设置页成立，按钮仍停在旧色上。
+   */
   private scheme(): AccentScheme {
-    return Palette.scheme(this.accentMode);
+    return Palette.scheme(Palette.indexOf(this.backdrop().accentKey));
+  }
+
+  /**
+   * 任一主题配套的强调色。设置页五个色点要画**各自**的色相，不能都画当前那个，
+   * 否则五个圆点全是一个颜色，等于没有比较。
+   */
+  private accentOf(theme: ContourTheme): string {
+    return Palette.scheme(Palette.indexOf(theme.accentKey)).accent(this.activeDark());
   }
 
   private accentColor(): string {
@@ -1026,10 +1061,6 @@ struct Index {
 
   private accentChipColor(): string {
     return this.scheme().chipBg(this.activeDark());
-  }
-
-  private accentGlowColor(): string {
-    return this.scheme().glow(this.activeDark());
   }
 
   /**
@@ -1882,20 +1913,25 @@ struct Index {
   // ------------------------------------------------------------- backdrop
 
   /**
-   * The single page backdrop. 光感 is the only style: an accent-tinted wash plus
-   * four accent-coloured glow orbs.
+   * 唯一的页面背景：底色渐变 + 一层真实地形等高线。
    *
-   * The 纯色 and 渐变 options were removed by product decision — with only three
-   * accent hues and one shape language, three background styles produced nine
-   * subtly different canvases where nobody could tell which was "the design".
-   * One style that follows 强调色 gives the user a real choice (three clearly
-   * distinct moods) instead of a fake one.
+   * 底色与线条都由「背景主题」决定（`common/ContourTheme.ets`），强调色由同一个
+   * 主题**派生**（`ContourTheme.accentKey` → `Palette.indexOf`）。所以界面上
+   * 只有一档色相选择：选一个地点，背景与按钮同时换到那一套色相里。
    *
-   * Every colour here comes from `Palette`, not from `$r('app.color.page_grad_*')`.
-   * That is load-bearing: ArkUI resolves resources once at build time, so a
-   * resource cannot follow a runtime accent switch — the same reason
-   * `accentColor()` is a hex string. The resource entries are kept only so the
-   * dark-mode table stays complete and older builds do not resolve undefined.
+   * 原来那四个 `radialGradient` 光斑随这次改造整个删掉：它们的颜色是强调色的
+   * 光斑色（`glow*`），留在等高线上面会盖住线条，而调淡到不盖住就只是一层雾，
+   * 不如没有。`Palette` 里那三组没有读者的字段（`glow*` / `page*` / `glass*`）
+   * 也一并删除了，免得下一次加主题时被迫凭空发明十二个没人看的 hex。
+   *
+   * 底色保留三段渐变（160°）而不是纯色：等高线在没有氛围的平底上会「飘」，
+   * 而渐变给出上下明暗，山势才像是落在一个空间里。角度与三元 stop 的 0.55
+   * 都是从原来的背景继承的，没有为了等高线重新调过——那两个数决定的是页面的
+   * 明暗分布，与上面画什么无关。
+   *
+   * `expandSafeArea` 挂在**画底色这一层**上，不是外层 `Stack`：只有真正绘制
+   * 背景的节点扩张才会把状态栏与手势条也染上，扩张容器不会（渐变子节点仍按
+   * 未扩张的尺寸排）。这条在 AGENTS 里踩过，深色模式下最明显。
    */
   @Builder
   PageBackdrop() {
@@ -1906,60 +1942,22 @@ struct Index {
         .linearGradient({
           angle: 160,
           colors: [
-            [this.scheme().pageTop(this.activeDark()), 0.0],
-            [this.scheme().pageMid(this.activeDark()), 0.55],
-            [this.scheme().pageBottom(this.activeDark()), 1.0]
+            [this.backdrop().top(this.activeDark()), 0.0],
+            [this.backdrop().mid(this.activeDark()), 0.55],
+            [this.backdrop().bottom(this.activeDark()), 1.0]
           ]
         })
         .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
 
-      // The four orbs are the accent's own glow at four sizes. Previously three
-      // of them were fixed blue/purple/cyan, so a teal UI sat on a blue-plus-
-      // violet sky — the complaint that the backdrop ignored 强调色.
-      Column()
-        .width(560)
-        .height(560)
-        .borderRadius(280)
-        .radialGradient({
-          center: ['50%', '50%'],
-          radius: 280,
-          colors: [[this.accentGlowColor(), 0.0], ['#00000000', 1.0]]
-        })
-        .opacity(0.9)
-        .position({ x: -220, y: -200 })
-      Column()
-        .width(380)
-        .height(380)
-        .borderRadius(190)
-        .radialGradient({
-          center: ['50%', '50%'],
-          radius: 190,
-          colors: [[this.accentGlowColor(), 0.0], ['#00000000', 1.0]]
-        })
-        .opacity(0.55)
-        .position({ x: 860, y: 180 })
-      Column()
-        .width(520)
-        .height(520)
-        .borderRadius(260)
-        .radialGradient({
-          center: ['50%', '50%'],
-          radius: 260,
-          colors: [[this.accentGlowColor(), 0.0], ['#00000000', 1.0]]
-        })
-        .opacity(0.8)
-        .position({ x: 360, y: 1680 })
-      Column()
-        .width(380)
-        .height(380)
-        .borderRadius(190)
-        .radialGradient({
-          center: ['50%', '50%'],
-          radius: 190,
-          colors: [[this.accentGlowColor(), 0.0], ['#00000000', 1.0]]
-        })
-        .opacity(0.5)
-        .position({ x: 900, y: 1760 })
+      // 等高线层。`themeKey` 而不是主题对象：几何文件名就是 key，两者必须对得
+      // 上，传对象会让组件多一个「对象身份是否变了」的判断，而它真正需要的只是
+      // 一个字符串。
+      ContourCanvas({
+        themeKey: this.backdrop().key,
+        isDark: this.activeDark()
+      })
+        .width('100%')
+        .height('100%')
     }
     .width('100%')
     .height('100%')
@@ -3941,23 +3939,35 @@ struct Index {
             }
             .width('100%')
 
+            // 背景主题是**外观里唯一的一档色相选择**。强调色（按钮、标签、选中态）
+            // 由它派生，所以这里不再有第二行色板——两个开关会互相打架：选沙海却
+            // 留着黄山那套蓝按钮，背景与前景就是两套不相干的色相，「自动适配」也
+            // 成了一句做不到的承诺。
+            //
+            // 副标题给的是地貌而不是色名：五个主题的底色都很接近，用户在设置页
+            // 分辨它们靠的是「密而陡 / 舒展的同心弧 / 一圈圈闭合」这些形状描述。
+            // 不把强调色名也塞进来——五个点已占 194 vp，文字列只剩约 186 vp，
+            // 「沙海 · 沙丘脊线，平行而长」已经贴到省略号，再加两个字就全被截掉。
             Row() {
               Column({ space: 2 }) {
-                Text('强调色')
+                Text('背景主题')
                   .fontSize(16)
                   .fontColor($r('app.color.text_primary'))
-                Text('按钮、标签、选中态')
+                Text(this.backdrop().label + ' · ' + this.backdrop().hint)
                   .fontSize(12)
                   .fontColor($r('app.color.text_secondary'))
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
               }
               .alignItems(HorizontalAlign.Start)
-
-              Blank()
+              // 五个点占 5×34 + 4×6 = 194 vp，剩下给文字。不加 layoutWeight 时
+              // 文字列会把自己的自然宽度全占掉，把圆点挤出卡片右边界。
+              .layoutWeight(1)
 
               Row({ space: 6 }) {
-                ForEach(Palette.schemes, (item: AccentScheme, index: number) => {
-                  this.AccentSwatch(item, index)
-                }, (item: AccentScheme) => item.label)
+                ForEach(ContourThemes.all, (item: ContourTheme, index: number) => {
+                  this.BackdropSwatch(item, index)
+                }, (item: ContourTheme) => item.key)
               }
             }
             .width('100%')
@@ -4137,33 +4147,50 @@ struct Index {
     .padding({ top: this.pageTopInset() })
   }
 
+  /**
+   * 一个背景主题的色点。
+   *
+   * 三层，从外到内：选中环、底色圆、强调色圆点。**中间的强调色圆点是重点**——
+   * 底色五个都很接近（都是近白 / 近黑带一点色偏），只画底色五个点看上去几乎
+   * 一样；而「选这一项会得到什么颜色的按钮」才是用户真正在比较的东西。
+   *
+   * 选中环也用该主题的强调色（不是线色）：它和圆点同色，一眼就能看出「这一圈
+   * 亮起来的那套色相，就是它给你的强调色」。
+   *
+   * 尺寸 34 vp：这一行有五个点，44 vp 会把左侧标题列挤掉一半（五个点
+   * 5×34 + 4×6 = 194 vp）。
+   */
   @Builder
-  AccentSwatch(item: AccentScheme, index: number) {
+  BackdropSwatch(item: ContourTheme, index: number) {
     Column({ space: 4 }) {
       Stack({ alignContent: Alignment.Center }) {
-        Circle()
-          .width(this.accentMode === index ? 30 : 24)
-          .height(this.accentMode === index ? 30 : 24)
-          .fill(item.accent(this.activeDark()))
-        if (this.accentMode === index) {
+        if (this.backdropTheme === index) {
           Circle()
-            .width(38)
-            .height(38)
+            .width(34)
+            .height(34)
             .fillOpacity(0)
-            .stroke(item.accent(this.activeDark()))
+            .stroke(this.accentOf(item))
             .strokeWidth(1.5)
         }
+        Circle()
+          .width(this.backdropTheme === index ? 28 : 24)
+          .height(this.backdropTheme === index ? 28 : 24)
+          .fill(item.mid(this.activeDark()))
+        Circle()
+          .width(this.backdropTheme === index ? 12 : 10)
+          .height(this.backdropTheme === index ? 12 : 10)
+          .fill(this.accentOf(item))
       }
-      .width(38)
-      .height(38)
+      .width(34)
+      .height(34)
       Text(item.label)
         .fontSize(10)
-        .fontColor(this.accentMode === index ? item.accent(this.activeDark()) : $r('app.color.text_secondary'))
+        .fontColor(this.backdropTheme === index ? this.accentColor() : $r('app.color.text_secondary'))
     }
-    .width(44)
-    .accessibilityText(`强调色${item.label}`)
+    .width(34)
+    .accessibilityText(`背景主题${item.label}`)
     .onClick(() => {
-      this.setAccentMode(index);
+      this.setBackdropTheme(index);
     })
   }
 

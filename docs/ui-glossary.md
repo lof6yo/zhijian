@@ -7,7 +7,7 @@
 代码标识符用英文，口头/需求描述用中文；两者在下表成对出现。
 
 定位写法：`文件名 › @Builder 名`，例如 `Index.ets › FloatingBar()`；
-必要时补层级：`设置页 › 设置卡片 › 强调色色块 › 第 2 个（青）`。
+必要时补层级：`设置页 › 设置卡片 › 背景主题色点 › 第 2 个（龙脊）`。
 
 ---
 
@@ -171,9 +171,9 @@
 | 设置行 | `Index.SettingRow(title, value)` | WebDAV / 导入导出 / 回收站 / 关于，共 4 行，圆角 16 |
 | 设置卡片 | `ListItem` 里 `glass_bg` 的 Column | 外观合并卡（4 行）、字号行距卡（2 滑块），无独立 Builder |
 | 分段控件 | 设置行内 `Row` + `SegmentButton` ×3 | 装着三个分段项，外层 `padding(3)` 圆角 14 |
-| 分段项 | `Index.SegmentButton(label, value, kind)` | `kind` 取 `SEG_THEME` / `SEG_BACKGROUND` / `SEG_GLASS`，实心强调色选中 |
+| 分段项 | `Index.SegmentButton(label, value, kind)` | `kind` 取 `SEG_THEME` / `SEG_GLASS`（背景样式那一档随光斑一起删掉了），实心强调色选中 |
 | 沉浸光感挡位 | 外观卡第 3 行的分段控件 | 自适应 / 高 / 中 / 低，写 `SettingsStore.glassLevel`；副标题显示本机算力等级 |
-| 强调色色块 | `Index.AccentSwatch(item, index)` | 蓝 / 青 / 橙，选中放大到 30 并加细环 |
+| 背景主题色点 | `Index.BackdropSwatch(item, index)` | 黄山 / 龙脊 / 长白 / 沙海 / 呼伦。三层同心圆：选中环 + 底色圆 + 强调色圆点；选中放大到 28、环 34。**这一行是外观里唯一的色相选择**，强调色由它派生 |
 | 字号滑块 | 编辑器字号下方的 `Slider` | 14–22 px，步长 1 |
 | 行距滑块 | 行距下方的 `Slider` | 1.40–2.20 倍，步长 5（值域 140–220） |
 | 标签行 | `TagsPage` 里的 `ListItem` | `# 标签名` + 计数，点击经 `filterByTag()` 回笔记页并展开搜索框显示该标签 |
@@ -334,7 +334,7 @@
 ```
 笔记页 › 页头 › 筛选条 › 选中筛选项
 笔记页 › 标题栏 › 标题行 › 新建按钮
-设置页 › 设置卡片 › 强调色色块 › 第 2 个（青）
+设置页 › 设置卡片 › 背景主题色点 › 第 2 个（龙脊）
 编辑器页 › 编辑器页头 › 保存状态
 ```
 
