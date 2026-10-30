@@ -127,52 +127,50 @@ $env:PATH = "D:\deveco\command-line-tools\bin;D:\deveco\command-line-tools\sdk\d
 | Environment doctor | `scripts\doctor.ps1` |
 
 App icon (`scripts/gen-icon.ps1`): the single source is
-`design/my-icon.png` — 1024², a white glyph on a 3×3 blue **mosaic**. The script
-draws nothing; it **splits that raster into the two layers** HarmonyOS requires
-and writes `foreground.png`, `background.png` and the 216² `startIcon.png`. Run
-it only when the master changes, then rebuild. Full rationale:
-`design/icon/README.md`.
+`design/my-icon.png` — 1024², a glass `#` on a deep-blue **aurora** plate. The
+script draws nothing; it copies that raster to `app_icon.png` (both `AppScope`
+and `entry`) and derives the 216² `startIcon.png`. Run it only when the master
+changes, then rebuild. Full rationale: `design/icon/README.md`.
 
-Structural rules (not style choices): both layers are **1024×1024**; the
-foreground is a **transparent** PNG; the background is **opaque**; nothing
-self-clips a rounded corner or adds inner padding. The **entry** copy of
-`foreground.png/background.png` wins over `AppScope`, so the script writes both
-— editing only one leaves the launcher showing the old icon.
+**It is a single-layer icon, not `layered_image`.** `icon` pointing at a plain
+PNG is legal; the system applies its rounded-corner mask. Layering buys parallax
+that nobody can see at 48–216 px, and here it costs the edges — see below.
 
-A mosaic background is allowed. "背景层建议使用纯色" is design guidance, not a
-resource validator — the layer is an ordinary PNG. But **everything the glyph
-covers must be back-filled with the plate**: a white patch left under the
-foreground shows as a hairline when the two layers land at slightly different
-scales.
+Structural rules (not style choices): the PNG is **1024×1024** and **fully
+opaque** (any transparent pixel would show the wallpaper through the icon); it
+self-clips nothing and adds no inner padding — the outer rounded corner is the
+system's. The **entry** copy wins over `AppScope`, so the script writes both:
+editing only one leaves the launcher showing the old icon while both files have
+the same name.
 
-**The split is an alpha *solve*, not a guess.** `src = a·255 + (1−a)·bg`, so
-`a = (src − bg) / (255 − bg)` — solvable because `bg` is *known*, not inferred:
-the master is a 3×3 pure-colour mosaic whose cell boundaries are computable
-(`1024/3 ≈ 341.33`, offset by half a cell). The end-to-end assertion is
-"composite the layers back and they must reproduce the master" — currently max
-channel error **1**, mean **0**, 0 of 350 892 samples over 12.
+**Why this master cannot be split, in one line:** layering needs the glyph cut
+out of the plate, and the plate *under the glyph is invisible*. Reconstructing
+it and solving `src = a·C + (1−a)·plate` forces `a ≥ k` with
+`k = max_c |src_c − plate_c| / headroom`, so wherever the reconstructed plate
+differs from `src` there is **necessarily** foreground ink. Measured on this
+master: the aurora bloom leaked wholesale into the foreground (783 KB PNG, a
+visible blue cloud on mid-grey). Raising the alpha gain multiplies that error;
+moving the threshold only trades a chopped glass body for more bloom.
 
-Three traps, all from guessing instead of solving:
-- **Hard luminance threshold** cuts the glyph but leaves the 716 px antialias
-  band (lum 150–200) in the background layer. It is far brighter than the plate,
-  so the icon gets a grey-white halo (measured `#526FA0`) — "像是糊了一层".
-- **Estimating alpha for the transition band** needs the colour underneath,
-  which is exactly what is hidden; a few levels of error become a grey ring on a
-  dark plate. Solve it, do not estimate it.
-- **Picking each cell's colour as "the most frequent non-white pixel"** loses on
-  a cell the glyph covers almost entirely: the winner is a blend from the edge.
-  Extract a **palette** first (real cell colours have 70 k+ votes, blends a few
-  dozen), then let every cell choose only from the palette. The script asserts
-  no non-palette colour with >200 samples survives in the background.
+Before splitting a future master, ask whether **the plate under the glyph is
+known**. The previous master was a 3×3 pure-colour mosaic whose cell boundaries
+are computable (`1024/3 ≈ 341.33`, offset by half a cell), so there
+`a = (src − bg) / (255 − bg)` was *solved* and the end-to-end assertion reached
+max channel error 1. Gradients, auroras, glass and any organic transition are
+not known — use a single layer. The mosaic-era script and its three traps (hard
+luminance threshold → grey-white halo `#526FA0`; estimated alpha → grey ring on
+a dark plate; per-cell "most frequent non-white" → blend colour on a cell the
+glyph mostly covers) live in git history.
 
-Measured geometry: glyph box 538×538 = 52.5 % of the canvas, margins 243 px on
-all four sides (inside the 17 % mask-safe margin), 48 px white coverage 12.6 %.
+Measured geometry: glyph box 588×539 = 57.4 % × 52.6 % of the canvas, margins
+221 / 246 / 215 / 239 px — all outside the 17 % mask-safe margin (174 px).
 
 **This machine is CLT-only — no .NET SDK, no `csc`.** PowerShell 7's `Add-Type`
 cannot reference `System.Drawing` (`CS1069: System.Drawing.Common not found`),
 so inline C# in the icon script is impossible. All pixel work runs through
 `Add-Type -AssemblyName System.Drawing` + `LockBits` into a `byte[]`; a pass over
-1 M pixels costs ~2.3 s and the whole script ~11 s.
+1 M pixels costs ~2.3 s. Since the script only copies the master and resizes it,
+the whole run is ~0.7 s (the opacity scan samples every 3rd pixel).
 
 Direct fallbacks (only when DevEco CLI is unavailable):
 
