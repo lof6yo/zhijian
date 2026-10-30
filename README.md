@@ -16,6 +16,10 @@ Tools + 模拟器的 Windows 机器上，也能完成“改代码 → 构建 →
 
 - HDS 外壳（`HdsNavigation` + `HdsTabs`），底部 3 页签：笔记 / 标签 / 设置；
   悬浮页签栏，内容从其下方滚过；单层全局背景，切页签无拼接缝。
+- 背景是一层**真实地形的等高线**：黄山 / 龙脊 / 长白 / 沙海 / 呼伦五个地点，
+  取自公开 DEM 的构建期产物（`rawfile/contours/`，运行期不联网、不打包 DEM）。
+- 强调色**由背景主题派生**，不是独立设置项：选一个地点，背景与按钮同时换到
+  那一套色相里。可读性有硬预算，由 `tools/contour-budget.js` 验算。
 - 页面标题与右上两个圆形按钮同排；搜索圈就地展开为搜索框，不占第二行。
 - 筛选条 / 排序条压缩在同一行（全部·收藏·归档 / 修改·标题·创建），随页签收放有动画。
 - 官方沉浸光感：标题栏圆形按钮与搜索框走 `systemMaterial`，算力等级自适应；
@@ -94,14 +98,17 @@ entry/src/main/ets/
   models/Note.ets            # 笔记模型（V2 @ObservedV2/@Trace）
   services/NoteStore.ets     # 平铺 .md 文件存储/本地仓库（含 purgeNote）
   services/Frontmatter.ets   # YAML frontmatter 编解码
-  services/SettingsStore.ets # 主题/背景/强调色/光感挡位/编辑器排版
-  common/Palette.ets         # 强调色 light/dark 色对
+  services/SettingsStore.ets # 主题/背景主题/光感挡位/编辑器排版
+  common/ContourTheme.ets    # 五个地点的底色与线色、淡化常量（强调色由它派生）
+  common/ContourGeometry.ets # rawfile/contours/*.txt 的解析器
+  common/Palette.ets         # 五套强调色 light/dark 色对
   common/WindowService.ets   # 系统栏内容色与图标明暗
   common/Toast.ets           # 全应用唯一的 toast 入口（2000 ms、吞异常）
   common/Dialogs.ets         # 确认框：danger / accent 两个入口
   common/UiTokens.ets        # 圆角三档、字号五档
   components/ui/             # PageHeader / EmptyState / ActionButton+TextAction
   components/NoteCard.ets    # 瀑布流卡片（只接收 primitives）
+  components/ContourCanvas.ets # 背景等高线：单个 Canvas，一档线一次 stroke
   components/FormulaWeb.ets  # 块级公式（ArkWeb + 离线 KaTeX），全工程唯一的 Web
   pages/Index.ets            # HDS 外壳 + 3 页签 + 搜索/筛选/排序 + 设置
   pages/ReaderPage.ets       # 阅读 + 块级就地编辑（无模式切换）
@@ -119,9 +126,9 @@ docs/prd-v0.1.md             # 产品需求 v0.1
 
 ## 包体构成
 
-HAP ≈ 1.3 MB（release，实测 1,345 KB）。只有两件事：应用代码
-（`ets/modules.abc` 524 KB，另有 `ets/symbolMap.map` 230 KB）和一套离线
-KaTeX（`rawfile/render` 558 KB）。
+HAP ≈ 1.4 MB（release，实测 1,473 KB）。只有三件事：应用代码
+（`ets/modules.abc` 653 KB，另有 `ets/symbolMap.map`）、一套离线 KaTeX
+（`rawfile/render` 558 KB）和五份背景等高线几何（`rawfile/contours` 109 KB）。
 
 曾经这里有 Mermaid（5.4 MB）、ECharts（1.1 MB）与一个 Vite 构建的 Crepe
 编辑器（2.7 MB），合计占 HAP 的 93%，但没有一条 UI 路径能走到它们——图块被画成
