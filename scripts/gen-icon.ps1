@@ -3,7 +3,7 @@ Add-Type -AssemblyName System.Drawing
 # ---------------------------------------------------------------------------
 # 纸见 (ZhiJian) 应用图标生成器
 #
-# 母版是 design/my-icon.png（1024×1024，深蓝极光底板上的玻璃 # 字形）。本脚本不
+# 母版是 design/icon.png（1024×1024，米色等高线底板上的深青 # 字形）。本脚本不
 # 重绘任何线条，只从它派生系统需要的两个资源：
 #
 #   app_icon.png    1024×1024，不透明 PNG。AppScope 与 entry 各一份。
@@ -45,7 +45,7 @@ Add-Type -AssemblyName System.Drawing
 # ---------------------------------------------------------------------------
 
 $root = Split-Path $PSScriptRoot -Parent
-$SRC = Join-Path $root 'design\my-icon.png'
+$SRC = Join-Path $root 'design\icon.png'
 $SIDE = 1024
 $START_PX = 216
 
@@ -133,11 +133,67 @@ foreach ($pair in @(@((Join-Path $root 'AppScope\app.json5'), 'app.json5'), @((J
 }
 if (-not (Test-Path (Join-Path $entryMedia 'startIcon.png'))) { $errors.Add('missing startIcon.png') }
 
-# 48px 下的明度落差。图标最小出现在通知栏与设置列表里，那里读不出来就等于没有。
+# 48px 下的可读性。图标最小出现在通知栏与设置列表里，那里读不出来就等于没有。
+#
+# 判据不能是「与底板不同的像素」：当前母版的底板本身带等高线，那条线一路画到画布
+# 边缘，于是整张画布都被框成「字形」（实测 bbox 1023×1023，对比度算出 NaN）。也
+# 不能用画布第一个像素当底板——那里正好压着一条等高线。
+#
+# 底板取**明度的众数**：底色占绝大多数像素，纹理只占少数。字形判据是「与底板明度
+# 相差超过一半的、到底色对面那一端的距离」，浅底要相当深的墨才算，深底要相当亮的墨
+# 才算，纹理因为不够远而被排除在外。判据取绝对值，两种方向同一条公式。
+$hist = New-Object 'int[]' 256
+for ($y = 0; $y -lt $SIDE; $y += 4) {
+    $row = $y * $stride
+    for ($x = 0; $x -lt $SIDE; $x += 4) {
+        $i = $row + $x * 4
+        $hist[[int](0.299 * $buf[$i + 2] + 0.587 * $buf[$i + 1] + 0.114 * $buf[$i])]++
+    }
+}
+$modeBin = 0
+for ($b = 1; $b -lt 256; $b++) { if ($hist[$b] -gt $hist[$modeBin]) { $modeBin = $b } }
+$plateLum = [double]$modeBin
+$th = 0.5 * [math]::Max($plateLum, 255 - $plateLum)
+
+$gx0 = $SIDE; $gx1 = -1; $gy0 = $SIDE; $gy1 = -1
+$ink = 0
+for ($y = 0; $y -lt $SIDE; $y += 2) {
+    $row = $y * $stride
+    for ($x = 0; $x -lt $SIDE; $x += 2) {
+        $i = $row + $x * 4
+        $l = 0.299 * $buf[$i + 2] + 0.587 * $buf[$i + 1] + 0.114 * $buf[$i]
+        if ([math]::Abs($l - $plateLum) -gt $th) {
+            $ink++
+            if ($x -lt $gx0) { $gx0 = $x }; if ($x -gt $gx1) { $gx1 = $x }
+            if ($y -lt $gy0) { $gy0 = $y }; if ($y -gt $gy1) { $gy1 = $y }
+        }
+    }
+}
+$report.Add("plate luminance $plateLum, ink threshold $([math]::Round($th,1))")
+if ($gx1 -lt 0) {
+    $errors.Add('cannot locate the glyph on the master — no pixel is far enough from the plate luminance')
+} else {
+    $sampled = ($SIDE / 2) * ($SIDE / 2)
+    $report.Add("glyph box x $gx0..$gx1  y $gy0..$gy1  ($($gx1 - $gx0 + 1)x$($gy1 - $gy0 + 1)), coverage $([math]::Round(100.0 * $ink / $sampled, 2))%")
+
+    # 遮罩安全线：系统会裁掉四角，主体落在线外就会被切。
+    $safe = [int]($SIDE * 0.17)
+    $mLeft = $gx0
+    $mTop = $gy0
+    $mRight = $SIDE - 1 - $gx1
+    $mBottom = $SIDE - 1 - $gy1
+    $margins = @($mLeft, $mTop, $mRight, $mBottom)
+    $report.Add("margins L/T/R/B $($margins -join ' / ') px, mask safe line $safe px")
+    if (($margins | Measure-Object -Minimum).Minimum -lt $safe) {
+        $errors.Add("glyph crosses the 17% mask-safe line (margins $($margins -join '/') vs $safe)")
+    }
+}
+
 $p48 = [System.Drawing.Bitmap]::FromFile((Join-Path $designDir 'preview-48.png'))
 $inSum = 0.0; $inCnt = 0; $outSum = 0.0; $outCnt = 0
-$bx0 = 216.0 / 1024 * 48; $bx1 = 808.0 / 1024 * 48
-$by0 = 240.0 / 1024 * 48; $by1 = 790.0 / 1024 * 48
+$scale = 48.0 / $SIDE
+$bx0 = $gx0 * $scale; $bx1 = ($gx1 + 1) * $scale
+$by0 = $gy0 * $scale; $by1 = ($gy1 + 1) * $scale
 for ($y = 0; $y -lt 48; $y++) {
     for ($x = 0; $x -lt 48; $x++) {
         $c = $p48.GetPixel($x, $y)
@@ -147,7 +203,7 @@ for ($y = 0; $y -lt 48; $y++) {
     }
 }
 $p48.Dispose()
-$contrast = [math]::Round($inSum / $inCnt - $outSum / $outCnt, 1)
+$contrast = [math]::Round([math]::Abs($inSum / $inCnt - $outSum / $outCnt), 1)
 $report.Add("preview-48 contrast (glyph area vs corners): $contrast levels")
 if ($contrast -lt 10) { $errors.Add("48px contrast $contrast is too low — the glyph will not read when small") }
 

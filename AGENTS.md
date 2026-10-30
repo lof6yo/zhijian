@@ -127,10 +127,16 @@ $env:PATH = "D:\deveco\command-line-tools\bin;D:\deveco\command-line-tools\sdk\d
 | Environment doctor | `scripts\doctor.ps1` |
 
 App icon (`scripts/gen-icon.ps1`): the single source is
-`design/my-icon.png` — 1024², a glass `#` on a deep-blue **aurora** plate. The
+`design/icon.png` — 1024², a deep-teal `#` on a cream **contour-line** plate. The
 script draws nothing; it copies that raster to `app_icon.png` (both `AppScope`
 and `entry`) and derives the 216² `startIcon.png`. Run it only when the master
 changes, then rebuild. Full rationale: `design/icon/README.md`.
+
+**`design/icon.png` is the only master. There is no second copy.** Replace that
+file in place when the art changes; do not keep `file.png` / `my-icon.png`
+beside it. A duplicate is never the original — it is a fork that diverges on the
+next edit, and two identical PNGs under different names cannot be told apart in
+a diff.
 
 **It is a single-layer icon, not `layered_image`.** `icon` pointing at a plain
 PNG is legal; the system applies its rounded-corner mask. Layering buys parallax
@@ -147,23 +153,26 @@ the same name.
 out of the plate, and the plate *under the glyph is invisible*. Reconstructing
 it and solving `src = a·C + (1−a)·plate` forces `a ≥ k` with
 `k = max_c |src_c − plate_c| / headroom`, so wherever the reconstructed plate
-differs from `src` there is **necessarily** foreground ink. Measured on this
-master: the aurora bloom leaked wholesale into the foreground (783 KB PNG, a
-visible blue cloud on mid-grey). Raising the alpha gain multiplies that error;
-moving the threshold only trades a chopped glass body for more bloom.
+differs from `src` there is **necessarily** foreground ink. Measured on the
+previous master (aurora plate): the bloom leaked wholesale into the foreground
+(783 KB PNG, a visible blue cloud on mid-grey). Raising the alpha gain multiplies
+that error; moving the threshold only trades a chopped glyph body for more
+texture.
 
 Before splitting a future master, ask whether **the plate under the glyph is
-known**. The previous master was a 3×3 pure-colour mosaic whose cell boundaries
+known**. The old mosaic master was a 3×3 pure-colour grid whose cell boundaries
 are computable (`1024/3 ≈ 341.33`, offset by half a cell), so there
 `a = (src − bg) / (255 − bg)` was *solved* and the end-to-end assertion reached
-max channel error 1. Gradients, auroras, glass and any organic transition are
-not known — use a single layer. The mosaic-era script and its three traps (hard
-luminance threshold → grey-white halo `#526FA0`; estimated alpha → grey ring on
-a dark plate; per-cell "most frequent non-white" → blend colour on a cell the
-glyph mostly covers) live in git history.
+max channel error 1. Gradients, auroras, glass, contour lines and any organic
+transition are not known — the current cream plate has contour lines that pass
+under the glyph, so they cannot be reconstructed — use a single layer. The
+mosaic-era script and its three traps (hard luminance threshold → grey-white halo
+`#526FA0`; estimated alpha → grey ring on a dark plate; per-cell "most frequent
+non-white" → blend colour on a cell the glyph mostly covers) live in git history.
 
-Measured geometry: glyph box 588×539 = 57.4 % × 52.6 % of the canvas, margins
-221 / 246 / 215 / 239 px — all outside the 17 % mask-safe margin (174 px).
+Measured geometry: glyph box 479×489 = 46.8 % × 47.8 % of the canvas, margins
+272 / 262 / 273 / 273 px — all outside the 17 % mask-safe margin (174 px), stroke
+coverage 14.3 %.
 
 **This machine is CLT-only — no .NET SDK, no `csc`.** PowerShell 7's `Add-Type`
 cannot reference `System.Drawing` (`CS1069: System.Drawing.Common not found`),
