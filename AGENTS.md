@@ -530,8 +530,10 @@ button.
   list full of untitled notes opened straight into an editor — the reader stopped
   being a reader. Existing notes now always open rendered; the keyboard only appears
   when the user taps the body.
-- **设置 is grouped by purpose**, in this order: 外观 / 阅读与编辑 / AI / 同步与备份 /
-  回收站 / 关于. AI 排在同步之前：两者都是「对外连接」的配置，而 AI 是写作时随时要用
+- **设置 is grouped by purpose**, in this order: 阅读与编辑 / 外观 / AI / 同步与备份 /
+  回收站 / 关于. 「阅读与编辑」在最前：字号、行距、编辑体验是写作时随手会调的东西，
+  而外观（主题、光感挡位、强调色）装好之后基本不再动——与「AI 排在同步之前」是同一条
+  理由：越常用的越靠上。 AI 排在同步之前：两者都是「对外连接」的配置，而 AI 是写作时随时要用
   的，同步是装好之后就不动的。 Each group is a `SectionLabel` plus its cards; keep a new row inside
   the group it belongs to rather than appending it to the end of the list.
 - **导入与导出是两个同级配置项，没有「导入 / 导出」这个中间页。** 它们和

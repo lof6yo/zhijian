@@ -3761,94 +3761,6 @@ struct Index {
     Column({ space: 12 }) {
       List({ space: 8, scroller: this.settingsScroller }) {
         ListItem() {
-          this.SectionLabel('外观')
-        }
-
-        ListItem() {
-          Column({ space: 12 }) {
-            Row() {
-              Column({ space: 2 }) {
-                Text('外观')
-                  .fontSize(16)
-                  .fontColor($r('app.color.text_primary'))
-                Text('跟随系统或手动固定')
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
-              }
-              .alignItems(HorizontalAlign.Start)
-
-              Blank()
-
-              Row({ space: 2 }) {
-                this.SegmentButton('跟随系统', 0)
-                this.SegmentButton('浅色', 1)
-                this.SegmentButton('深色', 2)
-              }
-              .padding(3)
-              .borderRadius(14)
-              .backgroundColor($r('app.color.page_bg'))
-            }
-            .width('100%')
-
-            Row() {
-              Column({ space: 2 }) {
-                Text('沉浸光感挡位')
-                  .fontSize(16)
-                  .fontColor($r('app.color.text_primary'))
-                Text(`本机${this.deviceTierLabel()} · 自适应优先`)
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
-              }
-              .alignItems(HorizontalAlign.Start)
-
-              Blank()
-
-              Row({ space: 2 }) {
-                this.SegmentButton('自适应', GEAR_ADAPTIVE, SEG_GLASS)
-                this.SegmentButton('高', GEAR_HIGH, SEG_GLASS)
-                this.SegmentButton('中', GEAR_MEDIUM, SEG_GLASS)
-                this.SegmentButton('低', GEAR_LOW, SEG_GLASS)
-              }
-              .padding(3)
-              .borderRadius(14)
-              .backgroundColor($r('app.color.page_bg'))
-            }
-            .width('100%')
-
-            Row() {
-              Column({ space: 2 }) {
-                Text('强调色')
-                  .fontSize(16)
-                  .fontColor($r('app.color.text_primary'))
-                Text('按钮、标签、选中态')
-                  .fontSize(12)
-                  .fontColor($r('app.color.text_secondary'))
-              }
-              .alignItems(HorizontalAlign.Start)
-
-              Blank()
-
-              Row({ space: 6 }) {
-                ForEach(Palette.schemes, (item: AccentScheme, index: number) => {
-                  this.AccentSwatch(item, index)
-                }, (item: AccentScheme) => item.label)
-              }
-            }
-            .width('100%')
-
-            // 卡片圆角那一行滑块已移除。它只影响「卡片有多圆」，既不是密度也不是
-            // 可读性；而它存在时，卡片的弧度是一台机器一个值，筛选条 / 排序条那条
-            // 胶囊却始终 17 vp——两种控件永远对不齐。现在圆角是常量 `CARD_CORNER`，
-            // 卡片、设置分组卡片、搜索提示条与胶囊外壳共用同一个数。
-          }
-          .width('100%')
-          .padding(14)
-          .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
-          .backgroundColor(Color.Transparent)
-          .borderRadius(this.cardCorner)
-        }
-
-        ListItem() {
           this.SectionLabel('阅读与编辑')
         }
 
@@ -3966,6 +3878,94 @@ struct Index {
                 .textAlign(TextAlign.End)
             }
             .width('100%')
+          }
+          .width('100%')
+          .padding(14)
+          .background(this.SettingsCardSurface(), CARD_BG_OPTIONS)
+          .backgroundColor(Color.Transparent)
+          .borderRadius(this.cardCorner)
+        }
+
+        ListItem() {
+          this.SectionLabel('外观')
+        }
+
+        ListItem() {
+          Column({ space: 12 }) {
+            Row() {
+              Column({ space: 2 }) {
+                Text('外观')
+                  .fontSize(16)
+                  .fontColor($r('app.color.text_primary'))
+                Text('跟随系统或手动固定')
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .alignItems(HorizontalAlign.Start)
+
+              Blank()
+
+              Row({ space: 2 }) {
+                this.SegmentButton('跟随系统', 0)
+                this.SegmentButton('浅色', 1)
+                this.SegmentButton('深色', 2)
+              }
+              .padding(3)
+              .borderRadius(14)
+              .backgroundColor($r('app.color.page_bg'))
+            }
+            .width('100%')
+
+            Row() {
+              Column({ space: 2 }) {
+                Text('沉浸光感挡位')
+                  .fontSize(16)
+                  .fontColor($r('app.color.text_primary'))
+                Text(`本机${this.deviceTierLabel()} · 自适应优先`)
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .alignItems(HorizontalAlign.Start)
+
+              Blank()
+
+              Row({ space: 2 }) {
+                this.SegmentButton('自适应', GEAR_ADAPTIVE, SEG_GLASS)
+                this.SegmentButton('高', GEAR_HIGH, SEG_GLASS)
+                this.SegmentButton('中', GEAR_MEDIUM, SEG_GLASS)
+                this.SegmentButton('低', GEAR_LOW, SEG_GLASS)
+              }
+              .padding(3)
+              .borderRadius(14)
+              .backgroundColor($r('app.color.page_bg'))
+            }
+            .width('100%')
+
+            Row() {
+              Column({ space: 2 }) {
+                Text('强调色')
+                  .fontSize(16)
+                  .fontColor($r('app.color.text_primary'))
+                Text('按钮、标签、选中态')
+                  .fontSize(12)
+                  .fontColor($r('app.color.text_secondary'))
+              }
+              .alignItems(HorizontalAlign.Start)
+
+              Blank()
+
+              Row({ space: 6 }) {
+                ForEach(Palette.schemes, (item: AccentScheme, index: number) => {
+                  this.AccentSwatch(item, index)
+                }, (item: AccentScheme) => item.label)
+              }
+            }
+            .width('100%')
+
+            // 卡片圆角那一行滑块已移除。它只影响「卡片有多圆」，既不是密度也不是
+            // 可读性；而它存在时，卡片的弧度是一台机器一个值，筛选条 / 排序条那条
+            // 胶囊却始终 17 vp——两种控件永远对不齐。现在圆角是常量 `CARD_CORNER`，
+            // 卡片、设置分组卡片、搜索提示条与胶囊外壳共用同一个数。
           }
           .width('100%')
           .padding(14)
