@@ -642,19 +642,26 @@ struct Index {
     // 页签栏的显隐是 HDS 控制的（`HdsTabsFloatingStyle` 没有可见性字段，栏本身
     // 画在 HDS 里），所以只能请它播自己的收起 / 展开动效，而不是给自绘胶囊加
     // `translate`——那条自绘胶囊在 HDS 外壳里根本不参与布局。
-    // 收起与展开**故意用不同的档**，不是笔误。
     //
-    // 收起必须是 `SCROLL_ANIMATION`：`CLICK_ANIMATION` 在滚动场景下只收起标题栏，
-    // 页签栏停在原地——实测笔记页与标签页「上滑后底栏不动」，看着像收起失效。
+    // **两个方向都只能走 `SCROLL_ANIMATION`**，这一点踩过两次：
     //
-    // 展开则不能再走 `SCROLL_ANIMATION`：那一档的回归是把胶囊先摊成满屏宽、
-    // 图标放大到 1.67 倍再收拢（设置页实测 900 px → 1320 px），读起来是「底栏
-    // 弹跳放大」。用 `CLICK_ANIMATION` 展开只在原位做一次缩放淡入，尺寸变化
-    // 是渐进的、不铺满整行，这才与「让位 / 回归」同一种语气。
+    // - `CLICK_ANIMATION` 收起时只收标题栏，页签栏停在原地——笔记页与标签页
+    //   「上滑后底栏不动」，看着就是收起失效。
+    // - `CLICK_ANIMATION` 展开时**落点是错的**：实测栏位落在 `[210,2106][1110,2232]`，
+    //   比常态 `[210,1980][1110,2148]` 低 126 px，高度从 56 vp 压到 42 vp，28 vp 的
+    //   底部边距整个丢掉、贴到屏幕底边——画面上就是「恢复的位置不对、底栏被切了一截」。
+    //   `SCROLL_ANIMATION` 展开的落点与常态逐像素一致（三页签 × 三种恢复路径都验过）。
+    //
+    // 唯一反对 `SCROLL_ANIMATION` 的理由曾经是「展开时把胶囊摊成满屏宽」。实测那次
+    // 摊宽来自**到底回弹被误判成往回翻**（见 `handleChromeScroll` 的 `isAtEnd()`
+    // 一段），与档位无关：回弹压掉之后，在底部上滑根本不会再触发展开；而正常的原位
+    // 展开，连拍帧里胶囊是在原处由窄变宽，没有铺满整行的一帧。所以这里不再分方向，
+    // 也不再有例外。
+    const mode: HdsAnimationMode = HdsAnimationMode.SCROLL_ANIMATION;
     if (hidden) {
-      this.hdsTabs.applyHideAnimation(HdsAnimationMode.SCROLL_ANIMATION);
+      this.hdsTabs.applyHideAnimation(mode);
     } else {
-      this.hdsTabs.applyShowAnimation(HdsAnimationMode.CLICK_ANIMATION);
+      this.hdsTabs.applyShowAnimation(mode);
     }
   }
 
